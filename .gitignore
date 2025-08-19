@@ -1,2 +1,6 @@
 Cargo.lock
 /target
+
+# KiCAD files
+*.zip
+fp-info-cache
