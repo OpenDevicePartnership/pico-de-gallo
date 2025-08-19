@@ -2282,6 +2282,82 @@
 			(embedded_fonts no)
 		)
 	)
+	(no_connect
+		(at 146.05 57.15)
+		(uuid "127f91a5-e442-403c-aa8c-2beb2bae3488")
+	)
+	(no_connect
+		(at 168.91 87.63)
+		(uuid "229a28eb-1f5d-4850-9fab-2f96154fed4b")
+	)
+	(no_connect
+		(at 123.19 80.01)
+		(uuid "24b57768-dd9a-485a-a7eb-59b1adc5f1c4")
+	)
+	(no_connect
+		(at 123.19 72.39)
+		(uuid "4e932939-e64f-46af-b407-4ef0f04c910f")
+	)
+	(no_connect
+		(at 168.91 82.55)
+		(uuid "5321dfb4-700b-41da-8803-a829a0606318")
+	)
+	(no_connect
+		(at 168.91 102.87)
+		(uuid "55238d2a-2f21-41f1-be7a-5a7f369b2989")
+	)
+	(no_connect
+		(at 168.91 85.09)
+		(uuid "5d4b5532-0c22-4716-9a5b-10c3c58902dc")
+	)
+	(no_connect
+		(at 168.91 90.17)
+		(uuid "60e5bb82-99e1-4298-a0a2-c504322b72de")
+	)
+	(no_connect
+		(at 168.91 95.25)
+		(uuid "727e61c4-0692-43a9-bb94-55ada48fc06a")
+	)
+	(no_connect
+		(at 168.91 118.11)
+		(uuid "76c188b5-71b1-40b6-9236-4c326db787ed")
+	)
+	(no_connect
+		(at 168.91 92.71)
+		(uuid "99c41938-6fcd-4eb7-b73c-6e85528510d8")
+	)
+	(no_connect
+		(at 123.19 92.71)
+		(uuid "a302c126-3b14-46ac-968a-30f9e1bb7159")
+	)
+	(no_connect
+		(at 123.19 74.93)
+		(uuid "bac136e2-9582-42ba-a92d-f47b8fb25b50")
+	)
+	(no_connect
+		(at 168.91 110.49)
+		(uuid "bf3bd334-1314-494e-8045-ba1cc2d70ee1")
+	)
+	(no_connect
+		(at 168.91 97.79)
+		(uuid "c736c3ce-0a02-43a3-96e0-2913059313b7")
+	)
+	(no_connect
+		(at 140.97 57.15)
+		(uuid "cea05529-37c6-4974-8838-57ba4df9523e")
+	)
+	(no_connect
+		(at 123.19 82.55)
+		(uuid "db40b3f2-c192-48ef-8e2d-7adafb5525a0")
+	)
+	(no_connect
+		(at 168.91 113.03)
+		(uuid "e4c514ff-cc4f-43b3-9ae6-3becdd1af396")
+	)
+	(no_connect
+		(at 168.91 107.95)
+		(uuid "ef2b9880-298b-429c-9521-62baab22a85b")
+	)
 	(wire
 		(pts
 			(xy 109.22 110.49) (xy 123.19 110.49)
@@ -2321,16 +2397,6 @@
 			(type default)
 		)
 		(uuid "53824b6e-9a9a-489b-9988-c27c2c4fe201")
-	)
-	(wire
-		(pts
-			(xy 168.91 118.11) (xy 175.26 118.11)
-		)
-		(stroke
-			(width 0)
-			(type default)
-		)
-		(uuid "66cf3049-831d-48e6-9c37-140a2303555b")
 	)
 	(wire
 		(pts
@@ -2432,7 +2498,7 @@
 		)
 		(uuid "394e7b4a-67da-475b-893e-b8ada2b67e9f")
 	)
-	(label "3V3"
+	(label "+3V3"
 		(at 151.13 57.15 90)
 		(effects
 			(font
@@ -2462,7 +2528,7 @@
 		)
 		(uuid "43e5fca2-af18-4c9b-823e-52b39139c4d3")
 	)
-	(label "3V3"
+	(label "+3V3"
 		(at 194.31 68.58 180)
 		(effects
 			(font
@@ -2573,16 +2639,6 @@
 		(uuid "a5177f6d-aed7-4b43-9fe7-cf869f43d6fd")
 	)
 	(label "GND"
-		(at 168.91 118.11 0)
-		(effects
-			(font
-				(size 1.27 1.27)
-			)
-			(justify left bottom)
-		)
-		(uuid "bf021143-4338-483f-8a50-43decd7d9db9")
-	)
-	(label "GND"
 		(at 194.31 88.9 180)
 		(effects
 			(font
@@ -2612,7 +2668,7 @@
 		)
 		(uuid "dcdb0dee-ae98-4855-b52e-43e98f6a190c")
 	)
-	(label "3V3"
+	(label "+3V3"
 		(at 194.31 86.36 180)
 		(effects
 			(font
@@ -2713,72 +2769,6 @@
 			(project ""
 				(path "/409a2a34-92f9-4daa-b11b-cb64dd13f272"
 					(reference "J1")
-					(unit 1)
-				)
-			)
-		)
-	)
-	(symbol
-		(lib_id "power:GND")
-		(at 175.26 118.11 0)
-		(unit 1)
-		(exclude_from_sim no)
-		(in_bom yes)
-		(on_board yes)
-		(dnp no)
-		(fields_autoplaced yes)
-		(uuid "19805a59-fa0c-46eb-a6bf-97f832cc379f")
-		(property "Reference" "#PWR02"
-			(at 175.26 124.46 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Value" "GND"
-			(at 175.26 123.19 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-			)
-		)
-		(property "Footprint" ""
-			(at 175.26 118.11 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Datasheet" ""
-			(at 175.26 118.11 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
-			(at 175.26 118.11 0)
-			(effects
-				(font
-					(size 1.27 1.27)
-				)
-				(hide yes)
-			)
-		)
-		(pin "1"
-			(uuid "d4ddd6f7-7237-4646-9e9c-4b092991de8d")
-		)
-		(instances
-			(project "pico-de-gallo"
-				(path "/409a2a34-92f9-4daa-b11b-cb64dd13f272"
-					(reference "#PWR02")
 					(unit 1)
 				)
 			)

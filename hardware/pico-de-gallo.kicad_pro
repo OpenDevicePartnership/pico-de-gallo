@@ -37,9 +37,9 @@
         "other_text_thickness": 0.15,
         "other_text_upright": false,
         "pads": {
-          "drill": 0.8,
-          "height": 1.27,
-          "width": 2.54
+          "drill": 0.0,
+          "height": 0.8,
+          "width": 1.6
         },
         "silk_line_width": 0.1,
         "silk_text_italic": false,
@@ -58,7 +58,20 @@
           "width": 0.0
         }
       ],
-      "drc_exclusions": [],
+      "drc_exclusions": [
+        [
+          "duplicate_footprints|96000000|99000000|602836dc-65b5-40a4-8ac8-18ad7f336f74|297f4857-fcd5-429a-a237-4f9ca4ee849e",
+          ""
+        ],
+        [
+          "extra_footprint|93176424|84250000|297f4857-fcd5-429a-a237-4f9ca4ee849e|00000000-0000-0000-0000-000000000000",
+          ""
+        ],
+        [
+          "extra_footprint|96000000|99000000|602836dc-65b5-40a4-8ac8-18ad7f336f74|00000000-0000-0000-0000-000000000000",
+          ""
+        ]
+      ],
       "meta": {
         "version": 2
       },
@@ -543,7 +556,7 @@
       "plot": "",
       "pos_files": "",
       "specctra_dsn": "",
-      "step": "",
+      "step": "../../../../../tmp/pico-de-gallo.step",
       "svg": "",
       "vrml": ""
     },
