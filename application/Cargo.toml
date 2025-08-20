@@ -1,0 +1,9 @@
+[package]
+name = "pico-de-gallo-tool"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = "4.5.45"
+color-eyre = "0.6.5"
+pico-de-gallo = { path = "../library" }
