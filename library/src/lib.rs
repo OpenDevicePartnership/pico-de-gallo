@@ -2,15 +2,13 @@ use embedded_hal::i2c::{self, SevenBitAddress};
 use nusb::io::{EndpointRead, EndpointWrite};
 use nusb::transfer::{Bulk, In, Out};
 use nusb::{list_devices, Interface, MaybeFuture};
-use std::io::{self, Read, Write};
+use std::io::{Read, Write};
 use thiserror::Error;
 
-#[derive(Error, Debug)]
+#[derive(Error, Clone, Copy, Debug)]
 pub enum Error {
-    #[error("nusb error")]
-    Nusb(#[from] nusb::Error),
     #[error("io error")]
-    Io(#[from] io::Error),
+    Io,
     #[error("device not found")]
     NotFound,
     #[error("unknown error")]
@@ -26,8 +24,14 @@ struct I2c {
 
 impl I2c {
     fn new(interface: Interface) -> Result<Self> {
-        let writer = interface.endpoint::<Bulk, Out>(0x01)?.writer(4096);
-        let reader = interface.endpoint::<Bulk, In>(0x81)?.reader(4096);
+        let writer = interface
+            .endpoint::<Bulk, Out>(0x01)
+            .map_err(|_| Error::Io)?
+            .writer(4096);
+        let reader = interface
+            .endpoint::<Bulk, In>(0x81)
+            .map_err(|_| Error::Io)?
+            .reader(4096);
 
         Ok(Self { writer, reader })
     }
@@ -37,17 +41,16 @@ impl I2c {
         let size = buf.len().to_le_bytes();
 
         let cmd = [0x00, addr, size[0], size[1]];
-        dbg!(&cmd);
 
-        self.writer.write_all(&cmd)?;
-        self.writer.flush()?;
+        self.writer.write_all(&cmd).map_err(|_| Error::Io)?;
+        self.writer.flush().map_err(|_| Error::Io)?;
 
         // REVISIT: make sure response contains "SUCCESS"
         let mut response = [0; 512];
-        let size = self.reader.read(&mut response[..(4 + buf.len())])?;
-
-        // REMOVE THIS
-        println!("READ: Got {size} bytes");
+        let size = self
+            .reader
+            .read(&mut response[..(4 + buf.len())])
+            .map_err(|_| Error::Io)?;
 
         if size > 4 {
             buf.copy_from_slice(&response[4..size]);
@@ -62,17 +65,13 @@ impl I2c {
 
         let mut cmd = vec![0x01, addr, size[0], size[1]];
         cmd.extend_from_slice(buf);
-        dbg!(&cmd);
 
-        self.writer.write_all(&cmd)?;
-        self.writer.flush()?;
+        self.writer.write_all(&cmd).map_err(|_| Error::Io)?;
+        self.writer.flush().map_err(|_| Error::Io)?;
 
         // REVISIT: make sure response contains "SUCCESS"
         let mut response = [0; 512];
-        let size = self.reader.read(&mut response)?;
-
-        // REMOVE THIS
-        println!("Got {size} bytes");
+        self.reader.read(&mut response).map_err(|_| Error::Io)?;
 
         Ok(())
     }
@@ -109,27 +108,30 @@ impl i2c::I2c<SevenBitAddress> for PicoDeGallo {
     }
 }
 
+#[allow(unused)]
 struct Spi {
-    interface: Interface,
     writer: EndpointWrite<Bulk>,
     reader: EndpointRead<Bulk>,
 }
 
 impl Spi {
     fn new(interface: Interface) -> Result<Self> {
-        let writer = interface.endpoint::<Bulk, Out>(0x02)?.writer(4096);
-        let reader = interface.endpoint::<Bulk, In>(0x82)?.reader(4096);
+        let writer = interface
+            .endpoint::<Bulk, Out>(0x02)
+            .map_err(|_| Error::Io)?
+            .writer(4096);
+        let reader = interface
+            .endpoint::<Bulk, In>(0x82)
+            .map_err(|_| Error::Io)?
+            .reader(4096);
 
-        Ok(Self {
-            interface,
-            writer,
-            reader,
-        })
+        Ok(Self { writer, reader })
     }
 }
 
 pub struct PicoDeGallo {
     i2c: I2c,
+    #[allow(unused)]
     spi: Spi,
 }
 
@@ -137,14 +139,15 @@ impl PicoDeGallo {
     /// Create a new instance for the Pico de Gallo device.
     pub fn new() -> Result<Self> {
         let device = list_devices()
-            .wait()?
+            .wait()
+            .map_err(|_| Error::Io)?
             .find(|dev| dev.vendor_id() == 0x045e && dev.product_id() == 0x7069)
             .ok_or(Error::NotFound)?;
 
-        let device = device.open().wait()?;
+        let device = device.open().wait().map_err(|_| Error::Io)?;
 
-        let intf0 = device.claim_interface(0).wait()?;
-        let intf1 = device.claim_interface(1).wait()?;
+        let intf0 = device.claim_interface(0).wait().map_err(|_| Error::Io)?;
+        let intf1 = device.claim_interface(1).wait().map_err(|_| Error::Io)?;
 
         let i2c = I2c::new(intf0)?;
         let spi = Spi::new(intf1)?;
