@@ -49,7 +49,9 @@ impl I2c {
         // REMOVE THIS
         println!("READ: Got {size} bytes");
 
-        buf.copy_from_slice(&response[4..size]);
+        if size > 4 {
+            buf.copy_from_slice(&response[4..size]);
+        }
 
         Ok(())
     }
