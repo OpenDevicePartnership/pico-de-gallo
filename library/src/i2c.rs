@@ -35,6 +35,9 @@ impl I2c {
 
         // REVISIT: make sure response contains "SUCCESS"
         let mut response = [0; 512];
+
+        // When checking response code, errors should map to Error::I2c.
+
         let size = self
             .reader
             .read(&mut response[..(4 + buf.len())])
@@ -59,6 +62,9 @@ impl I2c {
 
         // REVISIT: make sure response contains "SUCCESS"
         let mut response = [0; 512];
+
+        // When checking response code, errors should map to Error::I2c.
+
         self.reader.read(&mut response).map_err(|_| Error::Io)?;
 
         Ok(())

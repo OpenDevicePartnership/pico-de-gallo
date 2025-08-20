@@ -9,12 +9,18 @@ use thiserror::Error;
 pub mod i2c;
 pub mod spi;
 
-#[derive(Error, Clone, Copy, Debug)]
+#[derive(Error, Clone, Debug)]
 pub enum Error {
+    #[error("nusb error: {0}")]
+    Nusb(nusb::Error),
     #[error("io error")]
     Io,
     #[error("device not found")]
-    NotFound,
+    DeviceNotFound,
+    #[error("I2C bus error")]
+    I2c,
+    #[error("SPI bus error")]
+    Spi,
     #[error("unknown error")]
     Unknown,
 }
@@ -41,14 +47,20 @@ impl PicoDeGallo {
     pub fn new() -> Result<Self> {
         let device = list_devices()
             .wait()
-            .map_err(|_| Error::Io)?
+            .map_err(|e| Error::Nusb(e))?
             .find(|dev| dev.vendor_id() == 0x045e && dev.product_id() == 0x7069)
-            .ok_or(Error::NotFound)?;
+            .ok_or(Error::DeviceNotFound)?;
 
-        let device = device.open().wait().map_err(|_| Error::Io)?;
+        let device = device.open().wait().map_err(|e| Error::Nusb(e))?;
 
-        let intf0 = device.claim_interface(0).wait().map_err(|_| Error::Io)?;
-        let intf1 = device.claim_interface(1).wait().map_err(|_| Error::Io)?;
+        let intf0 = device
+            .claim_interface(0)
+            .wait()
+            .map_err(|e| Error::Nusb(e))?;
+        let intf1 = device
+            .claim_interface(1)
+            .wait()
+            .map_err(|e| Error::Nusb(e))?;
 
         let i2c = I2c::new(intf0)?;
         let spi = Spi::new(intf1)?;
