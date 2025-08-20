@@ -1,8 +1,11 @@
+use embedded_hal::delay::DelayNs;
 use embedded_hal::i2c::{self, SevenBitAddress};
 use nusb::io::{EndpointRead, EndpointWrite};
 use nusb::transfer::{Bulk, In, Out};
 use nusb::{list_devices, Interface, MaybeFuture};
 use std::io::{Read, Write};
+use std::thread;
+use std::time::Duration;
 use thiserror::Error;
 
 #[derive(Error, Clone, Copy, Debug)]
@@ -16,6 +19,15 @@ pub enum Error {
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
+
+#[derive(Clone, Copy)]
+pub struct Delay;
+
+impl DelayNs for Delay {
+    fn delay_ns(&mut self, ns: u32) {
+        thread::sleep(Duration::from_nanos(ns.into()));
+    }
+}
 
 struct I2c {
     writer: EndpointWrite<Bulk>,
