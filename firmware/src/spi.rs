@@ -1,9 +1,22 @@
-use crate::{Opcode, Response};
+use crate::Opcode;
 use defmt::*;
 use embassy_rp::peripherals::{SPI0, USB};
 use embassy_rp::spi;
 use embassy_rp::usb::{Endpoint, In, Out};
 use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
+
+#[repr(u8)]
+pub enum Response {
+    Success = 0,
+    InvalidOpcode = 254,
+    Fail = 255,
+}
+
+impl From<Response> for u8 {
+    fn from(value: Response) -> Self {
+        value as _
+    }
+}
 
 pub struct Spi<'d> {
     bus: spi::Spi<'d, SPI0, spi::Async>,

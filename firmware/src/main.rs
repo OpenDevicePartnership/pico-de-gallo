@@ -66,19 +66,6 @@ impl From<u8> for Opcode {
     }
 }
 
-#[repr(u8)]
-pub enum Response {
-    Success = 0,
-    InvalidOpcode = 254,
-    Fail = 255,
-}
-
-impl From<Response> for u8 {
-    fn from(value: Response) -> Self {
-        value as _
-    }
-}
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
