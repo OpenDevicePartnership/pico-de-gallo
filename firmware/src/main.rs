@@ -14,8 +14,8 @@ use {defmt_rtt as _, panic_probe as _};
 mod i2c;
 mod spi;
 
-use i2c::{i2c_task, I2c};
-use spi::{spi_task, Spi};
+use i2c::{I2c, i2c_task};
+use spi::{Spi, spi_task};
 
 // Program metadata for `picotool info`.
 #[unsafe(link_section = ".bi_entries")]

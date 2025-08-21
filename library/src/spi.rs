@@ -1,7 +1,7 @@
 use crate::{Error, Result};
+use nusb::Interface;
 use nusb::io::{EndpointRead, EndpointWrite};
 use nusb::transfer::{Bulk, In, Out};
-use nusb::Interface;
 
 #[allow(unused)]
 pub(crate) struct Spi {

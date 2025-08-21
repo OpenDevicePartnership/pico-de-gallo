@@ -1,6 +1,6 @@
 use embedded_hal::delay::DelayNs;
 use i2c::{I2c, I2cError};
-use nusb::{list_devices, MaybeFuture};
+use nusb::{MaybeFuture, list_devices};
 use spi::Spi;
 use std::thread;
 use std::time::Duration;

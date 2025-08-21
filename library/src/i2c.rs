@@ -1,8 +1,8 @@
 use crate::{Error, PicoDeGallo, Result};
 use embedded_hal::i2c::{self, SevenBitAddress};
+use nusb::Interface;
 use nusb::io::{EndpointRead, EndpointWrite};
 use nusb::transfer::{Bulk, In, Out};
-use nusb::Interface;
 use std::io::{Read, Write};
 
 pub(crate) struct I2c {
