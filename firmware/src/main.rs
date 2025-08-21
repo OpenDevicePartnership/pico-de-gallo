@@ -40,7 +40,7 @@ const DEVICE_INTERFACE_GUIDS: &[&str] = &["{F41916C1-5335-4DB1-91F5-D023CB63AC67
 static STRING_HANDLER: StaticCell<StringHandler> = StaticCell::new();
 static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
-static MSOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
+static MSOS_DESCRIPTOR: StaticCell<[u8; 512]> = StaticCell::new();
 static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
 #[repr(u8)]
@@ -84,7 +84,7 @@ async fn main(spawner: Spawner) {
     // It needs some buffers for building the descriptors.
     let config_descriptor = CONFIG_DESCRIPTOR.init([0; 256]);
     let bos_descriptor = BOS_DESCRIPTOR.init([0; 256]);
-    let msos_descriptor = MSOS_DESCRIPTOR.init([0; 256]);
+    let msos_descriptor = MSOS_DESCRIPTOR.init([0; 512]);
     let control_buf = CONTROL_BUF.init([0; 64]);
 
     let mut builder = Builder::new(
@@ -96,12 +96,7 @@ async fn main(spawner: Spawner) {
         control_buf,
     );
 
-    builder.msos_descriptor(windows_version::WIN10, 0);
-    builder.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
-    builder.msos_feature(msos::RegistryPropertyFeatureDescriptor::new(
-        "DeviceInterfaceGUIDs",
-        msos::PropertyData::RegMultiSz(DEVICE_INTERFACE_GUIDS),
-    ));
+    builder.msos_descriptor(windows_version::WIN8_1, 0);
 
     let i2c_str = builder.string();
     let spi_str = builder.string();
@@ -110,6 +105,12 @@ async fn main(spawner: Spawner) {
     // Add a vendor-specific function (class 0xff), and corresponding interface,
     // that uses our custom handler.
     let mut function = builder.function(0xff, 0xff, 0xff);
+
+    function.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
+    function.msos_feature(msos::RegistryPropertyFeatureDescriptor::new(
+        "DeviceInterfaceGUIDs",
+        msos::PropertyData::RegMultiSz(DEVICE_INTERFACE_GUIDS),
+    ));
 
     // I2C
     let mut interface = function.interface();
