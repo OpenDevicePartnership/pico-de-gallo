@@ -47,7 +47,7 @@ enum I2cCommands {
     },
 
     /// Write then read
-    WriteThenRead {
+    WriteRead {
         /// Bytes to transfer
         #[arg(short, long, num_args(1..), value_parser(parse_byte))]
         bytes: Vec<u8>,
@@ -68,7 +68,7 @@ impl Cli {
                 None => Ok(()),
                 Some(I2cCommands::Read { count }) => self.read(&mut pg, address, count),
                 Some(I2cCommands::Write { bytes }) => self.write(&mut pg, address, bytes),
-                Some(I2cCommands::WriteThenRead { bytes, count }) => {
+                Some(I2cCommands::WriteRead { bytes, count }) => {
                     self.write_then_read(&mut pg, address, bytes, count)
                 }
             },
