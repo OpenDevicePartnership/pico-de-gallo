@@ -78,7 +78,17 @@ impl Cli {
     fn read(&self, pg: &mut PicoDeGallo, address: &u8, count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
         pg.i2c_blocking_read(*address, &mut buf)?;
-        dbg!(&buf[..*count]);
+
+        for (i, b) in buf.iter().enumerate() {
+            if i > 0 && i % 16 == 0 {
+                print!("\n");
+            }
+
+            print!("{:02x} ", b);
+        }
+
+        print!("\n");
+
         Ok(())
     }
 
