@@ -78,6 +78,8 @@ impl<'d> I2c<'d> {
                                     .bus
                                     .blocking_read(addr, &mut data[4..(usize::from(size) + 4)]);
 
+                                trace!("READ: {:02x}", &data[..(usize::from(size) + 4)]);
+
                                 match result {
                                     Ok(()) => {
                                         data[0] = Response::Success.into();
@@ -96,6 +98,8 @@ impl<'d> I2c<'d> {
                                 let result = self
                                     .bus
                                     .blocking_write(addr, &data[4..(usize::from(size) + 4)]);
+
+                                trace!("WRITE: {:02x}", &data[..(usize::from(size) + 4)]);
 
                                 let response = match result {
                                     Ok(()) => Response::Success.into(),
