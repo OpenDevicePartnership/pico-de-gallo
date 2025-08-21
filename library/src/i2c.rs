@@ -81,7 +81,7 @@ impl I2c {
         self.writer.write_all(&cmd).map_err(|_| Error::Io)?;
         self.writer.flush().map_err(|_| Error::Io)?;
 
-        let mut response = [0; 512];
+        let mut response = vec![0; 4 + buf.len()];
 
         let size = self
             .reader

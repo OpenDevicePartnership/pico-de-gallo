@@ -72,46 +72,51 @@ impl<'d> I2c<'d> {
                         let addr = data[1];
                         let size = u16::from_le_bytes(data[2..4].try_into().unwrap_or([0, 0]));
 
-                        match opcode {
-                            Opcode::Read => {
-                                let result = self
-                                    .bus
-                                    .blocking_read(addr, &mut data[4..(usize::from(size) + 4)]);
+                        if size > 508 {
+                            data[0] = Response::Other.into();
+                            self.write_ep.write(&data[..4]).await.ok();
+                        } else {
+                            match opcode {
+                                Opcode::Read => {
+                                    let result = self
+                                        .bus
+                                        .blocking_read(addr, &mut data[4..(usize::from(size) + 4)]);
 
-                                trace!("READ: {:02x}", &data[..(usize::from(size) + 4)]);
+                                    debug!("READ: {:02x}", &data[..(usize::from(size) + 4)]);
 
-                                match result {
-                                    Ok(()) => {
-                                        data[0] = Response::Success.into();
-                                        self.write_ep
-                                            .write(&data[..(usize::from(size) + 4)])
-                                            .await
-                                            .ok();
-                                    }
-                                    Err(e) => {
-                                        data[0] = Response::from(e).into();
-                                        self.write_ep.write(&data[..4]).await.ok();
+                                    match result {
+                                        Ok(()) => {
+                                            data[0] = Response::Success.into();
+                                            self.write_ep
+                                                .write(&data[..(usize::from(size) + 4)])
+                                                .await
+                                                .ok();
+                                        }
+                                        Err(e) => {
+                                            data[0] = Response::from(e).into();
+                                            self.write_ep.write(&data[..4]).await.ok();
+                                        }
                                     }
                                 }
-                            }
-                            Opcode::Write => {
-                                let result = self
-                                    .bus
-                                    .blocking_write(addr, &data[4..(usize::from(size) + 4)]);
+                                Opcode::Write => {
+                                    let result = self
+                                        .bus
+                                        .blocking_write(addr, &data[4..(usize::from(size) + 4)]);
 
-                                trace!("WRITE: {:02x}", &data[..(usize::from(size) + 4)]);
+                                    debug!("WRITE: {:02x}", &data[..(usize::from(size) + 4)]);
 
-                                let response = match result {
-                                    Ok(()) => Response::Success.into(),
-                                    Err(e) => Response::from(e).into(),
-                                };
+                                    let response = match result {
+                                        Ok(()) => Response::Success.into(),
+                                        Err(e) => Response::from(e).into(),
+                                    };
 
-                                data[0] = response;
-                                self.write_ep.write(&data[..4]).await.ok();
-                            }
-                            Opcode::Invalid => {
-                                data[0] = Response::InvalidOpcode.into();
-                                self.write_ep.write(&data[..4]).await.ok();
+                                    data[0] = response;
+                                    self.write_ep.write(&data[..4]).await.ok();
+                                }
+                                Opcode::Invalid => {
+                                    data[0] = Response::InvalidOpcode.into();
+                                    self.write_ep.write(&data[..4]).await.ok();
+                                }
                             }
                         }
                     }
