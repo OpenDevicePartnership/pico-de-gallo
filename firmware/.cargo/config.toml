@@ -5,4 +5,4 @@ runner = "probe-rs run --chip RP235x"
 target = "thumbv8m.main-none-eabihf"
 
 [env]
-DEFMT_LOG = "debug"
+DEFMT_LOG = "trace"
