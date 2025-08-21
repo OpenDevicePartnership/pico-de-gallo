@@ -8,6 +8,7 @@ use std::num::ParseIntError;
     name = "Pico De Gallo",
     author = "Felipe Balbi <febalbi@microsoft.com>",
     about = "Access I2C/SPI devices through Pico De Gallo",
+    arg_required_else_help = true,
     version
 )]
 pub struct Cli {

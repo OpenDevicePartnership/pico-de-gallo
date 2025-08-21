@@ -1,5 +1,5 @@
 use embedded_hal::delay::DelayNs;
-use i2c::I2c;
+use i2c::{I2c, I2cError};
 use nusb::{list_devices, MaybeFuture};
 use spi::Spi;
 use std::thread;
@@ -18,7 +18,7 @@ pub enum Error {
     #[error("device not found")]
     DeviceNotFound,
     #[error("I2C bus error")]
-    I2c,
+    I2c(I2cError),
     #[error("SPI bus error")]
     Spi,
     #[error("unknown error")]
