@@ -2,7 +2,9 @@ Cargo.lock
 target
 
 # KiCAD files
+*.lck
 *.zip
+_autosave*
 fp-info-cache
 
 # FreeCAD backup files
