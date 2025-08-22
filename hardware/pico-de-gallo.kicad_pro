@@ -544,7 +544,7 @@
       "plot": "",
       "pos_files": "",
       "specctra_dsn": "",
-      "step": "../../../../../tmp/pico-de-gallo.step",
+      "step": "../../../tmp/pico-de-gallo.step",
       "svg": "",
       "vrml": ""
     },
