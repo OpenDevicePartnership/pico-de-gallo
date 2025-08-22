@@ -118,6 +118,18 @@ async fn main(spawner: Spawner) {
     let i2c_bus = embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_3, p.PIN_2, Irqs, embassy_rp::i2c::Config::default());
     let i2c = I2c::new(i2c_bus, read_ep, write_ep);
 
+    drop(function);
+
+    // Add a vendor-specific function (class 0xff), and corresponding interface,
+    // that uses our custom handler.
+    let mut function = builder.function(0xff, 0xff, 0xff);
+
+    function.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
+    function.msos_feature(msos::RegistryPropertyFeatureDescriptor::new(
+        "DeviceInterfaceGUIDs",
+        msos::PropertyData::RegMultiSz(DEVICE_INTERFACE_GUIDS),
+    ));
+
     // SPI
     let mut interface = function.interface();
     let mut alt = interface.alt_setting(0xff, 0xff, 0xff, Some(spi_str));
@@ -163,9 +175,9 @@ impl StringHandler {
 impl Handler for StringHandler {
     fn get_string(&mut self, index: StringIndex, _lang_id: u16) -> Option<&str> {
         if index == self.i2c_str {
-            Some("I2C Interface")
+            Some("Pico de Gallo I2C Interface")
         } else if index == self.spi_str {
-            Some("SPI Interface")
+            Some("Pico de Gallo SPI Interface")
         } else {
             warn!("Unknown string index requested");
             None
