@@ -41,29 +41,6 @@ static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 static MSOS_DESCRIPTOR: StaticCell<[u8; 512]> = StaticCell::new();
 static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
-#[repr(u8)]
-pub enum Opcode {
-    Read = 0,
-    Write = 1,
-    Invalid = 254,
-}
-
-impl From<Opcode> for u8 {
-    fn from(value: Opcode) -> Self {
-        value as _
-    }
-}
-
-impl From<u8> for Opcode {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => Self::Read,
-            1 => Self::Write,
-            _ => Self::Invalid,
-        }
-    }
-}
-
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());

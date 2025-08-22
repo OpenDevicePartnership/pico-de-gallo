@@ -1,9 +1,31 @@
-use crate::Opcode;
 use defmt::*;
 use embassy_rp::i2c;
 use embassy_rp::peripherals::{I2C1, USB};
 use embassy_rp::usb::{Endpoint, In, Out};
 use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
+
+#[repr(u8)]
+pub enum Opcode {
+    Read = 0,
+    Write = 1,
+    Invalid = 254,
+}
+
+impl From<Opcode> for u8 {
+    fn from(value: Opcode) -> Self {
+        value as _
+    }
+}
+
+impl From<u8> for Opcode {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::Read,
+            1 => Self::Write,
+            _ => Self::Invalid,
+        }
+    }
+}
 
 #[repr(u8)]
 enum Response {

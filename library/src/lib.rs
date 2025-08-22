@@ -38,7 +38,6 @@ impl DelayNs for Delay {
 
 pub struct PicoDeGallo {
     i2c: I2c,
-    #[allow(unused)]
     spi: Spi,
 }
 
@@ -70,5 +69,25 @@ impl PicoDeGallo {
     /// I2c blocking write
     pub fn i2c_blocking_write(&mut self, addr: u8, buf: &[u8]) -> Result<()> {
         self.i2c.blocking_write(addr, buf)
+    }
+
+    /// SPI blocking read
+    pub fn spi_blocking_read(&mut self, words: &mut [u8]) -> Result<()> {
+        self.spi.blocking_read(words)
+    }
+
+    /// SPI blocking write
+    pub fn spi_blocking_write(&mut self, words: &[u8]) -> Result<()> {
+        self.spi.blocking_write(words)
+    }
+
+    /// SPI blocking transfer
+    pub fn spi_blocking_transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<()> {
+        self.spi.blocking_transfer(read, write)
+    }
+
+    /// SPI blocking transfer in place
+    pub fn spi_blocking_transfer_in_place(&mut self, words: &mut [u8]) -> Result<()> {
+        self.spi.blocking_transfer_in_place(words)
     }
 }
