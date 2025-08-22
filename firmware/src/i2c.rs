@@ -51,11 +51,7 @@ impl<'d> I2c<'d> {
         read_ep: Endpoint<'d, USB, Out>,
         write_ep: Endpoint<'d, USB, In>,
     ) -> Self {
-        Self {
-            bus,
-            read_ep,
-            write_ep,
-        }
+        Self { bus, read_ep, write_ep }
     }
 
     async fn run(&mut self) {
@@ -78,19 +74,14 @@ impl<'d> I2c<'d> {
                         } else {
                             match opcode {
                                 Opcode::Read => {
-                                    let result = self
-                                        .bus
-                                        .blocking_read(addr, &mut data[4..(usize::from(size) + 4)]);
+                                    let result = self.bus.blocking_read(addr, &mut data[4..(usize::from(size) + 4)]);
 
                                     debug!("READ: {:02x}", &data[..(usize::from(size) + 4)]);
 
                                     match result {
                                         Ok(()) => {
                                             data[0] = Response::Success.into();
-                                            self.write_ep
-                                                .write(&data[..(usize::from(size) + 4)])
-                                                .await
-                                                .ok();
+                                            self.write_ep.write(&data[..(usize::from(size) + 4)]).await.ok();
                                         }
                                         Err(e) => {
                                             data[0] = Response::from(e).into();
@@ -99,9 +90,7 @@ impl<'d> I2c<'d> {
                                     }
                                 }
                                 Opcode::Write => {
-                                    let result = self
-                                        .bus
-                                        .blocking_write(addr, &data[4..(usize::from(size) + 4)]);
+                                    let result = self.bus.blocking_write(addr, &data[4..(usize::from(size) + 4)]);
 
                                     debug!("WRITE: {:02x}", &data[..(usize::from(size) + 4)]);
 

@@ -53,14 +53,8 @@ impl PicoDeGallo {
 
         let device = device.open().wait().map_err(|e| Error::Nusb(e))?;
 
-        let intf0 = device
-            .claim_interface(0)
-            .wait()
-            .map_err(|e| Error::Nusb(e))?;
-        let intf1 = device
-            .claim_interface(1)
-            .wait()
-            .map_err(|e| Error::Nusb(e))?;
+        let intf0 = device.claim_interface(0).wait().map_err(|e| Error::Nusb(e))?;
+        let intf1 = device.claim_interface(1).wait().map_err(|e| Error::Nusb(e))?;
 
         let i2c = I2c::new(intf0)?;
         let spi = Spi::new(intf1)?;

@@ -122,9 +122,7 @@ impl I2c {
 impl i2c::Error for Error {
     fn kind(&self) -> i2c::ErrorKind {
         match *self {
-            Error::I2c(I2cError::NoAcknowledge) => {
-                i2c::ErrorKind::NoAcknowledge(i2c::NoAcknowledgeSource::Address)
-            }
+            Error::I2c(I2cError::NoAcknowledge) => i2c::ErrorKind::NoAcknowledge(i2c::NoAcknowledgeSource::Address),
             Error::I2c(I2cError::ArbitrationLoss) => i2c::ErrorKind::ArbitrationLoss,
             _ => i2c::ErrorKind::Other,
         }
@@ -136,11 +134,7 @@ impl i2c::ErrorType for PicoDeGallo {
 }
 
 impl i2c::I2c<SevenBitAddress> for PicoDeGallo {
-    fn transaction(
-        &mut self,
-        address: SevenBitAddress,
-        operations: &mut [i2c::Operation<'_>],
-    ) -> Result<()> {
+    fn transaction(&mut self, address: SevenBitAddress, operations: &mut [i2c::Operation<'_>]) -> Result<()> {
         let address = address.into();
 
         for op in operations {

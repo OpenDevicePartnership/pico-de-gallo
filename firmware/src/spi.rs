@@ -30,11 +30,7 @@ impl<'d> Spi<'d> {
         read_ep: Endpoint<'d, USB, Out>,
         write_ep: Endpoint<'d, USB, In>,
     ) -> Self {
-        Self {
-            bus,
-            read_ep,
-            write_ep,
-        }
+        Self { bus, read_ep, write_ep }
     }
 
     async fn run(&mut self) {
@@ -55,17 +51,12 @@ impl<'d> Spi<'d> {
                             Opcode::Read => {
                                 debug!("Read {} bytes", size);
 
-                                let result = self
-                                    .bus
-                                    .blocking_read(&mut data[4..(usize::from(size) + 4)]);
+                                let result = self.bus.blocking_read(&mut data[4..(usize::from(size) + 4)]);
 
                                 match result {
                                     Ok(()) => {
                                         data[0] = Response::Success.into();
-                                        self.write_ep
-                                            .write(&data[..(usize::from(size) + 4)])
-                                            .await
-                                            .ok();
+                                        self.write_ep.write(&data[..(usize::from(size) + 4)]).await.ok();
                                     }
                                     Err(_) => {
                                         data[0] = Response::Fail.into();
@@ -76,8 +67,7 @@ impl<'d> Spi<'d> {
                             Opcode::Write => {
                                 debug!("Write {} bytes", size);
 
-                                let result =
-                                    self.bus.blocking_write(&data[4..(usize::from(size) + 4)]);
+                                let result = self.bus.blocking_write(&data[4..(usize::from(size) + 4)]);
 
                                 if result.is_ok() {
                                     data[0] = Response::Success.into();

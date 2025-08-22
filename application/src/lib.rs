@@ -68,9 +68,7 @@ impl Cli {
                 None => Ok(()),
                 Some(I2cCommands::Read { count }) => self.read(&mut pg, address, count),
                 Some(I2cCommands::Write { bytes }) => self.write(&mut pg, address, bytes),
-                Some(I2cCommands::WriteRead { bytes, count }) => {
-                    self.write_then_read(&mut pg, address, bytes, count)
-                }
+                Some(I2cCommands::WriteRead { bytes, count }) => self.write_then_read(&mut pg, address, bytes, count),
             },
         }
     }
@@ -97,13 +95,7 @@ impl Cli {
         Ok(())
     }
 
-    fn write_then_read(
-        &self,
-        pg: &mut PicoDeGallo,
-        address: &u8,
-        bytes: &[u8],
-        count: &usize,
-    ) -> Result<()> {
+    fn write_then_read(&self, pg: &mut PicoDeGallo, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
         self.write(pg, address, bytes)?;
         self.read(pg, address, count)
     }

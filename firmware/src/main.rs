@@ -22,9 +22,7 @@ use spi::{Spi, spi_task};
 #[used]
 pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
     embassy_rp::binary_info::rp_program_name!(c"Pico de Gallo"),
-    embassy_rp::binary_info::rp_program_description!(
-        c"USB bridge to various buses such as I2C, SPI, and UART"
-    ),
+    embassy_rp::binary_info::rp_program_description!(c"USB bridge to various buses such as I2C, SPI, and UART"),
     embassy_rp::binary_info::rp_cargo_version!(),
     embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
@@ -117,13 +115,7 @@ async fn main(spawner: Spawner) {
     let mut alt = interface.alt_setting(0xff, 0xff, 0xff, Some(i2c_str));
     let read_ep = alt.endpoint_bulk_out(None, 64);
     let write_ep = alt.endpoint_bulk_in(None, 64);
-    let i2c_bus = embassy_rp::i2c::I2c::new_async(
-        p.I2C1,
-        p.PIN_3,
-        p.PIN_2,
-        Irqs,
-        embassy_rp::i2c::Config::default(),
-    );
+    let i2c_bus = embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_3, p.PIN_2, Irqs, embassy_rp::i2c::Config::default());
     let i2c = I2c::new(i2c_bus, read_ep, write_ep);
 
     // SPI
