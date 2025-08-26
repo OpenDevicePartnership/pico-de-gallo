@@ -3,8 +3,13 @@ use embassy_rp::peripherals::{SPI0, USB};
 use embassy_rp::spi;
 use embassy_rp::usb::{Endpoint, In, Out};
 use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
+use postcard::{from_bytes, to_slice};
+use serde::{Deserialize, Serialize};
 
-#[repr(u8)]
+const USB_BUFFER_SIZE: usize = 1024;
+const SPI_BUFFER_SIZE: usize = 512;
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, defmt::Format)]
 pub enum Opcode {
     Read = 0,
     Write = 1,
@@ -14,39 +19,35 @@ pub enum Opcode {
     Invalid = 254,
 }
 
-impl From<Opcode> for u8 {
-    fn from(value: Opcode) -> Self {
-        value as _
-    }
-}
-
-impl From<u8> for Opcode {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => Self::Read,
-            1 => Self::Write,
-            _ => Self::Invalid,
-        }
-    }
-}
-
-#[repr(u8)]
-pub enum Response {
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, defmt::Format)]
+pub enum Status {
     Success = 0,
+
     InvalidOpcode = 254,
-    Fail = 255,
+    Other = 255,
 }
 
-impl From<Response> for u8 {
-    fn from(value: Response) -> Self {
-        value as _
-    }
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, defmt::Format)]
+struct Request<'a> {
+    opcode: Opcode,
+    size: u8,
+    data: Option<&'a [u8]>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq, defmt::Format)]
+struct Response<'a> {
+    status: Status,
+    size: Option<u8>,
+    data: Option<&'a [u8]>,
 }
 
 pub struct Spi<'d> {
     bus: spi::Spi<'d, SPI0, spi::Async>,
     read_ep: Endpoint<'d, USB, Out>,
     write_ep: Endpoint<'d, USB, In>,
+    rx_buf: [u8; USB_BUFFER_SIZE],
+    tx_buf: [u8; USB_BUFFER_SIZE],
+    spi_buf: [u8; SPI_BUFFER_SIZE],
 }
 
 impl<'d> Spi<'d> {
@@ -55,7 +56,14 @@ impl<'d> Spi<'d> {
         read_ep: Endpoint<'d, USB, Out>,
         write_ep: Endpoint<'d, USB, In>,
     ) -> Self {
-        Self { bus, read_ep, write_ep }
+        Self {
+            bus,
+            read_ep,
+            write_ep,
+            rx_buf: [0; USB_BUFFER_SIZE],
+            tx_buf: [0; USB_BUFFER_SIZE],
+            spi_buf: [0; SPI_BUFFER_SIZE],
+        }
     }
 
     async fn run(&mut self) {
@@ -63,105 +71,86 @@ impl<'d> Spi<'d> {
             self.read_ep.wait_enabled().await;
 
             debug!("SPI Connected");
+
             loop {
-                let mut data = [0; 512];
+                match self.read_ep.read(&mut self.rx_buf).await {
+                    Ok(_) => {
+                        let result = from_bytes(&self.rx_buf);
 
-                match self.read_ep.read(&mut data[..509]).await {
-                    Ok(_n) => {
-                        let opcode: Opcode = data[0].into();
-                        let size = u16::from_le_bytes(data[1..3].try_into().unwrap_or([0, 0]));
+                        let mut response = Response {
+                            status: Status::Other,
+                            size: None,
+                            data: None,
+                        };
 
-                        match opcode {
-                            Opcode::Read => {
-                                debug!("Read {} bytes", size);
+                        if result.is_ok() {
+                            let request: Request = result.unwrap();
+                            debug!("{:?}", request);
 
-                                let result = self.bus.blocking_read(&mut data[4..(usize::from(size) + 4)]);
+                            match request.opcode {
+                                Opcode::Read => {
+                                    let result = self.bus.blocking_read(&mut self.spi_buf);
 
-                                match result {
-                                    Ok(()) => {
-                                        data[0] = Response::Success.into();
-                                        self.write_ep.write(&data[..(usize::from(size) + 3)]).await.ok();
-                                    }
-                                    Err(_) => {
-                                        data[0] = Response::Fail.into();
-                                        self.write_ep.write(&data[..3]).await.ok();
-                                    }
-                                }
-                            }
-                            Opcode::Write => {
-                                debug!("Write {} bytes", size);
-
-                                let result = self.bus.blocking_write(&data[3..(usize::from(size) + 3)]);
-
-                                if result.is_ok() {
-                                    data[0] = Response::Success.into();
-                                } else {
-                                    data[0] = Response::Fail.into();
-                                }
-
-                                self.write_ep.write(&data[..3]).await.ok();
-                            }
-                            Opcode::Transfer => {
-                                debug!("Transfer {} bytes", size);
-
-                                let mut read = [0; 512];
-
-                                read[1] = data[1];
-                                read[2] = data[2];
-
-                                // TODO: make sure transfer size is less than 508.
-
-                                let result = self.bus.blocking_transfer(&mut read, &data[3..(usize::from(size) + 3)]);
-                                match result {
-                                    Ok(()) => {
-                                        read[0] = Response::Success.into();
-                                        self.write_ep.write(&read[..(usize::from(size) + 3)]).await.ok();
-                                    }
-                                    Err(_) => {
-                                        read[0] = Response::Fail.into();
-                                        self.write_ep.write(&read[..3]).await.ok();
+                                    if result.is_ok() {
+                                        response.status = Status::Success;
+                                        response.size = Some(request.size);
+                                        response.data = Some(&self.spi_buf[..usize::from(request.size)]);
                                     }
                                 }
-                            }
-                            Opcode::TransferInPlace => {
-                                debug!("Transfer in place {} bytes", size);
+                                Opcode::Write => {
+                                    if request.data.is_some() {
+                                        let result = self.bus.blocking_write(request.data.unwrap());
 
-                                let result = self
-                                    .bus
-                                    .blocking_transfer_in_place(&mut data[3..(usize::from(size) + 3)]);
-                                match result {
-                                    Ok(()) => {
-                                        data[0] = Response::Success.into();
-                                        self.write_ep.write(&data[..(usize::from(size) + 3)]).await.ok();
-                                    }
-                                    Err(_) => {
-                                        data[0] = Response::Fail.into();
-                                        self.write_ep.write(&data[..3]).await.ok();
+                                        if result.is_ok() {
+                                            response.status = Status::Success;
+                                        }
                                     }
                                 }
-                            }
-                            Opcode::Flush => {
-                                debug!("Flush");
+                                Opcode::Transfer => {
+                                    if request.data.is_some() {
+                                        let result =
+                                            self.bus.blocking_transfer(&mut self.spi_buf, request.data.unwrap());
 
-                                let result = self.bus.flush();
-
-                                match result {
-                                    Ok(()) => {
-                                        self.write_ep.write(&[Response::Success.into()]).await.ok();
-                                    }
-                                    Err(_) => {
-                                        self.write_ep.write(&[Response::Fail.into()]).await.ok();
+                                        if result.is_ok() {
+                                            response.status = Status::Success;
+                                            response.size = Some(request.size);
+                                            response.data = Some(&self.spi_buf);
+                                        }
                                     }
                                 }
-                            }
-                            Opcode::Invalid => {
-                                trace!("Invalid opcode");
-                                data[0] = Response::InvalidOpcode.into();
-                                self.write_ep.write(&data[..3]).await.ok();
+                                Opcode::TransferInPlace => {
+                                    if request.data.is_some() {
+                                        self.spi_buf.copy_from_slice(request.data.unwrap());
+                                        let result = self.bus.blocking_transfer_in_place(&mut self.spi_buf);
+
+                                        if result.is_ok() {
+                                            response.status = Status::Success;
+                                            response.size = Some(request.size);
+                                            response.data = Some(&self.spi_buf);
+                                        }
+                                    }
+                                }
+                                Opcode::Flush => {
+                                    let result = self.bus.flush();
+
+                                    if result.is_ok() {
+                                        response.status = Status::Success;
+                                    }
+                                }
+                                Opcode::Invalid => {
+                                    response.status = Status::InvalidOpcode;
+                                }
                             }
                         }
+
+                        debug!("{:?}", response);
+                        let output = to_slice(&response, &mut self.tx_buf).unwrap();
+                        self.write_ep.write(&output).await.ok();
                     }
-                    Err(_) => break,
+                    Err(e) => {
+                        error!("Unable to receive request: '{}'", e);
+                        break;
+                    }
                 }
             }
             debug!("SPI Disconnected");
