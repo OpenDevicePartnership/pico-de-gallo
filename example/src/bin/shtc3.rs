@@ -13,10 +13,10 @@ fn main() -> Result<()> {
     let humidity = sht.measure_humidity(PowerMode::NormalMode, &mut delay).unwrap();
     let combined = sht.measure(PowerMode::NormalMode, &mut delay).unwrap();
 
-    println!("Temperature: {} °C", temperature.as_degrees_celsius());
+    println!("Temperature: {} Â°C", temperature.as_degrees_celsius());
     println!("Humidity: {} %RH", humidity.as_percent());
     println!(
-        "Combined: {} °C / {} %RH",
+        "Combined: {} Â°C / {} %RH",
         combined.temperature.as_degrees_celsius(),
         combined.humidity.as_percent()
     );
