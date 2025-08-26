@@ -11,9 +11,11 @@ use embassy_usb::{Builder, Config, Handler};
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
+mod gpio;
 mod i2c;
 mod spi;
 
+use gpio::{Gpio, gpio_task};
 use i2c::{I2c, i2c_task};
 use spi::{Spi, spi_task};
 
@@ -75,10 +77,10 @@ async fn main(spawner: Spawner) {
 
     let i2c_str = builder.string();
     let spi_str = builder.string();
-    let handler = STRING_HANDLER.init(StringHandler::new(i2c_str, spi_str));
+    let gpio_str = builder.string();
+    let handler = STRING_HANDLER.init(StringHandler::new(i2c_str, spi_str, gpio_str));
 
-    // Add a vendor-specific function (class 0xff), and corresponding interface,
-    // that uses our custom handler.
+    // I2C
     let mut function = builder.function(0xff, 0xff, 0xff);
 
     function.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
@@ -87,7 +89,6 @@ async fn main(spawner: Spawner) {
         msos::PropertyData::RegMultiSz(DEVICE_INTERFACE_GUIDS),
     ));
 
-    // I2C
     let mut interface = function.interface();
     let mut alt = interface.alt_setting(0xff, 0xff, 0xff, Some(i2c_str));
     let read_ep = alt.endpoint_bulk_out(None, 64);
@@ -97,8 +98,7 @@ async fn main(spawner: Spawner) {
 
     drop(function);
 
-    // Add a vendor-specific function (class 0xff), and corresponding interface,
-    // that uses our custom handler.
+    // SPI
     let mut function = builder.function(0xff, 0xff, 0xff);
 
     function.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
@@ -107,9 +107,8 @@ async fn main(spawner: Spawner) {
         msos::PropertyData::RegMultiSz(DEVICE_INTERFACE_GUIDS),
     ));
 
-    // SPI
     let mut interface = function.interface();
-    let mut alt = interface.alt_setting(0xff, 0xff, 0xff, Some(spi_str));
+    let mut alt = interface.alt_setting(0xff, 0xff, 0xff, Some(gpio_str));
     let read_ep = alt.endpoint_bulk_out(None, 64);
     let write_ep = alt.endpoint_bulk_in(None, 64);
     let spi_bus = embassy_rp::spi::Spi::new(
@@ -125,6 +124,35 @@ async fn main(spawner: Spawner) {
 
     drop(function);
 
+    // GPIO
+    let mut function = builder.function(0xff, 0xff, 0xff);
+
+    function.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
+    function.msos_feature(msos::RegistryPropertyFeatureDescriptor::new(
+        "DeviceInterfaceGUIDs",
+        msos::PropertyData::RegMultiSz(DEVICE_INTERFACE_GUIDS),
+    ));
+
+    let mut interface = function.interface();
+    let mut alt = interface.alt_setting(0xff, 0xff, 0xff, Some(spi_str));
+    let read_ep = alt.endpoint_bulk_out(None, 64);
+    let write_ep = alt.endpoint_bulk_in(None, 64);
+    let gpio8 = embassy_rp::gpio::Flex::new(p.PIN_8);
+    let gpio9 = embassy_rp::gpio::Flex::new(p.PIN_9);
+    let gpio10 = embassy_rp::gpio::Flex::new(p.PIN_10);
+    let gpio11 = embassy_rp::gpio::Flex::new(p.PIN_11);
+    let gpio12 = embassy_rp::gpio::Flex::new(p.PIN_12);
+    let gpio13 = embassy_rp::gpio::Flex::new(p.PIN_13);
+    let gpio14 = embassy_rp::gpio::Flex::new(p.PIN_14);
+    let gpio15 = embassy_rp::gpio::Flex::new(p.PIN_15);
+    let gpio = Gpio::new(
+        [gpio8, gpio9, gpio10, gpio11, gpio12, gpio13, gpio14, gpio15],
+        read_ep,
+        write_ep,
+    );
+
+    drop(function);
+
     builder.handler(handler);
 
     // Build the builder.
@@ -132,6 +160,7 @@ async fn main(spawner: Spawner) {
 
     spawner.must_spawn(i2c_task(i2c));
     spawner.must_spawn(spi_task(spi));
+    spawner.must_spawn(gpio_task(gpio));
 
     loop {
         usb.run().await;
@@ -141,11 +170,16 @@ async fn main(spawner: Spawner) {
 struct StringHandler {
     i2c_str: StringIndex,
     spi_str: StringIndex,
+    gpio_str: StringIndex,
 }
 
 impl StringHandler {
-    fn new(i2c_str: StringIndex, spi_str: StringIndex) -> Self {
-        Self { i2c_str, spi_str }
+    fn new(i2c_str: StringIndex, spi_str: StringIndex, gpio_str: StringIndex) -> Self {
+        Self {
+            i2c_str,
+            spi_str,
+            gpio_str,
+        }
     }
 }
 
@@ -155,6 +189,8 @@ impl Handler for StringHandler {
             Some("Pico de Gallo I2C Interface")
         } else if index == self.spi_str {
             Some("Pico de Gallo SPI Interface")
+        } else if index == self.gpio_str {
+            Some("Pico de Gallo GPIO Interface")
         } else {
             warn!("Unknown string index requested");
             None
