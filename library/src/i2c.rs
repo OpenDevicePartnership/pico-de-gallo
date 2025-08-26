@@ -3,25 +3,48 @@ use embedded_hal::i2c::{self, SevenBitAddress};
 use nusb::Interface;
 use nusb::io::{EndpointRead, EndpointWrite};
 use nusb::transfer::{Bulk, In, Out};
+use postcard::{from_bytes, to_stdvec};
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+
+const USB_BUFFER_LENGTH: usize = 512;
 
 pub(crate) struct I2c {
     writer: EndpointWrite<Bulk>,
     reader: EndpointRead<Bulk>,
 }
 
-#[repr(u8)]
-pub enum Response {
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub enum Opcode {
+    Read = 0,
+    Write = 1,
+    Invalid = 255,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub enum Status {
     Success = 0,
     NoAcknowledge = 1,
     ArbitrationLoss = 2,
-    TxNotEmpty = 3,
-    InvalidReadBufferLength = 4,
-    InvalidWriteBufferLength = 5,
-    AddressOutOfRange = 6,
 
     InvalidOpcode = 254,
     Other = 255,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub struct Request<'a> {
+    pub opcode: Opcode,
+    pub address: u8,
+    pub size: u8,
+    pub data: Option<&'a [u8]>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub struct Response<'a> {
+    pub status: Status,
+    pub address: Option<u8>,
+    pub size: Option<u8>,
+    pub data: Option<&'a [u8]>,
 }
 
 #[derive(Clone, Debug)]
@@ -29,33 +52,6 @@ pub enum I2cError {
     NoAcknowledge,
     ArbitrationLoss,
     Other,
-}
-
-impl Response {
-    fn into_result(self) -> Result<()> {
-        match self {
-            Response::Success => Ok(()),
-            Response::NoAcknowledge => Err(Error::I2c(I2cError::NoAcknowledge)),
-            Response::ArbitrationLoss => Err(Error::I2c(I2cError::ArbitrationLoss)),
-            _ => Err(Error::I2c(I2cError::Other)),
-        }
-    }
-}
-
-impl From<u8> for Response {
-    fn from(value: u8) -> Self {
-        match value {
-            0 => Response::Success,
-            1 => Response::NoAcknowledge,
-            2 => Response::ArbitrationLoss,
-            3 => Response::TxNotEmpty,
-            4 => Response::InvalidReadBufferLength,
-            5 => Response::InvalidWriteBufferLength,
-            6 => Response::AddressOutOfRange,
-            7 => Response::InvalidOpcode,
-            _ => Response::Other,
-        }
-    }
 }
 
 impl I2c {
@@ -73,47 +69,60 @@ impl I2c {
     }
 
     /// I2c blocking read
-    pub(crate) fn blocking_read(&mut self, addr: u8, buf: &mut [u8]) -> Result<()> {
-        let size = buf.len().to_le_bytes();
+    pub(crate) fn blocking_read(&mut self, address: u8, buf: &mut [u8]) -> Result<()> {
+        let size = buf.len();
 
-        let cmd = [0x00, addr, size[0], size[1]];
+        let request = Request {
+            opcode: Opcode::Read,
+            address,
+            size: size as u8,
+            data: None,
+        };
 
-        self.writer.write_all(&cmd).map_err(|_| Error::Io)?;
+        let output: Vec<u8> = to_stdvec(&request).unwrap();
+
+        self.writer.write_all(&output).map_err(|_| Error::Io)?;
         self.writer.flush().map_err(|_| Error::Io)?;
 
-        let mut response = vec![0; 4 + buf.len()];
+        let mut rx_buf = vec![0; USB_BUFFER_LENGTH];
+        let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
-        let size = self
-            .reader
-            .read(&mut response[..(4 + buf.len())])
-            .map_err(|_| Error::Io)?;
+        let response: Response = from_bytes(&rx_buf[..size]).unwrap();
 
-        let response_code: Response = response[0].into();
-        response_code.into_result()?;
-
-        if size > 4 {
-            buf.copy_from_slice(&response[4..size]);
+        if response.status != Status::Success {
+            eprintln!("Read failed!");
+        } else {
+            let data = response.data.unwrap();
+            buf.copy_from_slice(data);
         }
 
         Ok(())
     }
 
     /// I2c blocking write
-    pub(crate) fn blocking_write(&mut self, addr: u8, buf: &[u8]) -> Result<()> {
-        let size = buf.len().to_le_bytes();
+    pub(crate) fn blocking_write(&mut self, address: u8, buf: &[u8]) -> Result<()> {
+        let size = buf.len();
 
-        let mut cmd = vec![0x01, addr, size[0], size[1]];
-        cmd.extend_from_slice(buf);
+        let request = Request {
+            opcode: Opcode::Write,
+            address,
+            size: size as u8,
+            data: Some(buf),
+        };
 
-        self.writer.write_all(&cmd).map_err(|_| Error::Io)?;
+        let output: Vec<u8> = to_stdvec(&request).unwrap();
+
+        self.writer.write_all(&output).map_err(|_| Error::Io)?;
         self.writer.flush().map_err(|_| Error::Io)?;
 
-        let mut response = [0; 512];
+        let mut rx_buf = vec![0; USB_BUFFER_LENGTH];
+        let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
-        let response_code: Response = response[0].into();
-        response_code.into_result()?;
+        let response: Response = from_bytes(&rx_buf[..size]).unwrap();
 
-        self.reader.read(&mut response).map_err(|_| Error::Io)?;
+        if response.status != Status::Success {
+            eprintln!("Write failed");
+        }
 
         Ok(())
     }
