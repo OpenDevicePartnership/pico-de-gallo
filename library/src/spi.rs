@@ -3,7 +3,43 @@ use embedded_hal::spi;
 use nusb::Interface;
 use nusb::io::{EndpointRead, EndpointWrite};
 use nusb::transfer::{Bulk, In, Out};
+use postcard::{from_bytes, to_stdvec};
+use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
+
+const USB_BUFFER_SIZE: usize = 1024;
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub enum Opcode {
+    Read = 0,
+    Write = 1,
+    Transfer = 2,
+    TransferInPlace = 3,
+    Flush = 4,
+    Invalid = 254,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+pub enum Status {
+    Success = 0,
+
+    InvalidOpcode = 254,
+    Other = 255,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+struct Request<'a> {
+    opcode: Opcode,
+    size: u8,
+    data: Option<&'a [u8]>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+struct Response<'a> {
+    status: Status,
+    size: Option<u8>,
+    data: Option<&'a [u8]>,
+}
 
 #[allow(unused)]
 pub(crate) struct Spi {
@@ -27,39 +63,122 @@ impl Spi {
 
     /// SPI blocking read
     pub(crate) fn blocking_read(&mut self, words: &mut [u8]) -> Result<()> {
-        let size = words.len().to_le_bytes();
-        let cmd = [0x00, size[0], size[1]];
+        let size = words.len();
 
-        self.writer.write_all(&cmd).map_err(|_| Error::Io)?;
+        let request = Request {
+            opcode: Opcode::Read,
+            size: size as u8,
+            data: None,
+        };
+
+        let output: Vec<u8> = to_stdvec(&request).unwrap();
+
+        self.writer.write_all(&output).map_err(|_| Error::Io)?;
         self.writer.flush().map_err(|_| Error::Io)?;
 
-        let mut response = vec![0; 3 + words.len()];
+        let mut rx_buf = vec![0; USB_BUFFER_SIZE];
+        let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
-        let size = self
-            .reader
-            .read(&mut response[..(3 + words.len())])
-            .map_err(|_| Error::Io)?;
+        let response: Response = from_bytes(&rx_buf[..size]).unwrap();
 
-        if size > 3 {
-            words.copy_from_slice(&response[3..size]);
+        if response.status != Status::Success {
+            eprintln!("Read failed!");
+        } else {
+            let data = response.data.unwrap();
+            words.copy_from_slice(data);
         }
 
         Ok(())
     }
 
     /// SPI blocking write
-    pub(crate) fn blocking_write(&mut self, _words: &[u8]) -> Result<()> {
-        todo!()
+    pub(crate) fn blocking_write(&mut self, words: &[u8]) -> Result<()> {
+        let size = words.len();
+
+        let request = Request {
+            opcode: Opcode::Write,
+            size: size as u8,
+            data: Some(words),
+        };
+
+        let output: Vec<u8> = to_stdvec(&request).unwrap();
+
+        self.writer.write_all(&output).map_err(|_| Error::Io)?;
+        self.writer.flush().map_err(|_| Error::Io)?;
+
+        let mut rx_buf = vec![0; USB_BUFFER_SIZE];
+        let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
+
+        let response: Response = from_bytes(&rx_buf[..size]).unwrap();
+
+        if response.status != Status::Success {
+            eprintln!("Write failed!");
+        }
+
+        Ok(())
     }
 
     /// SPI blocking transfer
-    pub(crate) fn blocking_transfer(&mut self, _read: &mut [u8], _write: &[u8]) -> Result<()> {
-        todo!()
+    pub(crate) fn blocking_transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<()> {
+        let size = write.len();
+
+        let request = Request {
+            opcode: Opcode::Transfer,
+            size: size as u8,
+            data: Some(write),
+        };
+
+        let output: Vec<u8> = to_stdvec(&request).unwrap();
+
+        self.writer.write_all(&output).map_err(|_| Error::Io)?;
+        self.writer.flush().map_err(|_| Error::Io)?;
+
+        let mut rx_buf = vec![0; USB_BUFFER_SIZE];
+        let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
+
+        let response: Response = from_bytes(&rx_buf[..size]).unwrap();
+
+        if response.status != Status::Success {
+            eprintln!("Read failed!");
+        } else {
+            let data = response.data.unwrap();
+            read.copy_from_slice(data);
+        }
+
+        Ok(())
     }
 
     /// SPI blocking transfer in place
-    pub fn blocking_transfer_in_place(&mut self, _words: &mut [u8]) -> Result<()> {
-        todo!()
+    pub fn blocking_transfer_in_place(&mut self, words: &mut [u8]) -> Result<()> {
+        let mut buf = vec![0; words.len()];
+        self.blocking_transfer(&mut buf, words).map_err(|_| Error::Io)?;
+        words.copy_from_slice(&buf);
+        Ok(())
+    }
+
+    /// SPI blocking flush
+    pub fn blocking_flush(&mut self) -> Result<()> {
+        let request = Request {
+            opcode: Opcode::Flush,
+            size: 0,
+            data: None,
+        };
+
+        let output: Vec<u8> = to_stdvec(&request).unwrap();
+
+        self.writer.write_all(&output).map_err(|_| Error::Io)?;
+        self.writer.flush().map_err(|_| Error::Io)?;
+
+        let mut rx_buf = vec![0; USB_BUFFER_SIZE];
+        let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
+
+        let response: Response = from_bytes(&rx_buf[..size]).unwrap();
+
+        if response.status != Status::Success {
+            eprintln!("Flush failed!");
+        }
+
+        Ok(())
     }
 }
 
@@ -76,23 +195,23 @@ impl spi::ErrorType for PicoDeGallo {
 }
 
 impl spi::SpiBus for PicoDeGallo {
-    fn read(&mut self, _words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        todo!()
+    fn read(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
+        self.spi_blocking_read(words)
     }
 
-    fn write(&mut self, _words: &[u8]) -> std::result::Result<(), Self::Error> {
-        todo!()
+    fn write(&mut self, words: &[u8]) -> std::result::Result<(), Self::Error> {
+        self.spi_blocking_write(words)
     }
 
-    fn transfer(&mut self, _read: &mut [u8], _write: &[u8]) -> std::result::Result<(), Self::Error> {
-        todo!()
+    fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> std::result::Result<(), Self::Error> {
+        self.spi_blocking_transfer(read, write)
     }
 
-    fn transfer_in_place(&mut self, _words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        todo!()
+    fn transfer_in_place(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
+        self.spi_blocking_transfer_in_place(words)
     }
 
     fn flush(&mut self) -> std::result::Result<(), Self::Error> {
-        todo!()
+        self.spi_blocking_flush()
     }
 }

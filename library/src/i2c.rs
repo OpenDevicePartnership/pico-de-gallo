@@ -7,7 +7,7 @@ use postcard::{from_bytes, to_stdvec};
 use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
-const USB_BUFFER_LENGTH: usize = 512;
+const USB_BUFFER_SIZE: usize = 1024;
 
 pub(crate) struct I2c {
     writer: EndpointWrite<Bulk>,
@@ -84,7 +84,7 @@ impl I2c {
         self.writer.write_all(&output).map_err(|_| Error::Io)?;
         self.writer.flush().map_err(|_| Error::Io)?;
 
-        let mut rx_buf = vec![0; USB_BUFFER_LENGTH];
+        let mut rx_buf = vec![0; USB_BUFFER_SIZE];
         let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
         let response: Response = from_bytes(&rx_buf[..size]).unwrap();
@@ -115,7 +115,7 @@ impl I2c {
         self.writer.write_all(&output).map_err(|_| Error::Io)?;
         self.writer.flush().map_err(|_| Error::Io)?;
 
-        let mut rx_buf = vec![0; USB_BUFFER_LENGTH];
+        let mut rx_buf = vec![0; USB_BUFFER_SIZE];
         let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
         let response: Response = from_bytes(&rx_buf[..size]).unwrap();

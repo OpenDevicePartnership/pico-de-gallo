@@ -28,6 +28,13 @@ enum Commands {
         #[command(subcommand)]
         command: Option<I2cCommands>,
     },
+
+    /// SPI accessor
+    Spi {
+        /// SPI commands
+        #[command(subcommand)]
+        command: Option<SpiCommands>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -58,6 +65,34 @@ enum I2cCommands {
     },
 }
 
+#[derive(Subcommand, Debug)]
+enum SpiCommands {
+    /// Read
+    Read {
+        /// Number of bytes to read
+        #[arg(short, long)]
+        count: usize,
+    },
+
+    /// Write
+    Write {
+        /// Bytes to transfer
+        #[arg(short, long, num_args(1..), value_parser(parse_byte))]
+        bytes: Vec<u8>,
+    },
+
+    /// Write followed by read.
+    WriteRead {
+        /// Number of bytes to read
+        #[arg(short, long)]
+        count: usize,
+
+        /// Bytes to transfer
+        #[arg(short, long, num_args(1..), value_parser(parse_byte))]
+        bytes: Vec<u8>,
+    },
+}
+
 impl Cli {
     pub fn run(&self) -> Result<()> {
         let mut pg = PicoDeGallo::new()?;
@@ -66,14 +101,22 @@ impl Cli {
             None => Ok(()),
             Some(Commands::I2c { address, command }) => match command {
                 None => Ok(()),
-                Some(I2cCommands::Read { count }) => self.read(&mut pg, address, count),
-                Some(I2cCommands::Write { bytes }) => self.write(&mut pg, address, bytes),
-                Some(I2cCommands::WriteRead { bytes, count }) => self.write_then_read(&mut pg, address, bytes, count),
+                Some(I2cCommands::Read { count }) => self.i2c_read(&mut pg, address, count),
+                Some(I2cCommands::Write { bytes }) => self.i2c_write(&mut pg, address, bytes),
+                Some(I2cCommands::WriteRead { bytes, count }) => {
+                    self.i2c_write_then_read(&mut pg, address, bytes, count)
+                }
+            },
+            Some(Commands::Spi { command }) => match command {
+                None => Ok(()),
+                Some(SpiCommands::Read { count }) => self.spi_read(&mut pg, count),
+                Some(SpiCommands::Write { bytes }) => self.spi_write(&mut pg, bytes),
+                Some(SpiCommands::WriteRead { count, bytes }) => self.spi_write_then_read(&mut pg, bytes, count),
             },
         }
     }
 
-    fn read(&self, pg: &mut PicoDeGallo, address: &u8, count: &usize) -> Result<()> {
+    fn i2c_read(&self, pg: &mut PicoDeGallo, address: &u8, count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
         pg.i2c_blocking_read(*address, &mut buf)?;
 
@@ -90,14 +133,53 @@ impl Cli {
         Ok(())
     }
 
-    fn write(&self, pg: &mut PicoDeGallo, address: &u8, bytes: &[u8]) -> Result<()> {
+    fn i2c_write(&self, pg: &mut PicoDeGallo, address: &u8, bytes: &[u8]) -> Result<()> {
         pg.i2c_blocking_write(*address, bytes)?;
         Ok(())
     }
 
-    fn write_then_read(&self, pg: &mut PicoDeGallo, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
-        self.write(pg, address, bytes)?;
-        self.read(pg, address, count)
+    fn i2c_write_then_read(&self, pg: &mut PicoDeGallo, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
+        self.i2c_write(pg, address, bytes)?;
+        self.i2c_read(pg, address, count)
+    }
+
+    fn spi_read(&self, pg: &mut PicoDeGallo, count: &usize) -> Result<()> {
+        let mut buf = vec![0; *count];
+        pg.spi_blocking_read(&mut buf)?;
+
+        for (i, b) in buf.iter().enumerate() {
+            if i > 0 && i % 16 == 0 {
+                print!("\n");
+            }
+
+            print!("{:02x} ", b);
+        }
+
+        print!("\n");
+
+        Ok(())
+    }
+
+    fn spi_write(&self, pg: &mut PicoDeGallo, bytes: &[u8]) -> Result<()> {
+        pg.spi_blocking_write(bytes)?;
+        Ok(())
+    }
+
+    fn spi_write_then_read(&self, pg: &mut PicoDeGallo, bytes: &[u8], count: &usize) -> Result<()> {
+        let mut buf = vec![0; *count];
+        pg.spi_blocking_transfer(&mut buf, bytes)?;
+
+        for (i, b) in buf.iter().enumerate() {
+            if i > 0 && i % 16 == 0 {
+                print!("\n");
+            }
+
+            print!("{:02x} ", b);
+        }
+
+        print!("\n");
+
+        Ok(())
     }
 }
 

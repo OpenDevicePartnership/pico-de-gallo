@@ -90,4 +90,9 @@ impl PicoDeGallo {
     pub fn spi_blocking_transfer_in_place(&mut self, words: &mut [u8]) -> Result<()> {
         self.spi.blocking_transfer_in_place(words)
     }
+
+    /// SPI blocking flush
+    pub fn spi_blocking_flush(&mut self) -> Result<()> {
+        self.spi.blocking_flush()
+    }
 }
