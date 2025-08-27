@@ -747,6 +747,380 @@
 			)
 			(embedded_fonts no)
 		)
+		(symbol "Connector_Generic:Conn_02x05_Odd_Even"
+			(pin_names
+				(offset 1.016)
+				(hide yes)
+			)
+			(exclude_from_sim no)
+			(in_bom yes)
+			(on_board yes)
+			(property "Reference" "J"
+				(at 1.27 7.62 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Value" "Conn_02x05_Odd_Even"
+				(at 1.27 -7.62 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+				)
+			)
+			(property "Footprint" ""
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Datasheet" "~"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "Description" "Generic connector, double row, 02x05, odd/even pin numbering scheme (row 1 odd numbers, row 2 even numbers), script generated (kicad-library-utils/schlib/autogen/connector/)"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_keywords" "connector"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(property "ki_fp_filters" "Connector*:*_2x??_*"
+				(at 0 0 0)
+				(effects
+					(font
+						(size 1.27 1.27)
+					)
+					(hide yes)
+				)
+			)
+			(symbol "Conn_02x05_Odd_Even_1_1"
+				(rectangle
+					(start -1.27 6.35)
+					(end 3.81 -6.35)
+					(stroke
+						(width 0.254)
+						(type default)
+					)
+					(fill
+						(type background)
+					)
+				)
+				(rectangle
+					(start -1.27 5.207)
+					(end 0 4.953)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start -1.27 2.667)
+					(end 0 2.413)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start -1.27 0.127)
+					(end 0 -0.127)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start -1.27 -2.413)
+					(end 0 -2.667)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start -1.27 -4.953)
+					(end 0 -5.207)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 3.81 5.207)
+					(end 2.54 4.953)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 3.81 2.667)
+					(end 2.54 2.413)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 3.81 0.127)
+					(end 2.54 -0.127)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 3.81 -2.413)
+					(end 2.54 -2.667)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(rectangle
+					(start 3.81 -4.953)
+					(end 2.54 -5.207)
+					(stroke
+						(width 0.1524)
+						(type default)
+					)
+					(fill
+						(type none)
+					)
+				)
+				(pin passive line
+					(at -5.08 5.08 0)
+					(length 3.81)
+					(name "Pin_1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "1"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 2.54 0)
+					(length 3.81)
+					(name "Pin_3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "3"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 0 0)
+					(length 3.81)
+					(name "Pin_5"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "5"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 -2.54 0)
+					(length 3.81)
+					(name "Pin_7"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "7"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at -5.08 -5.08 0)
+					(length 3.81)
+					(name "Pin_9"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "9"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 7.62 5.08 180)
+					(length 3.81)
+					(name "Pin_2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "2"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 7.62 2.54 180)
+					(length 3.81)
+					(name "Pin_4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "4"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 7.62 0 180)
+					(length 3.81)
+					(name "Pin_6"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "6"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 7.62 -2.54 180)
+					(length 3.81)
+					(name "Pin_8"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "8"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+				(pin passive line
+					(at 7.62 -5.08 180)
+					(length 3.81)
+					(name "Pin_10"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+					(number "10"
+						(effects
+							(font
+								(size 1.27 1.27)
+							)
+						)
+					)
+				)
+			)
+			(embedded_fonts no)
+		)
 		(symbol "Connector_Generic:Conn_02x08_Odd_Even"
 			(pin_names
 				(offset 1.016)
@@ -2664,12 +3038,20 @@
 		(uuid "76c188b5-71b1-40b6-9236-4c326db787ed")
 	)
 	(no_connect
+		(at 242.57 78.74)
+		(uuid "82b708d2-1735-48ae-881a-9a27917e09eb")
+	)
+	(no_connect
 		(at 168.91 92.71)
 		(uuid "99c41938-6fcd-4eb7-b73c-6e85528510d8")
 	)
 	(no_connect
 		(at 123.19 92.71)
 		(uuid "a302c126-3b14-46ac-968a-30f9e1bb7159")
+	)
+	(no_connect
+		(at 242.57 81.28)
+		(uuid "aebaf7a7-4fde-47a4-a569-f187c1f2f490")
 	)
 	(no_connect
 		(at 123.19 74.93)
@@ -2741,6 +3123,16 @@
 	)
 	(wire
 		(pts
+			(xy 254 86.36) (xy 242.57 86.36)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "4cddb7c8-ba8d-409d-aa34-2aa9081fc587")
+	)
+	(wire
+		(pts
 			(xy 151.13 52.07) (xy 151.13 57.15)
 		)
 		(stroke
@@ -2758,6 +3150,16 @@
 			(type default)
 		)
 		(uuid "796e60fa-7090-4f7d-9a49-af91fad2fa55")
+	)
+	(wire
+		(pts
+			(xy 254 76.2) (xy 242.57 76.2)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "7be96874-92cc-45ef-9283-6db5944e28dd")
 	)
 	(wire
 		(pts
@@ -2839,7 +3241,7 @@
 		)
 		(uuid "eb72d4b2-1ebd-44e7-937a-aad69158ca1e")
 	)
-	(label "GPIO9"
+	(label "GPIO1"
 		(at 113.03 102.87 0)
 		(effects
 			(font
@@ -2899,7 +3301,7 @@
 		)
 		(uuid "327bbd81-ec3d-4e69-b882-1be8da713008")
 	)
-	(label "GPIO13"
+	(label "GPIO5"
 		(at 113.03 113.03 0)
 		(effects
 			(font
@@ -2920,6 +3322,16 @@
 		(uuid "3c452b80-3f03-44ba-ba18-094eed618c13")
 	)
 	(label "MOSI"
+		(at 242.57 83.82 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "3cfde41d-285a-440e-8457-552f3ca68094")
+	)
+	(label "MOSI"
 		(at 231.14 58.42 180)
 		(effects
 			(font
@@ -2929,7 +3341,7 @@
 		)
 		(uuid "3e275b05-fab7-4544-a463-0e8bef56b1e6")
 	)
-	(label "GPIO15"
+	(label "GPIO7"
 		(at 113.03 118.11 0)
 		(effects
 			(font
@@ -2959,7 +3371,7 @@
 		)
 		(uuid "45bc5cdd-e223-4459-98ca-0e39f28e2995")
 	)
-	(label "GPIO10"
+	(label "GPIO2"
 		(at 96.52 105.41 180)
 		(effects
 			(font
@@ -2979,7 +3391,7 @@
 		)
 		(uuid "5c05c14e-5fa9-426f-8ad6-b3a1f2cb8474")
 	)
-	(label "GPIO9"
+	(label "GPIO1"
 		(at 96.52 102.87 180)
 		(effects
 			(font
@@ -2999,7 +3411,7 @@
 		)
 		(uuid "654be2f2-f585-43ae-bf4f-0d4fc9f0afdc")
 	)
-	(label "GPIO14"
+	(label "GPIO6"
 		(at 113.03 115.57 0)
 		(effects
 			(font
@@ -3009,7 +3421,7 @@
 		)
 		(uuid "65b07372-ea0a-496f-98cf-dce40f9da2f9")
 	)
-	(label "GPIO11"
+	(label "GPIO3"
 		(at 113.03 107.95 0)
 		(effects
 			(font
@@ -3018,6 +3430,16 @@
 			(justify left bottom)
 		)
 		(uuid "6aaed603-23ba-4459-a7ea-b15341a0baf0")
+	)
+	(label "GPIO0"
+		(at 229.87 86.36 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "7056367e-453a-40a1-94e6-a7a232c83e32")
 	)
 	(label "MOSI"
 		(at 194.31 81.28 180)
@@ -3039,7 +3461,7 @@
 		)
 		(uuid "7ff6258f-f80d-4bc0-b1b3-54aa12b73cb9")
 	)
-	(label "GPIO11"
+	(label "GPIO3"
 		(at 96.52 107.95 180)
 		(effects
 			(font
@@ -3049,7 +3471,7 @@
 		)
 		(uuid "8a64d8cd-e2ca-4cc8-94e8-2c90ff41b04f")
 	)
-	(label "GPIO14"
+	(label "GPIO6"
 		(at 96.52 115.57 180)
 		(effects
 			(font
@@ -3079,6 +3501,16 @@
 		)
 		(uuid "a14d25a3-8ec2-4376-b8fa-7ca58286daf9")
 	)
+	(label "SDA"
+		(at 229.87 78.74 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "a33561b1-b304-460b-869a-315fe468f73a")
+	)
 	(label "GND"
 		(at 194.31 71.12 180)
 		(effects
@@ -3099,7 +3531,7 @@
 		)
 		(uuid "a5177f6d-aed7-4b43-9fe7-cf869f43d6fd")
 	)
-	(label "GPIO13"
+	(label "GPIO5"
 		(at 96.52 113.03 180)
 		(effects
 			(font
@@ -3119,7 +3551,7 @@
 		)
 		(uuid "c0223279-94ea-4e74-b323-66c73247532c")
 	)
-	(label "GPIO8"
+	(label "GPIO0"
 		(at 113.03 100.33 0)
 		(effects
 			(font
@@ -3129,7 +3561,17 @@
 		)
 		(uuid "c28a65f2-1ebc-475b-b1e2-daddaad1d417")
 	)
-	(label "GPIO8"
+	(label "SCL"
+		(at 229.87 76.2 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "c37dbde6-9e93-47ee-8684-3bd4a8fa973b")
+	)
+	(label "GPIO0"
 		(at 96.52 100.33 180)
 		(effects
 			(font
@@ -3139,7 +3581,7 @@
 		)
 		(uuid "d1c869d7-f9e9-434a-8c6c-86d164bf9229")
 	)
-	(label "GPIO10"
+	(label "GPIO2"
 		(at 113.03 105.41 0)
 		(effects
 			(font
@@ -3159,7 +3601,7 @@
 		)
 		(uuid "e8106d22-3d5b-44be-872a-b1744c01f01d")
 	)
-	(label "GPIO15"
+	(label "GPIO7"
 		(at 96.52 118.11 180)
 		(effects
 			(font
@@ -3169,7 +3611,7 @@
 		)
 		(uuid "e8c372df-599b-486e-a2db-7e73a71cf430")
 	)
-	(label "GPIO12"
+	(label "GPIO4"
 		(at 96.52 110.49 180)
 		(effects
 			(font
@@ -3189,7 +3631,27 @@
 		)
 		(uuid "eae74c61-92bc-4099-9227-4690c1df2ece")
 	)
-	(label "GPIO12"
+	(label "CLK"
+		(at 229.87 83.82 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "ef937717-4ce4-4725-a869-6e7f52a4d8df")
+	)
+	(label "MISO"
+		(at 229.87 81.28 180)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify right bottom)
+		)
+		(uuid "f5804537-4145-4795-88f8-9c5732336258")
+	)
+	(label "GPIO4"
 		(at 113.03 110.49 0)
 		(effects
 			(font
@@ -4128,6 +4590,72 @@
 		)
 	)
 	(symbol
+		(lib_id "power:GND")
+		(at 254 76.2 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "987e7963-5b9e-496c-b47c-6b6076b28ac5")
+		(property "Reference" "#PWR05"
+			(at 254 82.55 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 254 81.28 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 254 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 254 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 254 76.2 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "70ccb1d3-e1d8-48e2-9d7e-edcbbed816af")
+		)
+		(instances
+			(project "pico-de-gallo"
+				(path "/409a2a34-92f9-4daa-b11b-cb64dd13f272"
+					(reference "#PWR05")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Mechanical:MountingHole")
 		(at 194.31 125.73 0)
 		(unit 1)
@@ -4258,6 +4786,98 @@
 		)
 	)
 	(symbol
+		(lib_id "Connector_Generic:Conn_02x05_Odd_Even")
+		(at 234.95 81.28 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "db5b2b72-5d71-4b83-94b9-b773c8126fe4")
+		(property "Reference" "J7"
+			(at 236.22 69.85 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "Conn_02x05_Odd_Even"
+			(at 236.22 72.39 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" "Connector_PinHeader_2.54mm:PinHeader_2x05_P2.54mm_Vertical_SMD"
+			(at 234.95 81.28 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 234.95 81.28 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Generic connector, double row, 02x05, odd/even pin numbering scheme (row 1 odd numbers, row 2 even numbers), script generated (kicad-library-utils/schlib/autogen/connector/)"
+			(at 234.95 81.28 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "c4dfc2fa-3b7d-4c12-9236-dc0a57e3f0c0")
+		)
+		(pin "3"
+			(uuid "4fd50c26-bdb4-4559-bc1d-25835c6bc167")
+		)
+		(pin "5"
+			(uuid "3247d034-02c6-4beb-a1ea-2891547f86f2")
+		)
+		(pin "6"
+			(uuid "33a5c4cb-5003-4202-be19-8b4101ba78d5")
+		)
+		(pin "8"
+			(uuid "018b09c6-ae41-472b-a392-ff5358f4a650")
+		)
+		(pin "7"
+			(uuid "9112f843-722d-4a81-b2a1-2d306ef49de7")
+		)
+		(pin "9"
+			(uuid "6b61e5f8-c99b-424e-bc48-a058dd15d3c7")
+		)
+		(pin "4"
+			(uuid "57c66d9c-1787-41a5-b66a-991c875ee1fc")
+		)
+		(pin "10"
+			(uuid "ff7fb047-9fb9-4298-a3d5-c4fbdbf9c73b")
+		)
+		(pin "2"
+			(uuid "220ee76b-8680-4d38-b2ba-fa65cf3f6e7f")
+		)
+		(instances
+			(project ""
+				(path "/409a2a34-92f9-4daa-b11b-cb64dd13f272"
+					(reference "J7")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
 		(lib_id "Mechanical:MountingHole")
 		(at 194.31 119.38 0)
 		(unit 1)
@@ -4316,6 +4936,72 @@
 			(project ""
 				(path "/409a2a34-92f9-4daa-b11b-cb64dd13f272"
 					(reference "H2")
+					(unit 1)
+				)
+			)
+		)
+	)
+	(symbol
+		(lib_id "power:GND")
+		(at 254 86.36 0)
+		(unit 1)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(dnp no)
+		(fields_autoplaced yes)
+		(uuid "e3514744-5d8f-498e-92f8-daed3b061640")
+		(property "Reference" "#PWR06"
+			(at 254 92.71 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Value" "GND"
+			(at 254 91.44 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 254 86.36 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" ""
+			(at 254 86.36 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Power symbol creates a global label with name \"GND\" , ground"
+			(at 254 86.36 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(pin "1"
+			(uuid "87995195-6d05-44d8-a3c6-f67ebf3f2633")
+		)
+		(instances
+			(project "pico-de-gallo"
+				(path "/409a2a34-92f9-4daa-b11b-cb64dd13f272"
+					(reference "#PWR06")
 					(unit 1)
 				)
 			)
