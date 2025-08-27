@@ -95,30 +95,28 @@ enum SpiCommands {
 
 impl Cli {
     pub fn run(&self) -> Result<()> {
-        let mut pg = PicoDeGallo::new()?;
-
         match &self.command {
             None => Ok(()),
             Some(Commands::I2c { address, command }) => match command {
                 None => Ok(()),
-                Some(I2cCommands::Read { count }) => self.i2c_read(&mut pg, address, count),
-                Some(I2cCommands::Write { bytes }) => self.i2c_write(&mut pg, address, bytes),
-                Some(I2cCommands::WriteRead { bytes, count }) => {
-                    self.i2c_write_then_read(&mut pg, address, bytes, count)
-                }
+                Some(I2cCommands::Read { count }) => self.i2c_read(address, count),
+                Some(I2cCommands::Write { bytes }) => self.i2c_write(address, bytes),
+                Some(I2cCommands::WriteRead { bytes, count }) => self.i2c_write_then_read(address, bytes, count),
             },
             Some(Commands::Spi { command }) => match command {
                 None => Ok(()),
-                Some(SpiCommands::Read { count }) => self.spi_read(&mut pg, count),
-                Some(SpiCommands::Write { bytes }) => self.spi_write(&mut pg, bytes),
-                Some(SpiCommands::WriteRead { count, bytes }) => self.spi_write_then_read(&mut pg, bytes, count),
+                Some(SpiCommands::Read { count }) => self.spi_read(count),
+                Some(SpiCommands::Write { bytes }) => self.spi_write(bytes),
+                Some(SpiCommands::WriteRead { count, bytes }) => self.spi_write_then_read(bytes, count),
             },
         }
     }
 
-    fn i2c_read(&self, pg: &mut PicoDeGallo, address: &u8, count: &usize) -> Result<()> {
+    fn i2c_read(&self, address: &u8, count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
-        pg.i2c_blocking_read(*address, &mut buf)?;
+        let pg = PicoDeGallo::new()?;
+
+        pg.i2c().blocking_read(*address, &mut buf)?;
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {
@@ -133,19 +131,21 @@ impl Cli {
         Ok(())
     }
 
-    fn i2c_write(&self, pg: &mut PicoDeGallo, address: &u8, bytes: &[u8]) -> Result<()> {
-        pg.i2c_blocking_write(*address, bytes)?;
+    fn i2c_write(&self, address: &u8, bytes: &[u8]) -> Result<()> {
+        let pg = PicoDeGallo::new()?;
+        pg.i2c().blocking_write(*address, bytes)?;
         Ok(())
     }
 
-    fn i2c_write_then_read(&self, pg: &mut PicoDeGallo, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
-        self.i2c_write(pg, address, bytes)?;
-        self.i2c_read(pg, address, count)
+    fn i2c_write_then_read(&self, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
+        self.i2c_write(address, bytes)?;
+        self.i2c_read(address, count)
     }
 
-    fn spi_read(&self, pg: &mut PicoDeGallo, count: &usize) -> Result<()> {
+    fn spi_read(&self, count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
-        pg.spi_blocking_read(&mut buf)?;
+        let pg = PicoDeGallo::new()?;
+        pg.spi().blocking_read(&mut buf)?;
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {
@@ -160,14 +160,16 @@ impl Cli {
         Ok(())
     }
 
-    fn spi_write(&self, pg: &mut PicoDeGallo, bytes: &[u8]) -> Result<()> {
-        pg.spi_blocking_write(bytes)?;
+    fn spi_write(&self, bytes: &[u8]) -> Result<()> {
+        let pg = PicoDeGallo::new()?;
+        pg.spi().blocking_write(bytes)?;
         Ok(())
     }
 
-    fn spi_write_then_read(&self, pg: &mut PicoDeGallo, bytes: &[u8], count: &usize) -> Result<()> {
+    fn spi_write_then_read(&self, bytes: &[u8], count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
-        pg.spi_blocking_transfer(&mut buf, bytes)?;
+        let pg = PicoDeGallo::new()?;
+        pg.spi().blocking_transfer(&mut buf, bytes)?;
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {

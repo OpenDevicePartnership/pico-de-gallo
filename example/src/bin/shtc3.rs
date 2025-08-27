@@ -1,13 +1,15 @@
 use color_eyre::Result;
-use pico_de_gallo::{Delay, PicoDeGallo};
+use pico_de_gallo::PicoDeGallo;
 use shtcx::{PowerMode, shtc3};
 
 fn main() -> Result<()> {
     color_eyre::install()?;
 
     let gallo = PicoDeGallo::new()?;
-    let mut delay = Delay;
-    let mut sht = shtc3(gallo);
+
+    let (i2c, _, _, mut delay) = gallo.split();
+
+    let mut sht = shtc3(i2c);
 
     let temperature = sht.measure_temperature(PowerMode::NormalMode, &mut delay).unwrap();
     let humidity = sht.measure_humidity(PowerMode::NormalMode, &mut delay).unwrap();

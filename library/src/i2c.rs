@@ -1,4 +1,4 @@
-use crate::{Error, PicoDeGallo, Result};
+use crate::{Error, Result};
 use embedded_hal::i2c::{self, SevenBitAddress};
 use nusb::Interface;
 use nusb::io::{EndpointRead, EndpointWrite};
@@ -8,11 +8,6 @@ use serde::{Deserialize, Serialize};
 use std::io::{Read, Write};
 
 const USB_BUFFER_SIZE: usize = 1024;
-
-pub(crate) struct I2c {
-    writer: EndpointWrite<Bulk>,
-    reader: EndpointRead<Bulk>,
-}
 
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 pub enum Opcode {
@@ -54,6 +49,11 @@ pub enum I2cError {
     Other,
 }
 
+pub struct I2c {
+    writer: EndpointWrite<Bulk>,
+    reader: EndpointRead<Bulk>,
+}
+
 impl I2c {
     pub(crate) fn new(interface: Interface) -> Result<Self> {
         let writer = interface
@@ -69,7 +69,7 @@ impl I2c {
     }
 
     /// I2c blocking read
-    pub(crate) fn blocking_read(&mut self, address: u8, buf: &mut [u8]) -> Result<()> {
+    pub fn blocking_read(&mut self, address: u8, buf: &mut [u8]) -> Result<()> {
         let size = buf.len();
 
         let request = Request {
@@ -100,7 +100,7 @@ impl I2c {
     }
 
     /// I2c blocking write
-    pub(crate) fn blocking_write(&mut self, address: u8, buf: &[u8]) -> Result<()> {
+    pub fn blocking_write(&mut self, address: u8, buf: &[u8]) -> Result<()> {
         let size = buf.len();
 
         let request = Request {
@@ -138,18 +138,18 @@ impl i2c::Error for Error {
     }
 }
 
-impl i2c::ErrorType for PicoDeGallo {
+impl i2c::ErrorType for I2c {
     type Error = Error;
 }
 
-impl i2c::I2c<SevenBitAddress> for PicoDeGallo {
+impl i2c::I2c<SevenBitAddress> for I2c {
     fn transaction(&mut self, address: SevenBitAddress, operations: &mut [i2c::Operation<'_>]) -> Result<()> {
         let address = address.into();
 
         for op in operations {
             match op {
-                i2c::Operation::Read(read) => self.i2c_blocking_read(address, read)?,
-                i2c::Operation::Write(write) => self.i2c_blocking_write(address, write)?,
+                i2c::Operation::Read(read) => self.blocking_read(address, read)?,
+                i2c::Operation::Write(write) => self.blocking_write(address, write)?,
             }
         }
 

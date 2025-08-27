@@ -83,20 +83,26 @@ impl<'d> Gpio<'d> {
 
                             match request.opcode {
                                 Opcode::GetState => {
-                                    let level = self.gpios[usize::from(request.pin)].get_level();
+                                    let pin = usize::from(request.pin);
+                                    let gpio = &mut self.gpios[pin];
+
+                                    gpio.set_as_input();
+                                    let level = gpio.get_level();
+                                    let state = if level == Level::High { State::High } else { State::Low };
 
                                     response.status = Status::Success;
                                     response.pin = request.pin;
-                                    response.data = Some(if level == Level::High { State::High } else { State::Low });
+                                    response.data = Some(state);
                                 }
 
                                 Opcode::SetState => {
                                     let state = request.data.unwrap();
-                                    self.gpios[usize::from(request.pin)].set_level(if state == State::Low {
-                                        Level::Low
-                                    } else {
-                                        Level::High
-                                    });
+
+                                    let pin = usize::from(request.pin);
+                                    let gpio = &mut self.gpios[pin];
+
+                                    gpio.set_as_output();
+                                    gpio.set_level(if state == State::Low { Level::Low } else { Level::High });
 
                                     response.status = Status::Success;
                                     response.pin = request.pin;

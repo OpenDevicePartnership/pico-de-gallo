@@ -1,4 +1,4 @@
-use crate::{Error, PicoDeGallo, Result};
+use crate::{Error, Result};
 use embedded_hal::spi;
 use nusb::Interface;
 use nusb::io::{EndpointRead, EndpointWrite};
@@ -41,8 +41,7 @@ struct Response<'a> {
     data: Option<&'a [u8]>,
 }
 
-#[allow(unused)]
-pub(crate) struct Spi {
+pub struct Spi {
     writer: EndpointWrite<Bulk>,
     reader: EndpointRead<Bulk>,
 }
@@ -62,7 +61,7 @@ impl Spi {
     }
 
     /// SPI blocking read
-    pub(crate) fn blocking_read(&mut self, words: &mut [u8]) -> Result<()> {
+    pub fn blocking_read(&mut self, words: &mut [u8]) -> Result<()> {
         let size = words.len();
 
         let request = Request {
@@ -92,7 +91,7 @@ impl Spi {
     }
 
     /// SPI blocking write
-    pub(crate) fn blocking_write(&mut self, words: &[u8]) -> Result<()> {
+    pub fn blocking_write(&mut self, words: &[u8]) -> Result<()> {
         let size = words.len();
 
         let request = Request {
@@ -119,7 +118,7 @@ impl Spi {
     }
 
     /// SPI blocking transfer
-    pub(crate) fn blocking_transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<()> {
+    pub fn blocking_transfer(&mut self, read: &mut [u8], write: &[u8]) -> Result<()> {
         let size = write.len();
 
         let request = Request {
@@ -190,28 +189,28 @@ impl spi::Error for Error {
     }
 }
 
-impl spi::ErrorType for PicoDeGallo {
+impl spi::ErrorType for Spi {
     type Error = Error;
 }
 
-impl spi::SpiBus for PicoDeGallo {
+impl spi::SpiBus for Spi {
     fn read(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        self.spi_blocking_read(words)
+        self.blocking_read(words)
     }
 
     fn write(&mut self, words: &[u8]) -> std::result::Result<(), Self::Error> {
-        self.spi_blocking_write(words)
+        self.blocking_write(words)
     }
 
     fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> std::result::Result<(), Self::Error> {
-        self.spi_blocking_transfer(read, write)
+        self.blocking_transfer(read, write)
     }
 
     fn transfer_in_place(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        self.spi_blocking_transfer_in_place(words)
+        self.blocking_transfer_in_place(words)
     }
 
     fn flush(&mut self) -> std::result::Result<(), Self::Error> {
-        self.spi_blocking_flush()
+        self.blocking_flush()
     }
 }
