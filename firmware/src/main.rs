@@ -201,7 +201,7 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
             let result = gallo.read_data(&mut rx_buf).await;
 
             let response = if result.is_err() {
-                invalid_request()
+                Response::InvalidRequest
             } else {
                 let rx_size = result.unwrap();
 
@@ -233,7 +233,7 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                             I2cOpcode::Write => {
                                 if i2c_request.data.is_none() {
                                     error!("Missing 'data' field");
-                                    invalid_request()
+                                    Response::InvalidRequest
                                 } else {
                                     let result =
                                         gallo.i2c.blocking_write(i2c_request.address, i2c_request.data.unwrap());
@@ -337,7 +337,7 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                             GpioOpcode::SetState => {
                                 if gpio_request.state.is_none() {
                                     error!("Missing 'state' field");
-                                    invalid_request()
+                                    Response::InvalidRequest
                                 } else {
                                     let pin = gpio_request.pin;
                                     let gpio = &mut gallo.gpios[usize::from(pin.index)];
@@ -379,7 +379,7 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                             gallo.spi.set_config(&spi_config);
 
                             if result.is_err() {
-                                invalid_request()
+                                Response::InvalidRequest
                             } else {
                                 Response::SetConfig(SetConfigResponse {
                                     status: Status::Success,
@@ -411,8 +411,4 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
 
         debug!("Pico De Gallo disconnected");
     }
-}
-
-fn invalid_request<'a>() -> Response<'static> {
-    Response::InvalidRequest
 }
