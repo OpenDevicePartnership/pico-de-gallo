@@ -4,6 +4,7 @@
 use defmt::*;
 use embassy_embedded_hal::SetConfig;
 use embassy_executor::Spawner;
+use embassy_futures::join::join;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Flex, Level};
 use embassy_rp::i2c::{self, I2c};
@@ -68,6 +69,10 @@ impl<'a> PicoDeGallo<'a> {
             read_ep,
             write_ep,
         }
+    }
+
+    async fn wait_for_connection(&mut self) {
+        join(self.read_ep.wait_enabled(), self.write_ep.wait_enabled()).await;
     }
 }
 
@@ -167,8 +172,7 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
     let mut rx_size = 0;
 
     loop {
-        gallo.read_ep.wait_enabled().await;
-        gallo.write_ep.wait_enabled().await;
+        gallo.wait_for_connection().await;
 
         debug!("Pico De Gallo connected");
 
