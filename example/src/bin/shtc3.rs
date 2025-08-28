@@ -5,7 +5,7 @@ use shtcx::{PowerMode, shtc3};
 fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let gallo = PicoDeGallo::new()?;
+    let gallo = PicoDeGallo::new(Default::default())?;
     let i2c = gallo.clone();
     let mut delay = gallo.clone();
 

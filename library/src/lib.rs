@@ -43,6 +43,25 @@ pub enum I2cError {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+#[derive(Clone, Copy, Debug)]
+pub struct Config {
+    pub i2c_frequency: u32,
+    pub spi_frequency: u32,
+    pub spi_phase: SpiPhase,
+    pub spi_polarity: SpiPolarity,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            i2c_frequency: 100_000,
+            spi_frequency: 1_000_000,
+            spi_phase: SpiPhase::CaptureOnFirstTransition,
+            spi_polarity: SpiPolarity::IdleLow,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct PicoDeGallo {
     pub usb: Rc<RefCell<UsbIo>>,
@@ -50,7 +69,7 @@ pub struct PicoDeGallo {
 
 impl PicoDeGallo {
     /// Create a new instance for the Pico de Gallo device.
-    pub fn new() -> Result<Self> {
+    pub fn new(config: Config) -> Result<Self> {
         let device = list_devices()
             .wait()
             .map_err(|e| Error::Nusb(e))?
@@ -63,6 +82,17 @@ impl PicoDeGallo {
         let reader = intf.endpoint::<Bulk, In>(0x81).map_err(|_| Error::Io)?.reader(4096);
 
         let usb = Rc::new(RefCell::new(UsbIo { writer, reader }));
+
+        let mut io = usb.borrow_mut();
+
+        io.set_config(
+            config.i2c_frequency,
+            config.spi_frequency,
+            config.spi_phase,
+            config.spi_polarity,
+        )?;
+
+        drop(io);
 
         Ok(Self { usb })
     }

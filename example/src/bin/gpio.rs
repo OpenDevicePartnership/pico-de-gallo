@@ -6,7 +6,7 @@ use std::time::Duration;
 fn main() -> Result<()> {
     color_eyre::install()?;
 
-    let gallo = PicoDeGallo::new()?;
+    let gallo = PicoDeGallo::new(Default::default())?;
     let mut gpio = gallo.gpio(0);
 
     loop {

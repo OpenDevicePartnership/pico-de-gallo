@@ -138,7 +138,7 @@ impl Cli {
 
     fn i2c_read(&self, address: &u8, count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
-        let pg = PicoDeGallo::new()?;
+        let pg = PicoDeGallo::new(Default::default())?;
         let mut io = pg.usb.borrow_mut();
         io.i2c_blocking_read(*address, &mut buf)?;
 
@@ -156,7 +156,7 @@ impl Cli {
     }
 
     fn i2c_write(&self, address: &u8, bytes: &[u8]) -> Result<()> {
-        let pg = PicoDeGallo::new()?;
+        let pg = PicoDeGallo::new(Default::default())?;
         let mut io = pg.usb.borrow_mut();
         io.i2c_blocking_write(*address, bytes)?;
         Ok(())
@@ -169,7 +169,7 @@ impl Cli {
 
     fn spi_read(&self, count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
-        let pg = PicoDeGallo::new()?;
+        let pg = PicoDeGallo::new(Default::default())?;
         let mut io = pg.usb.borrow_mut();
         io.spi_blocking_transfer(Some(&mut buf), None)?;
 
@@ -187,7 +187,7 @@ impl Cli {
     }
 
     fn spi_write(&self, bytes: &[u8]) -> Result<()> {
-        let pg = PicoDeGallo::new()?;
+        let pg = PicoDeGallo::new(Default::default())?;
         let mut io = pg.usb.borrow_mut();
         io.spi_blocking_transfer(None, Some(bytes))?;
         Ok(())
@@ -195,7 +195,7 @@ impl Cli {
 
     fn spi_write_then_read(&self, bytes: &[u8], count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
-        let pg = PicoDeGallo::new()?;
+        let pg = PicoDeGallo::new(Default::default())?;
         let mut io = pg.usb.borrow_mut();
         io.spi_blocking_transfer(Some(&mut buf), Some(&bytes))?;
 
@@ -219,7 +219,7 @@ impl Cli {
         spi_first_transition: bool,
         spi_idle_low: bool,
     ) -> Result<()> {
-        let pg = PicoDeGallo::new()?;
+        let pg = PicoDeGallo::new(Default::default())?;
         let mut io = pg.usb.borrow_mut();
 
         let spi_polarity = if spi_idle_low {
