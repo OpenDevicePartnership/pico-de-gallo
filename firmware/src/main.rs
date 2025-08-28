@@ -167,132 +167,100 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
     let mut rx_size = 0;
 
     loop {
+        gallo.read_ep.wait_enabled().await;
+        gallo.write_ep.wait_enabled().await;
+
+        debug!("Pico De Gallo connected");
+
         loop {
-            gallo.read_ep.wait_enabled().await;
-            gallo.write_ep.wait_enabled().await;
+            let result = gallo.read_ep.read(&mut rx_buf[rx_size..]).await;
 
-            debug!("Pico De Gallo connected");
+            let response = if result.is_err() {
+                invalid_request()
+            } else {
+                let size = result.unwrap();
+                rx_size += size;
 
-            loop {
-                let result = gallo.read_ep.read(&mut rx_buf[rx_size..]).await;
+                // Ugh! This is a bit ugly.
+                //
+                // Here's the thing: the USB API is packet-based,
+                // not transfer-based. This means that we if we
+                // want to receive large transfers, we must do so
+                // one packet at a time, even though we pass large
+                // buffers.
+                if size == usize::from(gallo.read_ep.info().max_packet_size) {
+                    continue;
+                }
 
-                let response = if result.is_err() {
-                    invalid_request()
+                let result = from_bytes(&rx_buf[..rx_size]);
+
+                // reset to zero for the next set of packets.
+                rx_size = 0;
+
+                if result.is_err() {
+                    error!("Failed to deserialize request");
+                    break;
                 } else {
-                    let size = result.unwrap();
-                    rx_size += size;
+                    let request = result.unwrap();
 
-                    // Ugh! This is a bit ugly.
-                    //
-                    // Here's the thing: the USB API is packet-based,
-                    // not transfer-based. This means that we if we
-                    // want to receive large transfers, we must do so
-                    // one packet at a time, even though we pass large
-                    // buffers.
-                    if size == usize::from(gallo.read_ep.info().max_packet_size) {
-                        continue;
-                    }
+                    match request {
+                        Request::I2c(i2c_request) => match i2c_request.opcode {
+                            I2cOpcode::Read => {
+                                let result = gallo.i2c.blocking_read(i2c_request.address, &mut bus_buf);
 
-                    let result = from_bytes(&rx_buf[..rx_size]);
+                                if result.is_err() {
+                                    error!("Failed to read from I2C address {:02x}", i2c_request.address);
+                                    break;
+                                }
 
-                    // reset to zero for the next set of packets.
-                    rx_size = 0;
-
-                    if result.is_err() {
-                        error!("Failed to deserialize request");
-                        break;
-                    } else {
-                        let request = result.unwrap();
-
-                        match request {
-                            Request::I2c(i2c_request) => match i2c_request.opcode {
-                                I2cOpcode::Read => {
-                                    let result = gallo.i2c.blocking_read(i2c_request.address, &mut bus_buf);
+                                Response::I2c(I2cResponse {
+                                    status: Status::Success,
+                                    address: Some(i2c_request.address),
+                                    size: Some(i2c_request.size),
+                                    data: Some(&bus_buf[..usize::from(i2c_request.size)]),
+                                })
+                            }
+                            I2cOpcode::Write => {
+                                if i2c_request.data.is_none() {
+                                    error!("Missing 'data' field");
+                                    invalid_request()
+                                } else {
+                                    let result =
+                                        gallo.i2c.blocking_write(i2c_request.address, i2c_request.data.unwrap());
 
                                     if result.is_err() {
-                                        error!("Failed to read from I2C address {:02x}", i2c_request.address);
+                                        error!("Failed to write to I2C address {:02x}", i2c_request.address);
                                         break;
                                     }
 
                                     Response::I2c(I2cResponse {
                                         status: Status::Success,
                                         address: Some(i2c_request.address),
-                                        size: Some(i2c_request.size),
-                                        data: Some(&bus_buf[..usize::from(i2c_request.size)]),
+                                        size: None,
+                                        data: None,
                                     })
                                 }
-                                I2cOpcode::Write => {
-                                    if i2c_request.data.is_none() {
-                                        error!("Missing 'data' field");
-                                        invalid_request()
+                            }
+                        },
+
+                        Request::Spi(spi_request) => match spi_request.opcode {
+                            SpiOpcode::Transfer => {
+                                if spi_request.data.is_none() && spi_request.size.is_some() {
+                                    let size = usize::from(spi_request.size.unwrap());
+                                    let result = gallo.spi.blocking_read(&mut bus_buf[..size]);
+
+                                    if result.is_err() {
+                                        Response::InvalidRequest
                                     } else {
-                                        let result =
-                                            gallo.i2c.blocking_write(i2c_request.address, i2c_request.data.unwrap());
-
-                                        if result.is_err() {
-                                            error!("Failed to write to I2C address {:02x}", i2c_request.address);
-                                            break;
-                                        }
-
-                                        Response::I2c(I2cResponse {
+                                        Response::Spi(SpiResponse {
                                             status: Status::Success,
-                                            address: Some(i2c_request.address),
-                                            size: None,
-                                            data: None,
+                                            size: spi_request.size,
+                                            data: Some(&bus_buf[..size]),
                                         })
                                     }
-                                }
-                            },
-
-                            Request::Spi(spi_request) => match spi_request.opcode {
-                                SpiOpcode::Transfer => {
-                                    if spi_request.data.is_none() && spi_request.size.is_some() {
-                                        let size = usize::from(spi_request.size.unwrap());
-                                        let result = gallo.spi.blocking_read(&mut bus_buf[..size]);
-
-                                        if result.is_err() {
-                                            Response::InvalidRequest
-                                        } else {
-                                            Response::Spi(SpiResponse {
-                                                status: Status::Success,
-                                                size: spi_request.size,
-                                                data: Some(&bus_buf[..size]),
-                                            })
-                                        }
-                                    } else if spi_request.data.is_some() && spi_request.size.is_none() {
-                                        let data = spi_request.data.unwrap();
-                                        let result = gallo.spi.blocking_write(&data);
-
-                                        if result.is_err() {
-                                            Response::InvalidRequest
-                                        } else {
-                                            Response::Spi(SpiResponse {
-                                                status: Status::Success,
-                                                size: None,
-                                                data: None,
-                                            })
-                                        }
-                                    } else if spi_request.data.is_some() && spi_request.size.is_some() {
-                                        let size = usize::from(spi_request.size.unwrap());
-                                        let data = spi_request.data.unwrap();
-
-                                        let result = gallo.spi.blocking_transfer(&mut bus_buf[..size], data);
-
-                                        if result.is_err() {
-                                            Response::InvalidRequest
-                                        } else {
-                                            Response::Spi(SpiResponse {
-                                                status: Status::Success,
-                                                size: spi_request.size,
-                                                data: Some(&bus_buf[..size]),
-                                            })
-                                        }
-                                    } else {
-                                        Response::InvalidRequest
-                                    }
-                                }
-                                SpiOpcode::Flush => {
-                                    let result = gallo.spi.flush();
+                                } else if spi_request.data.is_some() && spi_request.size.is_none() {
+                                    let data = spi_request.data.unwrap();
+                                    let result = gallo.spi.blocking_write(&data);
 
                                     if result.is_err() {
                                         Response::InvalidRequest
@@ -303,102 +271,135 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                                             data: None,
                                         })
                                     }
-                                }
-                            },
+                                } else if spi_request.data.is_some() && spi_request.size.is_some() {
+                                    let size = usize::from(spi_request.size.unwrap());
+                                    let data = spi_request.data.unwrap();
 
-                            Request::Gpio(gpio_request) => match gpio_request.opcode {
-                                GpioOpcode::GetState => {
+                                    let result = gallo.spi.blocking_transfer(&mut bus_buf[..size], data);
+
+                                    if result.is_err() {
+                                        Response::InvalidRequest
+                                    } else {
+                                        Response::Spi(SpiResponse {
+                                            status: Status::Success,
+                                            size: spi_request.size,
+                                            data: Some(&bus_buf[..size]),
+                                        })
+                                    }
+                                } else {
+                                    Response::InvalidRequest
+                                }
+                            }
+                            SpiOpcode::Flush => {
+                                let result = gallo.spi.flush();
+
+                                if result.is_err() {
+                                    Response::InvalidRequest
+                                } else {
+                                    Response::Spi(SpiResponse {
+                                        status: Status::Success,
+                                        size: None,
+                                        data: None,
+                                    })
+                                }
+                            }
+                        },
+
+                        Request::Gpio(gpio_request) => match gpio_request.opcode {
+                            GpioOpcode::GetState => {
+                                let pin = gpio_request.pin;
+                                let gpio = &mut gallo.gpios[usize::from(pin.index)];
+
+                                gpio.set_as_input();
+                                let level = gpio.get_level();
+                                let state = if level == Level::High {
+                                    GpioState::High
+                                } else {
+                                    GpioState::Low
+                                };
+
+                                Response::Gpio(GpioResponse {
+                                    status: Status::Success,
+                                    pin,
+                                    state: Some(state),
+                                })
+                            }
+                            GpioOpcode::SetState => {
+                                if gpio_request.state.is_none() {
+                                    error!("Missing 'state' field");
+                                    invalid_request()
+                                } else {
                                     let pin = gpio_request.pin;
                                     let gpio = &mut gallo.gpios[usize::from(pin.index)];
+                                    let state = gpio_request.state.unwrap();
 
-                                    gpio.set_as_input();
-                                    let level = gpio.get_level();
-                                    let state = if level == Level::High {
-                                        GpioState::High
+                                    gpio.set_as_output();
+                                    gpio.set_level(if state == GpioState::Low {
+                                        Level::Low
                                     } else {
-                                        GpioState::Low
-                                    };
+                                        Level::High
+                                    });
 
                                     Response::Gpio(GpioResponse {
                                         status: Status::Success,
                                         pin,
-                                        state: Some(state),
-                                    })
-                                }
-                                GpioOpcode::SetState => {
-                                    if gpio_request.state.is_none() {
-                                        error!("Missing 'state' field");
-                                        invalid_request()
-                                    } else {
-                                        let pin = gpio_request.pin;
-                                        let gpio = &mut gallo.gpios[usize::from(pin.index)];
-                                        let state = gpio_request.state.unwrap();
-
-                                        gpio.set_as_output();
-                                        gpio.set_level(if state == GpioState::Low {
-                                            Level::Low
-                                        } else {
-                                            Level::High
-                                        });
-
-                                        Response::Gpio(GpioResponse {
-                                            status: Status::Success,
-                                            pin,
-                                            state: None,
-                                        })
-                                    }
-                                }
-                            },
-                            Request::SetConfig(set_config_request) => {
-                                let mut i2c_config = i2c::Config::default();
-                                i2c_config.frequency = set_config_request.i2c_frequency;
-
-                                let mut spi_config = spi::Config::default();
-                                spi_config.frequency = set_config_request.spi_frequency;
-                                spi_config.phase = if set_config_request.spi_phase == SpiPhase::CaptureOnFirstTransition
-                                {
-                                    Phase::CaptureOnFirstTransition
-                                } else {
-                                    Phase::CaptureOnSecondTransition
-                                };
-                                spi_config.polarity = if set_config_request.spi_polarity == SpiPolarity::IdleLow {
-                                    Polarity::IdleLow
-                                } else {
-                                    Polarity::IdleHigh
-                                };
-
-                                let result = gallo.i2c.set_config(&i2c_config);
-                                gallo.spi.set_config(&spi_config);
-
-                                if result.is_err() {
-                                    invalid_request()
-                                } else {
-                                    Response::SetConfig(SetConfigResponse {
-                                        status: Status::Success,
+                                        state: None,
                                     })
                                 }
                             }
+                        },
+                        Request::SetConfig(set_config_request) => {
+                            let mut i2c_config = i2c::Config::default();
+                            i2c_config.frequency = set_config_request.i2c_frequency;
+
+                            let mut spi_config = spi::Config::default();
+                            spi_config.frequency = set_config_request.spi_frequency;
+                            spi_config.phase = if set_config_request.spi_phase == SpiPhase::CaptureOnFirstTransition {
+                                Phase::CaptureOnFirstTransition
+                            } else {
+                                Phase::CaptureOnSecondTransition
+                            };
+                            spi_config.polarity = if set_config_request.spi_polarity == SpiPolarity::IdleLow {
+                                Polarity::IdleLow
+                            } else {
+                                Polarity::IdleHigh
+                            };
+
+                            let result = gallo.i2c.set_config(&i2c_config);
+                            gallo.spi.set_config(&spi_config);
+
+                            if result.is_err() {
+                                invalid_request()
+                            } else {
+                                Response::SetConfig(SetConfigResponse {
+                                    status: Status::Success,
+                                })
+                            }
                         }
                     }
-                };
+                }
+            };
 
-                let ser = to_slice(&response, &mut tx_buf);
+            let ser = to_slice(&response, &mut tx_buf);
+
+            if result.is_err() {
+                error!("Failed to serialize response");
+                break;
+            } else {
+                let result = gallo.write_ep.write(ser.unwrap()).await;
 
                 if result.is_err() {
-                    error!("Failed to serialize response");
+                    error!("Failed to send response");
                     break;
-                } else {
-                    let result = gallo.write_ep.write(ser.unwrap()).await;
-
-                    if result.is_err() {
-                        error!("Failed to send response");
-                        break;
-                    }
                 }
             }
 
-            debug!("Pico De Gallo disconnected");
+            if response == Response::InvalidRequest {
+                break;
+            }
         }
+
+        debug!("Pico De Gallo disconnected");
     }
 }
 
