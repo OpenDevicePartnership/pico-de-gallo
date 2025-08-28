@@ -19,6 +19,7 @@ pub enum Request<'a> {
     #[serde(borrow)]
     Spi(SpiRequest<'a>),
     Gpio(GpioRequest),
+    SetConfig(SetConfigRequest),
 }
 
 /// Response representation.
@@ -31,6 +32,7 @@ pub enum Response<'a> {
     #[serde(borrow)]
     Spi(SpiResponse<'a>),
     Gpio(GpioResponse),
+    SetConfig(SetConfigResponse),
 }
 
 /// I2c Request.
@@ -149,4 +151,42 @@ pub struct Pin {
 pub enum GpioState {
     Low,
     High,
+}
+
+/// Set Config Request.
+///
+/// Set config allows us to configure settings for the underlying I2c
+/// and Spi buses.
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SetConfigRequest {
+    pub i2c_frequency: u32,
+    pub spi_frequency: u32,
+    pub spi_phase: SpiPhase,
+    pub spi_polarity: SpiPolarity,
+}
+
+/// Spi phase.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SpiPhase {
+    CaptureOnFirstTransition = 0,
+    CaptureOnSecondTransition = 1,
+}
+
+/// Spi polarity.
+#[derive(Clone, Copy, Serialize, Deserialize, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SpiPolarity {
+    IdleLow = 0,
+    IdleHigh = 1,
+}
+
+/// Set Config Response.
+///
+/// Set config responses consist of only aj [`Status`].
+#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub struct SetConfigResponse {
+    pub status: Status,
 }

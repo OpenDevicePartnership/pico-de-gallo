@@ -2,12 +2,13 @@
 #![no_main]
 
 use defmt::*;
+use embassy_embedded_hal::SetConfig;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Flex, Level};
 use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{I2C1, SPI0, USB};
-use embassy_rp::spi::{self, Spi};
+use embassy_rp::spi::{self, Phase, Polarity, Spi};
 use embassy_rp::usb::{Endpoint, In, Out};
 use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
 use embassy_usb::msos::{self, windows_version};
@@ -348,6 +349,35 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                                     }
                                 }
                             },
+                            Request::SetConfig(set_config_request) => {
+                                let mut i2c_config = i2c::Config::default();
+                                i2c_config.frequency = set_config_request.i2c_frequency;
+
+                                let mut spi_config = spi::Config::default();
+                                spi_config.frequency = set_config_request.spi_frequency;
+                                spi_config.phase = if set_config_request.spi_phase == SpiPhase::CaptureOnFirstTransition
+                                {
+                                    Phase::CaptureOnFirstTransition
+                                } else {
+                                    Phase::CaptureOnSecondTransition
+                                };
+                                spi_config.polarity = if set_config_request.spi_polarity == SpiPolarity::IdleLow {
+                                    Polarity::IdleLow
+                                } else {
+                                    Polarity::IdleHigh
+                                };
+
+                                let result = gallo.i2c.set_config(&i2c_config);
+                                gallo.spi.set_config(&spi_config);
+
+                                if result.is_err() {
+                                    invalid_request()
+                                } else {
+                                    Response::SetConfig(SetConfigResponse {
+                                        status: Status::Success,
+                                    })
+                                }
+                            }
                         }
                     }
                 };

@@ -5,7 +5,7 @@ use embedded_hal::spi;
 use nusb::io::{EndpointRead, EndpointWrite};
 use nusb::transfer::{Bulk, In, Out};
 use nusb::{MaybeFuture, list_devices};
-use pico_de_gallo_internal::*;
+pub use pico_de_gallo_internal::*;
 use postcard::{from_bytes, to_stdvec};
 use std::cell::RefCell;
 use std::io::{Read, Write};
@@ -82,6 +82,47 @@ pub struct UsbIo {
 }
 
 impl UsbIo {
+    /// Set config parameters
+    pub fn set_config(
+        &mut self,
+        i2c_frequency: u32,
+        spi_frequency: u32,
+        spi_phase: SpiPhase,
+        spi_polarity: SpiPolarity,
+    ) -> Result<()> {
+        let request = Request::SetConfig(SetConfigRequest {
+            i2c_frequency,
+            spi_frequency,
+            spi_phase,
+            spi_polarity,
+        });
+
+        let output: Vec<u8> = to_stdvec(&request).map_err(|_| Error::Unknown)?;
+
+        self.writer.write_all(&output).map_err(|_| Error::Io)?;
+        self.writer.flush().map_err(|_| Error::Io)?;
+
+        let mut rx_buf = vec![0; USB_BUFFER_SIZE];
+        let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
+
+        let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
+
+        match response {
+            Response::SetConfig(set_config_response) => {
+                if set_config_response.status != Status::Success {
+                    tracing::error!("Read failed!");
+                    Err(Error::Unknown)
+                } else {
+                    Ok(())
+                }
+            }
+            _ => {
+                tracing::error!("Invalid response");
+                Err(Error::Unknown)
+            }
+        }
+    }
+
     /// I2c blocking read
     pub fn i2c_blocking_read(&mut self, address: u8, buf: &mut [u8]) -> Result<()> {
         let size = buf.len();
@@ -101,7 +142,7 @@ impl UsbIo {
         let mut rx_buf = vec![0; USB_BUFFER_SIZE];
         let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
-        let response: Response = from_bytes(&rx_buf[..size]).unwrap();
+        let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
 
         match response {
             Response::I2c(i2c_response) => {

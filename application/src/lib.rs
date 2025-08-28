@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
-use pico_de_gallo::PicoDeGallo;
+use pico_de_gallo::{PicoDeGallo, SpiPhase, SpiPolarity};
 use std::num::ParseIntError;
 
 #[derive(Parser, Debug)]
@@ -34,6 +34,24 @@ enum Commands {
         /// SPI commands
         #[command(subcommand)]
         command: Option<SpiCommands>,
+    },
+
+    SetConfig {
+        /// I2C frequency
+        #[arg(short = 'i', long)]
+        i2c_frequency: u32,
+
+        /// SPI frequency
+        #[arg(short = 's', long)]
+        spi_frequency: u32,
+
+        /// SPI phase first transition
+        #[arg(short = 'p', long, default_value_t)]
+        spi_first_transition: bool,
+
+        /// SPI polarity idle low
+        #[arg(short = 'o', long, default_value_t)]
+        spi_idle_low: bool,
     },
 }
 
@@ -109,6 +127,12 @@ impl Cli {
                 Some(SpiCommands::Write { bytes }) => self.spi_write(bytes),
                 Some(SpiCommands::WriteRead { count, bytes }) => self.spi_write_then_read(bytes, count),
             },
+            Some(Commands::SetConfig {
+                i2c_frequency,
+                spi_frequency,
+                spi_first_transition,
+                spi_idle_low,
+            }) => self.set_config(*i2c_frequency, *spi_frequency, *spi_first_transition, *spi_idle_low),
         }
     }
 
@@ -184,6 +208,33 @@ impl Cli {
         }
 
         print!("\n");
+
+        Ok(())
+    }
+
+    fn set_config(
+        &self,
+        i2c_frequency: u32,
+        spi_frequency: u32,
+        spi_first_transition: bool,
+        spi_idle_low: bool,
+    ) -> Result<()> {
+        let pg = PicoDeGallo::new()?;
+        let mut io = pg.usb.borrow_mut();
+
+        let spi_polarity = if spi_idle_low {
+            SpiPolarity::IdleLow
+        } else {
+            SpiPolarity::IdleHigh
+        };
+
+        let spi_phase = if spi_first_transition {
+            SpiPhase::CaptureOnFirstTransition
+        } else {
+            SpiPhase::CaptureOnSecondTransition
+        };
+
+        io.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity)?;
 
         Ok(())
     }
