@@ -7,8 +7,7 @@ fn main() -> Result<()> {
     color_eyre::install()?;
 
     let gallo = PicoDeGallo::new()?;
-
-    let (_, _, mut gpio, _) = gallo.split();
+    let mut gpio = gallo.gpio(0);
 
     loop {
         gpio.set_high()?;

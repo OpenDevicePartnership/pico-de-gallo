@@ -115,8 +115,8 @@ impl Cli {
     fn i2c_read(&self, address: &u8, count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
         let pg = PicoDeGallo::new()?;
-
-        pg.i2c().blocking_read(*address, &mut buf)?;
+        let mut io = pg.usb.borrow_mut();
+        io.i2c_blocking_read(*address, &mut buf)?;
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {
@@ -133,7 +133,8 @@ impl Cli {
 
     fn i2c_write(&self, address: &u8, bytes: &[u8]) -> Result<()> {
         let pg = PicoDeGallo::new()?;
-        pg.i2c().blocking_write(*address, bytes)?;
+        let mut io = pg.usb.borrow_mut();
+        io.i2c_blocking_write(*address, bytes)?;
         Ok(())
     }
 
@@ -145,7 +146,8 @@ impl Cli {
     fn spi_read(&self, count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
         let pg = PicoDeGallo::new()?;
-        pg.spi().blocking_read(&mut buf)?;
+        let mut io = pg.usb.borrow_mut();
+        io.spi_blocking_transfer(Some(&mut buf), None)?;
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {
@@ -162,14 +164,16 @@ impl Cli {
 
     fn spi_write(&self, bytes: &[u8]) -> Result<()> {
         let pg = PicoDeGallo::new()?;
-        pg.spi().blocking_write(bytes)?;
+        let mut io = pg.usb.borrow_mut();
+        io.spi_blocking_transfer(None, Some(bytes))?;
         Ok(())
     }
 
     fn spi_write_then_read(&self, bytes: &[u8], count: &usize) -> Result<()> {
         let mut buf = vec![0; *count];
         let pg = PicoDeGallo::new()?;
-        pg.spi().blocking_transfer(&mut buf, bytes)?;
+        let mut io = pg.usb.borrow_mut();
+        io.spi_blocking_transfer(Some(&mut buf), Some(&bytes))?;
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {

@@ -6,8 +6,8 @@ fn main() -> Result<()> {
     color_eyre::install()?;
 
     let gallo = PicoDeGallo::new()?;
-
-    let (i2c, _, _, mut delay) = gallo.split();
+    let i2c = gallo.clone();
+    let mut delay = gallo.clone();
 
     let mut sht = shtc3(i2c);
 

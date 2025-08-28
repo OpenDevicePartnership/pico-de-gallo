@@ -42,10 +42,12 @@ fn main() -> Result<()> {
     color_eyre::install()?;
 
     let gallo = PicoDeGallo::new()?;
-    let (_, spi, gpio, delay) = gallo.split();
+    let spi = gallo.clone();
+    let delay = gallo.clone();
+    let cs = gallo.gpio(0);
 
     // One SPI device only on the SPI bus
-    let spi_dev = ExclusiveDevice::new(spi, gpio, delay).unwrap();
+    let spi_dev = ExclusiveDevice::new(spi, cs, delay).unwrap();
 
     // Instantiate IS31FL3743B device
     let mut driver = Is31fl3743b::new(spi_dev).unwrap();
