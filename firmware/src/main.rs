@@ -40,8 +40,8 @@ static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
 static MSOS_DESCRIPTOR: StaticCell<[u8; 512]> = StaticCell::new();
 static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
 
-const USB_BUFFER_SIZE: usize = 1024;
-const BUS_BUFFER_SIZE: usize = 768;
+const USB_BUFFER_SIZE: usize = 4096;
+const BUS_BUFFER_SIZE: usize = 3072;
 const NUM_GPIOS: usize = 8;
 
 struct PicoDeGallo<'a> {
@@ -163,6 +163,7 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
     let mut rx_buf: [u8; USB_BUFFER_SIZE] = [0; USB_BUFFER_SIZE];
     let mut tx_buf: [u8; USB_BUFFER_SIZE] = [0; USB_BUFFER_SIZE];
     let mut bus_buf: [u8; BUS_BUFFER_SIZE] = [0; BUS_BUFFER_SIZE];
+    let mut rx_size = 0;
 
     loop {
         loop {
@@ -172,12 +173,29 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
             debug!("Pico De Gallo connected");
 
             loop {
-                let result = gallo.read_ep.read(&mut rx_buf).await;
+                let result = gallo.read_ep.read(&mut rx_buf[rx_size..]).await;
 
                 let response = if result.is_err() {
                     invalid_request()
                 } else {
-                    let result = from_bytes(&rx_buf);
+                    let size = result.unwrap();
+                    rx_size += size;
+
+                    // Ugh! This is a bit ugly.
+                    //
+                    // Here's the thing: the USB API is packet-based,
+                    // not transfer-based. This means that we if we
+                    // want to receive large transfers, we must do so
+                    // one packet at a time, even though we pass large
+                    // buffers.
+                    if size == usize::from(gallo.read_ep.info().max_packet_size) {
+                        continue;
+                    }
+
+                    let result = from_bytes(&rx_buf[..rx_size]);
+
+                    // reset to zero for the next set of packets.
+                    rx_size = 0;
 
                     if result.is_err() {
                         error!("Failed to deserialize request");
