@@ -11,7 +11,7 @@ use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{I2C1, SPI0, USB};
 use embassy_rp::spi::{self, Phase, Polarity, Spi};
 use embassy_rp::usb::{Endpoint, In, Out};
-use embassy_usb::driver::{Endpoint as _, EndpointIn, EndpointOut};
+use embassy_usb::driver::{Endpoint as _, EndpointError, EndpointIn, EndpointOut};
 use embassy_usb::msos::{self, windows_version};
 use embassy_usb::{Builder, Config};
 use pico_de_gallo_internal::*;
@@ -73,6 +73,28 @@ impl<'a> PicoDeGallo<'a> {
 
     async fn wait_for_connection(&mut self) {
         join(self.read_ep.wait_enabled(), self.write_ep.wait_enabled()).await;
+    }
+
+    async fn read_data(&mut self, data: &mut [u8]) -> Result<usize, EndpointError> {
+        let mut n = 0;
+
+        loop {
+            let i = self.read_ep.read(&mut data[n..]).await?;
+            n += i;
+            if i < self.read_ep.info().max_packet_size as usize {
+                return Ok(n);
+            }
+        }
+    }
+
+    async fn write_data(&mut self, data: &[u8]) -> Result<(), EndpointError> {
+        for chunk in data.chunks(self.write_ep.info().max_packet_size as usize) {
+            self.write_ep.write(chunk).await?;
+        }
+        if data.len() % self.write_ep.info().max_packet_size as usize == 0 {
+            self.write_ep.write(&[]).await?;
+        }
+        Ok(())
     }
 }
 
@@ -169,7 +191,6 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
     let mut rx_buf: [u8; USB_BUFFER_SIZE] = [0; USB_BUFFER_SIZE];
     let mut tx_buf: [u8; USB_BUFFER_SIZE] = [0; USB_BUFFER_SIZE];
     let mut bus_buf: [u8; BUS_BUFFER_SIZE] = [0; BUS_BUFFER_SIZE];
-    let mut rx_size = 0;
 
     loop {
         gallo.wait_for_connection().await;
@@ -177,29 +198,14 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
         debug!("Pico De Gallo connected");
 
         loop {
-            let result = gallo.read_ep.read(&mut rx_buf[rx_size..]).await;
+            let result = gallo.read_data(&mut rx_buf).await;
 
             let response = if result.is_err() {
                 invalid_request()
             } else {
-                let size = result.unwrap();
-                rx_size += size;
-
-                // Ugh! This is a bit ugly.
-                //
-                // Here's the thing: the USB API is packet-based,
-                // not transfer-based. This means that we if we
-                // want to receive large transfers, we must do so
-                // one packet at a time, even though we pass large
-                // buffers.
-                if size == usize::from(gallo.read_ep.info().max_packet_size) {
-                    continue;
-                }
+                let rx_size = result.unwrap();
 
                 let result = from_bytes(&rx_buf[..rx_size]);
-
-                // reset to zero for the next set of packets.
-                rx_size = 0;
 
                 if result.is_err() {
                     error!("Failed to deserialize request");
@@ -390,7 +396,7 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                 error!("Failed to serialize response");
                 break;
             } else {
-                let result = gallo.write_ep.write(ser.unwrap()).await;
+                let result = gallo.write_data(ser.unwrap()).await;
 
                 if result.is_err() {
                     error!("Failed to send response");
