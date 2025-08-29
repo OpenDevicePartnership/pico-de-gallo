@@ -6,6 +6,7 @@ use std::time::Duration;
 
 fn main() -> Result<()> {
     color_eyre::install()?;
+    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
 
     let gallo = PicoDeGallo::new(Config {
         spi_frequency: 10_000_000,
