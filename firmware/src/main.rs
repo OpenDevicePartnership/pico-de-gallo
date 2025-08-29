@@ -236,6 +236,8 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                 } else {
                     let request = result.unwrap();
 
+                    trace!("Received request: {}", request);
+
                     match request {
                         Request::I2c(i2c_request) => match i2c_request.opcode {
                             I2cOpcode::Read => {
@@ -412,6 +414,7 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                     }
                 }
             };
+            trace!("Prepared response: {}", response);
 
             let ser = to_slice(&response, &mut tx_buf);
 
