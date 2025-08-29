@@ -202,7 +202,7 @@ async fn main(spawner: Spawner) {
     // Build the builder.
     let mut usb = builder.build();
 
-    spawner.must_spawn(gallo_task(gallo));
+    spawner.spawn(gallo_task(gallo).unwrap());
 
     loop {
         usb.run().await;
