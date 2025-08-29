@@ -669,5 +669,10 @@
       "Root"
     ]
   ],
-  "text_variables": {}
+  "text_variables": {
+    "AUTHOR": "Felipe Balbi",
+    "COMPANY": "Open Device Partnership",
+    "PROJECT": "Pico de Gallo",
+    "REVISION": "2"
+  }
 }
