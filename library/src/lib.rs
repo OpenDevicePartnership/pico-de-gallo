@@ -127,6 +127,7 @@ impl UsbIo {
             spi_polarity,
         });
 
+        tracing::debug!("Request: {:?}", request);
         let output: Vec<u8> = to_stdvec(&request).map_err(|_| Error::Unknown)?;
 
         self.writer.write_all(&output).map_err(|_| Error::Io)?;
@@ -136,6 +137,7 @@ impl UsbIo {
         let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
         let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
+        tracing::debug!("Response: {:?}", response);
 
         match response {
             Response::SetConfig(set_config_response) => {
@@ -164,6 +166,7 @@ impl UsbIo {
             data: None,
         });
 
+        tracing::debug!("Request: {:?}", request);
         let output: Vec<u8> = to_stdvec(&request).map_err(|_| Error::Unknown)?;
 
         self.writer.write_all(&output).map_err(|_| Error::Io)?;
@@ -173,6 +176,7 @@ impl UsbIo {
         let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
         let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
+        tracing::debug!("Response: {:?}", response);
 
         match response {
             Response::I2c(i2c_response) => {
@@ -204,6 +208,7 @@ impl UsbIo {
             data: Some(buf),
         });
 
+        tracing::debug!("Request: {:?}", request);
         let output: Vec<u8> = to_stdvec(&request).map_err(|_| Error::Unknown)?;
 
         self.writer.write_all(&output).map_err(|_| Error::Io)?;
@@ -213,6 +218,7 @@ impl UsbIo {
         let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
         let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
+        tracing::debug!("Response: {:?}", response);
 
         match response {
             Response::I2c(i2c_response) => {
@@ -241,6 +247,7 @@ impl UsbIo {
                 data: write,
             });
 
+            tracing::debug!("Request: {:?}", request);
             let output: Vec<u8> = to_stdvec(&request).map_err(|_| Error::Unknown)?;
 
             self.writer.write_all(&output).map_err(|_| Error::Io)?;
@@ -250,6 +257,7 @@ impl UsbIo {
             let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
             let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
+            tracing::debug!("Response: {:?}", response);
 
             match response {
                 Response::Spi(spi_response) => {
@@ -273,6 +281,7 @@ impl UsbIo {
                 data: write,
             });
 
+            tracing::debug!("Request: {:?}", request);
             let output: Vec<u8> = to_stdvec(&request).map_err(|_| Error::Unknown)?;
 
             self.writer.write_all(&output).map_err(|_| Error::Io)?;
@@ -282,6 +291,7 @@ impl UsbIo {
             let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
             let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
+            tracing::debug!("Response: {:?}", response);
 
             match response {
                 Response::Spi(spi_response) => {
@@ -306,6 +316,7 @@ impl UsbIo {
                 data: None,
             });
 
+            tracing::debug!("Request: {:?}", request);
             let output: Vec<u8> = to_stdvec(&request).map_err(|_| Error::Unknown)?;
 
             self.writer.write_all(&output).map_err(|_| Error::Io)?;
@@ -315,6 +326,7 @@ impl UsbIo {
             let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
             let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
+            tracing::debug!("Response: {:?}", response);
 
             match response {
                 Response::Spi(spi_response) => {
@@ -344,6 +356,7 @@ impl UsbIo {
             data: None,
         });
 
+        tracing::debug!("Request: {:?}", request);
         let output: Vec<u8> = to_stdvec(&request).unwrap();
 
         self.writer.write_all(&output).map_err(|_| Error::Io)?;
@@ -353,6 +366,7 @@ impl UsbIo {
         let size = self.reader.read(&mut rx_buf).map_err(|_| Error::Io)?;
 
         let response: Response = from_bytes(&rx_buf[..size]).map_err(|_| Error::Unknown)?;
+        tracing::debug!("Response: {:?}", response);
 
         match response {
             Response::Spi(spi_response) => {
