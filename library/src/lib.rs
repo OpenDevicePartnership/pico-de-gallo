@@ -79,12 +79,21 @@ impl PicoDeGallo {
         let device = device.open().wait().map_err(|e| Error::Nusb(e))?;
         let intf = device.claim_interface(0).wait().map_err(|e| Error::Nusb(e))?;
         let writer = intf.endpoint::<Bulk, Out>(0x01).map_err(|_| Error::Io)?.writer(4096);
-        let reader = intf.endpoint::<Bulk, In>(0x81).map_err(|_| Error::Io)?.reader(4096);
+        let mut reader = intf.endpoint::<Bulk, In>(0x81).map_err(|_| Error::Io)?.reader(4096);
+
+        // Make sure receive queue is empty by attempting a read with a short timeout.
+        let mut dummy = vec![0; USB_BUFFER_SIZE];
+        reader.set_read_timeout(Duration::from_millis(100));
+        let _ = reader.read(&mut dummy);
+
+        // Reset timeout to MAX
+        reader.set_read_timeout(Duration::MAX);
 
         let usb = Rc::new(RefCell::new(UsbIo { writer, reader }));
 
         let mut io = usb.borrow_mut();
 
+        // Set bus parameters
         io.set_config(
             config.i2c_frequency,
             config.spi_frequency,
