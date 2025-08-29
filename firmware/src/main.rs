@@ -103,11 +103,34 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(Default::default());
     let driver = embassy_rp::usb::Driver::new(p.USB, Irqs);
 
+    // Obtain the flash ID
+    let unique_id: u64 = embassy_rp::otp::get_chipid().unwrap();
+    static SERIAL_STRING: StaticCell<[u8; 16]> = StaticCell::new();
+    let mut ser_buf = [b' '; 16];
+    // This is a simple number-to-hex formatting
+    unique_id
+        .to_be_bytes()
+        .iter()
+        .zip(ser_buf.chunks_exact_mut(2))
+        .for_each(|(b, chs)| {
+            let mut b = *b;
+            for c in chs {
+                *c = match b >> 4 {
+                    v @ 0..10 => b'0' + v,
+                    v @ 10..16 => b'A' + (v - 10),
+                    _ => b'X',
+                };
+                b <<= 4;
+            }
+        });
+    let ser_buf = SERIAL_STRING.init(ser_buf);
+    let ser_buf = core::str::from_utf8(ser_buf.as_slice()).unwrap();
+
     // Create embassy-usb Config
     let mut config = Config::new(0x045e, 0x7069);
     config.manufacturer = Some("Microsoft");
     config.product = Some("Pico de Gallo");
-    config.serial_number = Some("123456789");
+    config.serial_number = Some(ser_buf);
     config.max_power = 100;
     config.max_packet_size_0 = 64;
     config.self_powered = false;
