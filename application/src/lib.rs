@@ -20,10 +20,6 @@ pub struct Cli {
 enum Commands {
     /// I2C accessor
     I2c {
-        /// I2C slave address
-        #[arg(short, long, value_parser(parse_byte))]
-        address: u8,
-
         /// I2C commands
         #[command(subcommand)]
         command: Option<I2cCommands>,
@@ -57,8 +53,19 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum I2cCommands {
+    /// Scan I2C bus for existing devices
+    Scan {
+        /// Attempt reserved addresses
+        #[arg(short, long, default_value_t = false)]
+        reserved: bool,
+    },
+
     /// Read
     Read {
+        /// I2C slave address
+        #[arg(short, long, value_parser(parse_byte))]
+        address: u8,
+
         /// Number of bytes to read
         #[arg(short, long)]
         count: usize,
@@ -66,6 +73,10 @@ enum I2cCommands {
 
     /// Write
     Write {
+        /// I2C slave address
+        #[arg(short, long, value_parser(parse_byte))]
+        address: u8,
+
         /// Bytes to transfer
         #[arg(short, long, num_args(1..), value_parser(parse_byte))]
         bytes: Vec<u8>,
@@ -73,6 +84,10 @@ enum I2cCommands {
 
     /// Write then read
     WriteRead {
+        /// I2C slave address
+        #[arg(short, long, value_parser(parse_byte))]
+        address: u8,
+
         /// Bytes to transfer
         #[arg(short, long, num_args(1..), value_parser(parse_byte))]
         bytes: Vec<u8>,
@@ -115,11 +130,14 @@ impl Cli {
     pub fn run(&self) -> Result<()> {
         match &self.command {
             None => Ok(()),
-            Some(Commands::I2c { address, command }) => match command {
+            Some(Commands::I2c { command }) => match command {
                 None => Ok(()),
-                Some(I2cCommands::Read { count }) => self.i2c_read(address, count),
-                Some(I2cCommands::Write { bytes }) => self.i2c_write(address, bytes),
-                Some(I2cCommands::WriteRead { bytes, count }) => self.i2c_write_then_read(address, bytes, count),
+                Some(I2cCommands::Scan { reserved }) => self.i2c_scan(*reserved),
+                Some(I2cCommands::Read { address, count }) => self.i2c_read(address, count),
+                Some(I2cCommands::Write { address, bytes }) => self.i2c_write(address, bytes),
+                Some(I2cCommands::WriteRead { address, bytes, count }) => {
+                    self.i2c_write_then_read(address, bytes, count)
+                }
             },
             Some(Commands::Spi { command }) => match command {
                 None => Ok(()),
@@ -134,6 +152,58 @@ impl Cli {
                 spi_idle_low,
             }) => self.set_config(*i2c_frequency, *spi_frequency, *spi_first_transition, *spi_idle_low),
         }
+    }
+
+    fn i2c_scan(&self, reserved: bool) -> Result<()> {
+        let mut buf = vec![0; 1];
+        let pg = PicoDeGallo::new(Default::default())?;
+        let mut io = pg.usb.borrow_mut();
+        let mut high = 0;
+        print!(
+            r#"
+   0  1  2  3  4  5  6  7  8  9  a  b  c  d  e  f
+{:x} "#,
+            high
+        );
+
+        for address in 0..=0x7f_u8 {
+            match address {
+                0x00..=0x07 | 0x78..=0x7f => {
+                    if reserved {
+                        let result = io.i2c_blocking_read(address, &mut buf);
+
+                        if result.is_ok() {
+                            print!("{:02x} ", address);
+                        } else {
+                            print!("-- ");
+                        }
+                    } else {
+                        print!("RR ");
+                    }
+                }
+
+                _ => {
+                    let result = io.i2c_blocking_read(address, &mut buf);
+                    if result.is_ok() {
+                        print!("{:02x} ", address);
+                    } else {
+                        print!("-- ");
+                    }
+                }
+            }
+
+            if address & 0x0f == 0x0f {
+                high += 1;
+                print!("\n");
+
+                if high < 8 {
+                    print!("{:x} ", high);
+                }
+            }
+        }
+        print!("\n");
+
+        Ok(())
     }
 
     fn i2c_read(&self, address: &u8, count: &usize) -> Result<()> {
