@@ -245,15 +245,15 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
 
                                 if result.is_err() {
                                     error!("Failed to read from I2C address {:02x}", i2c_request.address);
-                                    break;
+                                    Response::InvalidRequest
+                                } else {
+                                    Response::I2c(I2cResponse {
+                                        status: Status::Success,
+                                        address: Some(i2c_request.address),
+                                        size: Some(i2c_request.size),
+                                        data: Some(&bus_buf[..usize::from(i2c_request.size)]),
+                                    })
                                 }
-
-                                Response::I2c(I2cResponse {
-                                    status: Status::Success,
-                                    address: Some(i2c_request.address),
-                                    size: Some(i2c_request.size),
-                                    data: Some(&bus_buf[..usize::from(i2c_request.size)]),
-                                })
                             }
                             I2cOpcode::Write => {
                                 if i2c_request.data.is_none() {
@@ -265,15 +265,15 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
 
                                     if result.is_err() {
                                         error!("Failed to write to I2C address {:02x}", i2c_request.address);
-                                        break;
+                                        Response::InvalidRequest
+                                    } else {
+                                        Response::I2c(I2cResponse {
+                                            status: Status::Success,
+                                            address: Some(i2c_request.address),
+                                            size: None,
+                                            data: None,
+                                        })
                                     }
-
-                                    Response::I2c(I2cResponse {
-                                        status: Status::Success,
-                                        address: Some(i2c_request.address),
-                                        size: None,
-                                        data: None,
-                                    })
                                 }
                             }
                         },
@@ -428,10 +428,6 @@ async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
                     error!("Failed to send response");
                     break;
                 }
-            }
-
-            if response == Response::InvalidRequest {
-                break;
             }
         }
 
