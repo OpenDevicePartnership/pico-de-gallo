@@ -73,7 +73,7 @@ impl PicoDeGallo {
         let device = list_devices()
             .wait()
             .map_err(|e| Error::Nusb(e))?
-            .find(|dev| dev.vendor_id() == 0x045e && dev.product_id() == 0x7069)
+            .find(|dev| dev.vendor_id() == MICROSOFT_VID && dev.product_id() == PICO_DE_GALLO_PID)
             .ok_or(Error::DeviceNotFound)?;
 
         let device = device.open().wait().map_err(|e| Error::Nusb(e))?;

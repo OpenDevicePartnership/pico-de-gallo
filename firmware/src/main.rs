@@ -127,7 +127,7 @@ async fn main(spawner: Spawner) {
     let ser_buf = core::str::from_utf8(ser_buf.as_slice()).unwrap();
 
     // Create embassy-usb Config
-    let mut config = Config::new(0x045e, 0x7069);
+    let mut config = Config::new(MICROSOFT_VID, PICO_DE_GALLO_PID);
     config.manufacturer = Some("Microsoft");
     config.product = Some("Pico de Gallo");
     config.serial_number = Some(ser_buf);

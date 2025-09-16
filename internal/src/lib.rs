@@ -2,6 +2,9 @@
 
 use serde::{Deserialize, Serialize};
 
+pub const MICROSOFT_VID: u16 = 0x045e;
+pub const PICO_DE_GALLO_PID: u16 = 0x067d;
+
 /// Status values
 #[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
