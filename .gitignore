@@ -10,3 +10,4 @@ fp-info-cache
 # FreeCAD backup files
 *.FCBak
 /hardware/production/
+*.uf2
