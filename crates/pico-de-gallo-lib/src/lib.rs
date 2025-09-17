@@ -14,7 +14,7 @@ use std::thread;
 use std::time::Duration;
 use thiserror::Error;
 
-pub const USB_BUFFER_SIZE: usize = 4096;
+const USB_BUFFER_SIZE: usize = 4096;
 
 #[derive(Error, Clone, Debug)]
 pub enum Error {

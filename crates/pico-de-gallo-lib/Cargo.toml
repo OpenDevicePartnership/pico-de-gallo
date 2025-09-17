@@ -4,7 +4,6 @@ version = "0.2.0"
 edition = "2024"
 
 [dependencies]
-color-eyre = "0.6.5"
 embedded-hal = "1.0.0"
 nusb = "0.2.0"
 pico-de-gallo-internal = { path = "../pico-de-gallo-internal" }

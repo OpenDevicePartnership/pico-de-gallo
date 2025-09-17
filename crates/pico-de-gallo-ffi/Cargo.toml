@@ -1,0 +1,13 @@
+[package]
+name = "pico-de-gallo-ffi"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+pico-de-gallo-lib = { path = "../pico-de-gallo-lib" }
+
+[build-dependencies]
+cbindgen = "0.29"
+
+[lib]
+crate-type = ["cdylib"]
