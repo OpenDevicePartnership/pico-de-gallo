@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
-use color_eyre::Result;
-use pico_de_gallo_lib::{PicoDeGallo, SpiPhase, SpiPolarity};
+use color_eyre::{eyre::eyre, Result};
+use pico_de_gallo_lib::PicoDeGallo;
 use std::num::ParseIntError;
 
 #[derive(Parser, Debug)]
@@ -12,6 +12,9 @@ use std::num::ParseIntError;
     version
 )]
 pub struct Cli {
+    #[arg(short, long)]
+    serial_number: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -127,37 +130,43 @@ enum SpiCommands {
 }
 
 impl Cli {
-    pub fn run(&self) -> Result<()> {
+    pub async fn run(&self) -> Result<()> {
         match &self.command {
             None => Ok(()),
             Some(Commands::I2c { command }) => match command {
                 None => Ok(()),
-                Some(I2cCommands::Scan { reserved }) => self.i2c_scan(*reserved),
-                Some(I2cCommands::Read { address, count }) => self.i2c_read(address, count),
-                Some(I2cCommands::Write { address, bytes }) => self.i2c_write(address, bytes),
+                Some(I2cCommands::Scan { reserved }) => self.i2c_scan(*reserved).await,
+                Some(I2cCommands::Read { address, count }) => self.i2c_read(address, count).await,
+                Some(I2cCommands::Write { address, bytes }) => self.i2c_write(address, bytes).await,
                 Some(I2cCommands::WriteRead { address, bytes, count }) => {
-                    self.i2c_write_then_read(address, bytes, count)
+                    self.i2c_write_then_read(address, bytes, count).await
                 }
             },
             Some(Commands::Spi { command }) => match command {
                 None => Ok(()),
-                Some(SpiCommands::Read { count }) => self.spi_read(count),
-                Some(SpiCommands::Write { bytes }) => self.spi_write(bytes),
-                Some(SpiCommands::WriteRead { count, bytes }) => self.spi_write_then_read(bytes, count),
+                Some(SpiCommands::Read { count }) => self.spi_read(count).await,
+                Some(SpiCommands::Write { bytes }) => self.spi_write(bytes).await,
+                Some(SpiCommands::WriteRead { count, bytes }) => self.spi_write_then_read(bytes, count).await,
             },
             Some(Commands::SetConfig {
                 i2c_frequency,
                 spi_frequency,
                 spi_first_transition,
                 spi_idle_low,
-            }) => self.set_config(*i2c_frequency, *spi_frequency, *spi_first_transition, *spi_idle_low),
+            }) => {
+                self.set_config(*i2c_frequency, *spi_frequency, *spi_first_transition, *spi_idle_low)
+                    .await
+            }
         }
     }
 
-    fn i2c_scan(&self, reserved: bool) -> Result<()> {
-        let mut buf = vec![0; 1];
-        let pg = PicoDeGallo::new(Default::default())?;
-        let mut io = pg.usb.borrow_mut();
+    async fn i2c_scan(&self, reserved: bool) -> Result<()> {
+        let pg = if self.serial_number.is_some() {
+            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        } else {
+            PicoDeGallo::new()
+        };
+
         let mut high = 0;
         print!(
             r#"
@@ -170,7 +179,7 @@ impl Cli {
             match address {
                 0x00..=0x07 | 0x78..=0x7f => {
                     if reserved {
-                        let result = io.i2c_blocking_read(address, &mut buf);
+                        let result = pg.i2c_read(address, 1).await;
 
                         if result.is_ok() {
                             print!("{:02x} ", address);
@@ -183,7 +192,7 @@ impl Cli {
                 }
 
                 _ => {
-                    let result = io.i2c_blocking_read(address, &mut buf);
+                    let result = pg.i2c_read(address, 1).await;
                     if result.is_ok() {
                         print!("{:02x} ", address);
                     } else {
@@ -206,11 +215,17 @@ impl Cli {
         Ok(())
     }
 
-    fn i2c_read(&self, address: &u8, count: &usize) -> Result<()> {
-        let mut buf = vec![0; *count];
-        let pg = PicoDeGallo::new(Default::default())?;
-        let mut io = pg.usb.borrow_mut();
-        io.i2c_blocking_read(*address, &mut buf)?;
+    async fn i2c_read(&self, address: &u8, count: &usize) -> Result<()> {
+        let pg = if self.serial_number.is_some() {
+            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        } else {
+            PicoDeGallo::new()
+        };
+
+        let buf = match pg.i2c_read(*address, *count as u16).await {
+            Ok(data) => data,
+            Err(_) => return Err(eyre!("i2c_read failed")),
+        };
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {
@@ -225,23 +240,36 @@ impl Cli {
         Ok(())
     }
 
-    fn i2c_write(&self, address: &u8, bytes: &[u8]) -> Result<()> {
-        let pg = PicoDeGallo::new(Default::default())?;
-        let mut io = pg.usb.borrow_mut();
-        io.i2c_blocking_write(*address, bytes)?;
-        Ok(())
+    async fn i2c_write(&self, address: &u8, bytes: &[u8]) -> Result<()> {
+        let pg = if self.serial_number.is_some() {
+            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        } else {
+            PicoDeGallo::new()
+        };
+
+        if pg.i2c_write(*address, bytes).await.is_ok() {
+            Ok(())
+        } else {
+            Err(eyre!("i2c_write failed"))
+        }
     }
 
-    fn i2c_write_then_read(&self, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
-        self.i2c_write(address, bytes)?;
-        self.i2c_read(address, count)
+    async fn i2c_write_then_read(&self, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
+        self.i2c_write(address, bytes).await?;
+        self.i2c_read(address, count).await
     }
 
-    fn spi_read(&self, count: &usize) -> Result<()> {
-        let mut buf = vec![0; *count];
-        let pg = PicoDeGallo::new(Default::default())?;
-        let mut io = pg.usb.borrow_mut();
-        io.spi_blocking_transfer(Some(&mut buf), None)?;
+    async fn spi_read(&self, count: &usize) -> Result<()> {
+        let pg = if self.serial_number.is_some() {
+            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        } else {
+            PicoDeGallo::new()
+        };
+
+        let buf = match pg.spi_read(*count as u16).await {
+            Ok(data) => data,
+            Err(_) => return Err(eyre!("spi read failed")),
+        };
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {
@@ -256,55 +284,48 @@ impl Cli {
         Ok(())
     }
 
-    fn spi_write(&self, bytes: &[u8]) -> Result<()> {
-        let pg = PicoDeGallo::new(Default::default())?;
-        let mut io = pg.usb.borrow_mut();
-        io.spi_blocking_transfer(None, Some(bytes))?;
-        Ok(())
-    }
+    async fn spi_write(&self, bytes: &[u8]) -> Result<()> {
+        let pg = if self.serial_number.is_some() {
+            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        } else {
+            PicoDeGallo::new()
+        };
 
-    fn spi_write_then_read(&self, bytes: &[u8], count: &usize) -> Result<()> {
-        let mut buf = vec![0; *count];
-        let pg = PicoDeGallo::new(Default::default())?;
-        let mut io = pg.usb.borrow_mut();
-        io.spi_blocking_transfer(Some(&mut buf), Some(&bytes))?;
-
-        for (i, b) in buf.iter().enumerate() {
-            if i > 0 && i % 16 == 0 {
-                print!("\n");
-            }
-
-            print!("{:02x} ", b);
+        if pg.spi_write(bytes).await.is_ok() {
+            Ok(())
+        } else {
+            Err(eyre!("spi write failed"))
         }
-
-        print!("\n");
-
-        Ok(())
     }
 
-    fn set_config(
+    async fn spi_write_then_read(&self, bytes: &[u8], count: &usize) -> Result<()> {
+        self.spi_write(bytes).await?;
+        self.spi_read(count).await
+    }
+
+    async fn set_config(
         &self,
-        i2c_frequency: u32,
-        spi_frequency: u32,
-        spi_first_transition: bool,
-        spi_idle_low: bool,
+        _i2c_frequency: u32,
+        _spi_frequency: u32,
+        _spi_first_transition: bool,
+        _spi_idle_low: bool,
     ) -> Result<()> {
-        let pg = PicoDeGallo::new(Default::default())?;
-        let mut io = pg.usb.borrow_mut();
+        // let pg = PicoDeGallo::new(Default::default())?;
+        // let mut io = pg.usb.borrow_mut();
 
-        let spi_polarity = if spi_idle_low {
-            SpiPolarity::IdleLow
-        } else {
-            SpiPolarity::IdleHigh
-        };
+        // let spi_polarity = if spi_idle_low {
+        //     SpiPolarity::IdleLow
+        // } else {
+        //     SpiPolarity::IdleHigh
+        // };
 
-        let spi_phase = if spi_first_transition {
-            SpiPhase::CaptureOnFirstTransition
-        } else {
-            SpiPhase::CaptureOnSecondTransition
-        };
+        // let spi_phase = if spi_first_transition {
+        //     SpiPhase::CaptureOnFirstTransition
+        // } else {
+        //     SpiPhase::CaptureOnSecondTransition
+        // };
 
-        io.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity)?;
+        // io.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity)?;
 
         Ok(())
     }

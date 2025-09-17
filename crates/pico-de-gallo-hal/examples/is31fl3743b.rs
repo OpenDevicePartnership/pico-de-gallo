@@ -1,20 +1,13 @@
-use color_eyre::Result;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use is31fl3743b_driver::{CSy, Is31fl3743b, SWx};
-use pico_de_gallo_lib::{Config, PicoDeGallo};
+use pico_de_gallo_hal::Hal;
 use std::time::Duration;
 
-fn main() -> Result<()> {
-    color_eyre::install()?;
-    tracing_subscriber::fmt().with_max_level(tracing::Level::INFO).init();
-
-    let gallo = PicoDeGallo::new(Config {
-        spi_frequency: 10_000_000,
-        ..Default::default()
-    })?;
-    let spi = gallo.clone();
-    let delay = gallo.clone();
-    let cs = gallo.gpio(0);
+fn main() {
+    let hal = Hal::new();
+    let spi = hal.spi();
+    let delay = hal.delay();
+    let cs = hal.gpio(0);
 
     // One SPI device only on the SPI bus
     let spi_dev = ExclusiveDevice::new(spi, cs, delay).unwrap();

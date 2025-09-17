@@ -1,195 +1,158 @@
-#![no_std]
+#![cfg_attr(not(feature = "use-std"), no_std)]
 
+use postcard_rpc::{TopicDirection, endpoints, topics};
+use postcard_schema::Schema;
 use serde::{Deserialize, Serialize};
 
 pub const MICROSOFT_VID: u16 = 0x045e;
 pub const PICO_DE_GALLO_PID: u16 = 0x067d;
 
-/// Status values
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum Status {
-    Success,
-    Fail,
+// ---
+
+pub type I2cWriteResponse = Result<(), I2cWriteFail>;
+
+#[cfg(feature = "use-std")]
+pub type I2cReadResponse<'a> = Result<Vec<u8>, I2cReadFail>;
+#[cfg(not(feature = "use-std"))]
+pub type I2cReadResponse<'a> = Result<&'a [u8], I2cReadFail>;
+
+pub type SpiWriteResponse = Result<(), SpiWriteFail>;
+
+#[cfg(feature = "use-std")]
+pub type SpiReadResponse<'a> = Result<Vec<u8>, SpiReadFail>;
+#[cfg(not(feature = "use-std"))]
+pub type SpiReadResponse<'a> = Result<&'a [u8], SpiReadFail>;
+
+pub type SpiFlushResponse = Result<(), SpiFlushFail>;
+pub type GpioGetResponse = Result<GpioState, GpioGetFail>;
+pub type GpioPutResponse = Result<(), GpioPutFail>;
+pub type SetConfigurationResponse = Result<(), SetConfigurationFail>;
+
+endpoints! {
+    list = ENDPOINT_LIST;
+    | EndpointTy       | RequestTy               | ResponseTy               | Path         |
+    | ----------       | ---------               | ----------               | ----         |
+    | PingEndpoint     | u32                     | u32                      | "ping"       |
+    | I2cRead          | I2cReadRequest          | I2cReadResponse<'a>      | "i2c/read"   |
+    | I2cWrite         | I2cWriteRequest<'a>     | I2cWriteResponse         | "i2c/write"  |
+    | SpiRead          | SpiReadRequest          | SpiReadResponse<'a>      | "spi/read"   |
+    | SpiWrite         | SpiWriteRequest<'a>     | SpiWriteResponse         | "spi/write"  |
+    | SpiFlush         | ()                      | SpiFlushResponse         | "spi/flush"  |
+    | GpioGet          | GpioGetRequest          | GpioGetResponse          | "gpio/get"   |
+    | GpioPut          | GpioPutRequest          | GpioPutResponse          | "gpio/put"   |
+    | SetConfiguration | SetConfigurationRequest | SetConfigurationResponse | "set-config" |
+    | Version          | ()                      | VersionInfo              | "version"    |
 }
 
-/// Request representation.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum Request<'a> {
-    #[serde(borrow)]
-    I2c(I2cRequest<'a>),
-    #[serde(borrow)]
-    Spi(SpiRequest<'a>),
-    Gpio(GpioRequest),
-    SetConfig(SetConfigRequest),
+topics! {
+    list = TOPICS_IN_LIST;
+    direction = TopicDirection::ToServer;
+    | TopicTy | MessageTy | Path |
+    | ------- | --------- | ---- |
 }
 
-/// Response representation.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum Response<'a> {
-    InvalidRequest,
-    #[serde(borrow)]
-    I2c(I2cResponse<'a>),
-    #[serde(borrow)]
-    Spi(SpiResponse<'a>),
-    Gpio(GpioResponse),
-    SetConfig(SetConfigResponse),
+topics! {
+    list = TOPICS_OUT_LIST;
+    direction = TopicDirection::ToClient;
+    | TopicTy | MessageTy | Path | Cfg |
+    | ------- | --------- | ---- | --- |
 }
 
-/// I2c Request.
-///
-/// I2c requests consist of an opcode, the i2c device address, the
-/// size of the transfer and an optional data block used for write
-/// requests.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct I2cRequest<'a> {
-    pub opcode: I2cOpcode,
-    pub address: u16,
-    pub size: u16,
-    #[serde(borrow)]
-    pub data: Option<&'a [u8]>,
+// --- I2C
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct I2cReadRequest {
+    pub address: u8,
+    pub count: u16,
 }
 
-/// I2c Response.
-///
-/// I2c responses consist of a [`Status`], an optional device address,
-/// an optional size, and an optional data.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct I2cResponse<'a> {
-    pub status: Status,
-    pub address: Option<u16>,
-    pub size: Option<u16>,
-    #[serde(borrow)]
-    pub data: Option<&'a [u8]>,
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct I2cReadFail;
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct I2cWriteRequest<'a> {
+    pub address: u8,
+    pub contents: &'a [u8],
 }
 
-/// I2c opcodes.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum I2cOpcode {
-    Read = 0,
-    Write = 1,
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct I2cWriteFail;
+
+// --- SPI
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct SpiReadRequest {
+    pub count: u16,
 }
 
-/// Spi Request.
-///
-/// Spi requests consist of an opcode, an optional read size and an
-/// optional data block used for write requests.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct SpiRequest<'a> {
-    pub opcode: SpiOpcode,
-    pub size: Option<u16>,
-    #[serde(borrow)]
-    pub data: Option<&'a [u8]>,
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct SpiReadFail;
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct SpiWriteRequest<'a> {
+    pub contents: &'a [u8],
 }
 
-/// Spi Response.
-///
-/// Spi responses consist of a [`Status`], an optional size, and an
-/// optional data.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct SpiResponse<'a> {
-    pub status: Status,
-    pub size: Option<u16>,
-    #[serde(borrow)]
-    pub data: Option<&'a [u8]>,
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct SpiWriteFail;
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct SpiFlushFail;
+
+// --- GPIO
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct GpioGetRequest {
+    pub pin: u8,
 }
 
-/// Spi opcodes.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum SpiOpcode {
-    Transfer = 0,
-    Flush = 1,
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct GpioGetFail;
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct GpioPutRequest {
+    pub pin: u8,
+    pub state: GpioState,
 }
 
-/// Gpio Request.
-///
-/// Gpio requests consist of an opcode, the target [`Pin`] and an
-/// optional [`State`] to set the pin to.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct GpioRequest {
-    pub opcode: GpioOpcode,
-    pub pin: Pin,
-    pub state: Option<GpioState>,
-}
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct GpioPutFail;
 
-/// Gpio Response.
-///
-/// Gpio responses consist of a [`Status`], a target [`Pin`] copied
-/// from the [`GpioRequest`] and an optional [`GpioState`].
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct GpioResponse {
-    pub status: Status,
-    pub pin: Pin,
-    pub state: Option<GpioState>,
-}
-
-/// Gpio opcodes.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub enum GpioOpcode {
-    GetState = 0,
-    SetState = 1,
-}
-
-/// Pin representation.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct Pin {
-    pub index: u8,
-}
-
-/// Gpio state.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub enum GpioState {
     Low,
     High,
 }
 
-/// Set Config Request.
-///
-/// Set config allows us to configure settings for the underlying I2c
-/// and Spi buses.
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct SetConfigRequest {
+// --- Set config
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct SetConfigurationRequest {
     pub i2c_frequency: u32,
     pub spi_frequency: u32,
     pub spi_phase: SpiPhase,
     pub spi_polarity: SpiPolarity,
 }
 
-/// Spi phase.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub enum SpiPhase {
     CaptureOnFirstTransition = 0,
     CaptureOnSecondTransition = 1,
 }
 
-/// Spi polarity.
-#[derive(Clone, Copy, Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub enum SpiPolarity {
     IdleLow = 0,
     IdleHigh = 1,
 }
 
-/// Set Config Response.
-///
-/// Set config responses consist of only aj [`Status`].
-#[derive(Serialize, Deserialize, Debug, Eq, PartialEq)]
-#[cfg_attr(feature = "defmt", derive(defmt::Format))]
-pub struct SetConfigResponse {
-    pub status: Status,
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct SetConfigurationFail;
+
+// --- Version
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct VersionInfo {
+    pub major: u16,
+    pub minor: u16,
+    pub patch: u32,
 }

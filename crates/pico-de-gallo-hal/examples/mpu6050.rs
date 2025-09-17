@@ -1,15 +1,12 @@
-use color_eyre::Result;
 use mpu6050_dmp::address::Address;
 use mpu6050_dmp::sensor::Mpu6050;
-use pico_de_gallo_lib::PicoDeGallo;
+use pico_de_gallo_hal::Hal;
 use std::time::Duration;
 
-fn main() -> Result<()> {
-    color_eyre::install()?;
-
-    let gallo = PicoDeGallo::new(Default::default())?;
-    let i2c = gallo.clone();
-    let mut delay = gallo.clone();
+fn main() {
+    let hal = Hal::new();
+    let i2c = hal.i2c();
+    let mut delay = hal.delay();
 
     let mut sensor = Mpu6050::new(i2c, Address::default()).unwrap();
 

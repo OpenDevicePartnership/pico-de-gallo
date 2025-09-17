@@ -1,21 +1,37 @@
 #![no_std]
 #![no_main]
 
-use defmt::*;
+use defmt::info;
 use embassy_embedded_hal::SetConfig;
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
 use embassy_rp::bind_interrupts;
 use embassy_rp::gpio::{Flex, Level};
 use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{I2C1, SPI0, USB};
 use embassy_rp::spi::{self, Phase, Polarity, Spi};
-use embassy_rp::usb::{Endpoint, In, Out};
-use embassy_usb::driver::{Endpoint as _, EndpointError, EndpointIn, EndpointOut};
-use embassy_usb::msos::{self, windows_version};
-use embassy_usb::{Builder, Config};
-use pico_de_gallo_internal::*;
-use postcard::{from_bytes, to_slice};
+use embassy_rp::usb::Driver;
+use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
+use embassy_usb::{Config, UsbDevice};
+use pico_de_gallo_internal::{
+    ENDPOINT_LIST, GpioGet, GpioGetRequest, GpioGetResponse, GpioPut, GpioPutRequest, GpioPutResponse, GpioState,
+    I2cRead, I2cReadFail, I2cReadRequest, I2cReadResponse, I2cWrite, I2cWriteFail, I2cWriteRequest, I2cWriteResponse,
+    MICROSOFT_VID, PICO_DE_GALLO_PID, PingEndpoint, SetConfiguration, SetConfigurationFail, SetConfigurationRequest,
+    SetConfigurationResponse, SpiFlush, SpiFlushFail, SpiFlushResponse, SpiPhase, SpiPolarity, SpiRead, SpiReadFail,
+    SpiReadRequest, SpiReadResponse, SpiWrite, SpiWriteFail, SpiWriteRequest, SpiWriteResponse, TOPICS_IN_LIST,
+    TOPICS_OUT_LIST, Version, VersionInfo,
+};
+use postcard_rpc::{
+    define_dispatch,
+    header::VarHeader,
+    server::{
+        Dispatch, Server,
+        impls::embassy_usb_v0_5::{
+            PacketBuffers,
+            dispatch_impl::{WireRxBuf, WireRxImpl, WireSpawnImpl, WireStorage, WireTxImpl},
+        },
+    },
+};
+use static_cell::ConstStaticCell;
 use static_cell::StaticCell;
 use {defmt_rtt as _, panic_probe as _};
 
@@ -29,80 +45,57 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
     embassy_rp::binary_info::rp_program_build_attribute!(),
 ];
 
+// auto-generated version information from Cargo.toml
+include!(concat!(env!("OUT_DIR"), "/version.rs"));
+
 bind_interrupts!(struct Irqs {
     USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<USB>;
     I2C1_IRQ => embassy_rp::i2c::InterruptHandler<I2C1>;
 });
 
-// This is a randomly generated GUID to allow clients on Windows to find our device
-const DEVICE_INTERFACE_GUIDS: &[&str] = &["{F41916C1-5335-4DB1-91F5-D023CB63AC67}"];
-
-static CONFIG_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
-static BOS_DESCRIPTOR: StaticCell<[u8; 256]> = StaticCell::new();
-static MSOS_DESCRIPTOR: StaticCell<[u8; 512]> = StaticCell::new();
-static CONTROL_BUF: StaticCell<[u8; 64]> = StaticCell::new();
-
-const USB_BUFFER_SIZE: usize = 4096;
-const BUS_BUFFER_SIZE: usize = 3072;
 const NUM_GPIOS: usize = 8;
+const BUFFER_SIZE: usize = 512;
 
-struct PicoDeGallo<'a> {
-    i2c: I2c<'a, I2C1, i2c::Async>,
-    spi: Spi<'a, SPI0, spi::Async>,
-    gpios: [Flex<'a>; NUM_GPIOS],
-    read_ep: Endpoint<'a, USB, Out>,
-    write_ep: Endpoint<'a, USB, In>,
+pub struct Context {
+    i2c: I2c<'static, I2C1, i2c::Async>,
+    spi: Spi<'static, SPI0, spi::Async>,
+    gpios: [Flex<'static>; NUM_GPIOS],
+    buf: [u8; BUFFER_SIZE],
 }
 
-impl<'a> PicoDeGallo<'a> {
+impl Context {
     fn new(
-        i2c: I2c<'a, I2C1, i2c::Async>,
-        spi: Spi<'a, SPI0, spi::Async>,
-        gpios: [Flex<'a>; NUM_GPIOS],
-        read_ep: Endpoint<'a, USB, Out>,
-        write_ep: Endpoint<'a, USB, In>,
+        i2c: I2c<'static, I2C1, i2c::Async>,
+        spi: Spi<'static, SPI0, spi::Async>,
+        gpio0: Flex<'static>,
+        gpio1: Flex<'static>,
+        gpio2: Flex<'static>,
+        gpio3: Flex<'static>,
+        gpio4: Flex<'static>,
+        gpio5: Flex<'static>,
+        gpio6: Flex<'static>,
+        gpio7: Flex<'static>,
     ) -> Self {
         Self {
             i2c,
             spi,
-            gpios,
-            read_ep,
-            write_ep,
+            gpios: [gpio0, gpio1, gpio2, gpio3, gpio4, gpio5, gpio6, gpio7],
+            buf: [0; BUFFER_SIZE],
         }
-    }
-
-    async fn wait_for_connection(&mut self) {
-        join(self.read_ep.wait_enabled(), self.write_ep.wait_enabled()).await;
-    }
-
-    async fn read_data(&mut self, data: &mut [u8]) -> Result<usize, EndpointError> {
-        let mut n = 0;
-
-        loop {
-            let i = self.read_ep.read(&mut data[n..]).await?;
-            n += i;
-            if i < self.read_ep.info().max_packet_size as usize {
-                return Ok(n);
-            }
-        }
-    }
-
-    async fn write_data(&mut self, data: &[u8]) -> Result<(), EndpointError> {
-        for chunk in data.chunks(self.write_ep.info().max_packet_size as usize) {
-            self.write_ep.write(chunk).await?;
-        }
-        if data.len() % self.write_ep.info().max_packet_size as usize == 0 {
-            self.write_ep.write(&[]).await?;
-        }
-        Ok(())
     }
 }
 
-#[embassy_executor::main]
-async fn main(spawner: Spawner) {
-    let p = embassy_rp::init(Default::default());
-    let driver = embassy_rp::usb::Driver::new(p.USB, Irqs);
+type AppDriver = Driver<'static, USB>;
+type AppStorage = WireStorage<ThreadModeRawMutex, AppDriver, 256, 256, 64, 256>;
+type BufStorage = PacketBuffers<1024, 1024>;
+type AppTx = WireTxImpl<ThreadModeRawMutex, AppDriver>;
+type AppRx = WireRxImpl<AppDriver>;
+type AppServer = Server<AppTx, AppRx, WireRxBuf, PicoDeGallo>;
 
+static PBUFS: ConstStaticCell<BufStorage> = ConstStaticCell::new(BufStorage::new());
+static STORAGE: AppStorage = AppStorage::new();
+
+fn usb_config() -> Config<'static> {
     // Obtain the flash ID
     let unique_id: u64 = embassy_rp::otp::get_chipid().unwrap();
     static SERIAL_STRING: StaticCell<[u8; 16]> = StaticCell::new();
@@ -139,39 +132,56 @@ async fn main(spawner: Spawner) {
     config.device_sub_class = 0xff;
     config.device_protocol = 0xff;
 
-    // Create embassy-usb DeviceBuilder using the driver and config.
-    //
-    // It needs some buffers for building the descriptors.
-    let config_descriptor = CONFIG_DESCRIPTOR.init([0; 256]);
-    let bos_descriptor = BOS_DESCRIPTOR.init([0; 256]);
-    let msos_descriptor = MSOS_DESCRIPTOR.init([0; 512]);
-    let control_buf = CONTROL_BUF.init([0; 64]);
+    config
+}
 
-    let mut builder = Builder::new(
-        driver,
-        config,
-        config_descriptor,
-        bos_descriptor,
-        msos_descriptor,
-        control_buf,
-    );
+define_dispatch! {
+    app: PicoDeGallo;
+    spawn_fn: spawn_fn;
+    tx_impl: AppTx;
+    spawn_impl: WireSpawnImpl;
+    context: Context;
 
-    builder.msos_descriptor(windows_version::WIN8_1, 0);
-    builder.msos_feature(msos::CompatibleIdFeatureDescriptor::new("WINUSB", ""));
-    builder.msos_feature(msos::RegistryPropertyFeatureDescriptor::new(
-        "DeviceInterfaceGUIDs",
-        msos::PropertyData::RegMultiSz(DEVICE_INTERFACE_GUIDS),
-    ));
+    endpoints: {
+        list: ENDPOINT_LIST;
 
-    let mut function = builder.function(0xff, 0xff, 0xff);
+        | EndpointTy       | kind     | handler            |
+        | ----------       | ----     | -------            |
+        | PingEndpoint     | blocking | ping_handler       |
+        | I2cRead          | async    | i2c_read_handler   |
+        | I2cWrite         | async    | i2c_write_handler  |
+        | SpiRead          | async    | spi_read_handler   |
+        | SpiWrite         | async    | spi_write_handler  |
+        | SpiFlush         | async    | spi_flush_handler  |
+        | GpioGet          | async    | gpio_get_handler   |
+        | GpioPut          | async    | gpio_put_handler   |
+        | SetConfiguration | async    | set_config_handler |
+        | Version          | async    | version_handler    |
+    };
+    topics_in: {
+        list: TOPICS_IN_LIST;
 
-    // I2C
-    let mut interface = function.interface();
-    let mut alt = interface.alt_setting(0xff, 0xff, 0xff, None);
-    let read_ep = alt.endpoint_bulk_out(None, 64);
-    let write_ep = alt.endpoint_bulk_in(None, 64);
-    let i2c_bus = embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_3, p.PIN_2, Irqs, embassy_rp::i2c::Config::default());
-    let spi_bus = embassy_rp::spi::Spi::new(
+        | TopicTy                   | kind      | handler                       |
+        | ----------                | ----      | -------                       |
+    };
+    topics_out: {
+        list: TOPICS_OUT_LIST;
+    };
+}
+
+#[embassy_executor::main]
+async fn main(spawner: Spawner) {
+    // SYSTEM INIT
+    info!("Start");
+    let p = embassy_rp::init(Default::default());
+
+    // USB/RPC INIT
+    let driver = Driver::new(p.USB, Irqs);
+    let pbufs = PBUFS.take();
+    let config = usb_config();
+
+    let i2c = embassy_rp::i2c::I2c::new_async(p.I2C1, p.PIN_3, p.PIN_2, Irqs, embassy_rp::i2c::Config::default());
+    let spi = embassy_rp::spi::Spi::new(
         p.SPI0,
         p.PIN_6,
         p.PIN_7,
@@ -180,6 +190,7 @@ async fn main(spawner: Spawner) {
         p.DMA_CH1,
         embassy_rp::spi::Config::default(),
     );
+
     let gpio8 = embassy_rp::gpio::Flex::new(p.PIN_8);
     let gpio9 = embassy_rp::gpio::Flex::new(p.PIN_9);
     let gpio10 = embassy_rp::gpio::Flex::new(p.PIN_10);
@@ -189,248 +200,144 @@ async fn main(spawner: Spawner) {
     let gpio14 = embassy_rp::gpio::Flex::new(p.PIN_14);
     let gpio15 = embassy_rp::gpio::Flex::new(p.PIN_15);
 
-    let gallo = PicoDeGallo::new(
-        i2c_bus,
-        spi_bus,
-        [gpio8, gpio9, gpio10, gpio11, gpio12, gpio13, gpio14, gpio15],
-        read_ep,
-        write_ep,
-    );
+    let context = Context::new(i2c, spi, gpio8, gpio9, gpio10, gpio11, gpio12, gpio13, gpio14, gpio15);
 
-    drop(function);
-
-    // Build the builder.
-    let mut usb = builder.build();
-
-    spawner.spawn(gallo_task(gallo)).unwrap();
+    let (device, tx_impl, rx_impl) = STORAGE.init(driver, config, pbufs.tx_buf.as_mut_slice());
+    let dispatcher = PicoDeGallo::new(context, spawner.into());
+    let vkk = dispatcher.min_key_len();
+    let mut server: AppServer = Server::new(tx_impl, rx_impl, pbufs.rx_buf.as_mut_slice(), dispatcher, vkk);
+    spawner.must_spawn(usb_task(device));
 
     loop {
-        usb.run().await;
+        // If the host disconnects, we'll return an error here.
+        // If this happens, just wait until the host reconnects
+        let _ = server.run().await;
     }
 }
 
+/// This handles the low level USB management
 #[embassy_executor::task]
-async fn gallo_task(mut gallo: PicoDeGallo<'static>) {
-    let mut rx_buf: [u8; USB_BUFFER_SIZE] = [0; USB_BUFFER_SIZE];
-    let mut tx_buf: [u8; USB_BUFFER_SIZE] = [0; USB_BUFFER_SIZE];
-    let mut bus_buf: [u8; BUS_BUFFER_SIZE] = [0; BUS_BUFFER_SIZE];
+pub async fn usb_task(mut usb: UsbDevice<'static, AppDriver>) {
+    usb.run().await;
+}
 
-    loop {
-        gallo.wait_for_connection().await;
+// ---
 
-        debug!("Pico De Gallo connected");
+fn ping_handler(_context: &mut Context, _header: VarHeader, rqst: u32) -> u32 {
+    info!("ping");
+    rqst
+}
 
-        loop {
-            let result = gallo.read_data(&mut rx_buf).await;
+async fn i2c_read_handler<'a>(
+    context: &'a mut Context,
+    _header: VarHeader,
+    req: I2cReadRequest,
+) -> I2cReadResponse<'a> {
+    if usize::from(req.count) > BUFFER_SIZE {
+        return Err(I2cReadFail);
+    }
 
-            let response = if result.is_err() {
-                Response::InvalidRequest
-            } else {
-                let rx_size = result.unwrap();
+    let len = ..usize::from(req.count);
+    context
+        .i2c
+        .blocking_read(req.address, &mut context.buf[len])
+        .map_err(|_| I2cReadFail)
+        .map(|_| &context.buf[len])
+}
 
-                let result = from_bytes(&rx_buf[..rx_size]);
+async fn i2c_write_handler<'a>(
+    context: &mut Context,
+    _header: VarHeader,
+    req: I2cWriteRequest<'a>,
+) -> I2cWriteResponse {
+    context
+        .i2c
+        .blocking_write(req.address, req.contents)
+        .map_err(|_| I2cWriteFail)
+}
 
-                if result.is_err() {
-                    error!("Failed to deserialize request");
-                    break;
-                } else {
-                    let request = result.unwrap();
+async fn spi_read_handler<'a>(
+    context: &'a mut Context,
+    _header: VarHeader,
+    req: SpiReadRequest,
+) -> SpiReadResponse<'a> {
+    if usize::from(req.count) > BUFFER_SIZE {
+        return Err(SpiReadFail);
+    }
 
-                    trace!("Received request: {}", request);
+    let len = ..usize::from(req.count);
+    context
+        .spi
+        .blocking_read(&mut context.buf[len])
+        .map_err(|_| SpiReadFail)
+        .map(|_| &context.buf[len])
+}
 
-                    match request {
-                        Request::I2c(i2c_request) => match i2c_request.opcode {
-                            I2cOpcode::Read => {
-                                let result = gallo.i2c.blocking_read(i2c_request.address, &mut bus_buf);
+async fn spi_write_handler<'a>(
+    context: &mut Context,
+    _header: VarHeader,
+    req: SpiWriteRequest<'a>,
+) -> SpiWriteResponse {
+    context.spi.blocking_write(req.contents).map_err(|_| SpiWriteFail)
+}
 
-                                if result.is_err() {
-                                    error!("Failed to read from I2C address {:02x}", i2c_request.address);
-                                    Response::InvalidRequest
-                                } else {
-                                    Response::I2c(I2cResponse {
-                                        status: Status::Success,
-                                        address: Some(i2c_request.address),
-                                        size: Some(i2c_request.size),
-                                        data: Some(&bus_buf[..usize::from(i2c_request.size)]),
-                                    })
-                                }
-                            }
-                            I2cOpcode::Write => {
-                                if i2c_request.data.is_none() {
-                                    error!("Missing 'data' field");
-                                    Response::InvalidRequest
-                                } else {
-                                    let result =
-                                        gallo.i2c.blocking_write(i2c_request.address, i2c_request.data.unwrap());
+async fn spi_flush_handler(context: &mut Context, _header: VarHeader, _req: ()) -> SpiFlushResponse {
+    context.spi.flush().map_err(|_| SpiFlushFail)
+}
 
-                                    if result.is_err() {
-                                        error!("Failed to write to I2C address {:02x}", i2c_request.address);
-                                        Response::InvalidRequest
-                                    } else {
-                                        Response::I2c(I2cResponse {
-                                            status: Status::Success,
-                                            address: Some(i2c_request.address),
-                                            size: None,
-                                            data: None,
-                                        })
-                                    }
-                                }
-                            }
-                        },
+async fn gpio_get_handler(context: &mut Context, _header: VarHeader, req: GpioGetRequest) -> GpioGetResponse {
+    let pin = req.pin;
+    let gpio = &mut context.gpios[usize::from(pin)];
 
-                        Request::Spi(spi_request) => match spi_request.opcode {
-                            SpiOpcode::Transfer => {
-                                if spi_request.data.is_none() && spi_request.size.is_some() {
-                                    let size = usize::from(spi_request.size.unwrap());
-                                    let result = gallo.spi.blocking_read(&mut bus_buf[..size]);
+    gpio.set_as_input();
+    match gpio.get_level() {
+        Level::Low => Ok(GpioState::Low),
+        Level::High => Ok(GpioState::High),
+    }
+}
 
-                                    if result.is_err() {
-                                        Response::InvalidRequest
-                                    } else {
-                                        Response::Spi(SpiResponse {
-                                            status: Status::Success,
-                                            size: spi_request.size,
-                                            data: Some(&bus_buf[..size]),
-                                        })
-                                    }
-                                } else if spi_request.data.is_some() && spi_request.size.is_none() {
-                                    let data = spi_request.data.unwrap();
-                                    let result = gallo.spi.blocking_write(&data);
+async fn gpio_put_handler(context: &mut Context, _header: VarHeader, req: GpioPutRequest) -> GpioPutResponse {
+    let pin = req.pin;
+    let gpio = &mut context.gpios[usize::from(pin)];
 
-                                    if result.is_err() {
-                                        Response::InvalidRequest
-                                    } else {
-                                        Response::Spi(SpiResponse {
-                                            status: Status::Success,
-                                            size: None,
-                                            data: None,
-                                        })
-                                    }
-                                } else if spi_request.data.is_some() && spi_request.size.is_some() {
-                                    let size = usize::from(spi_request.size.unwrap());
-                                    let data = spi_request.data.unwrap();
+    let level = match req.state {
+        GpioState::Low => Level::Low,
+        GpioState::High => Level::High,
+    };
 
-                                    let result = gallo.spi.blocking_transfer(&mut bus_buf[..size], data);
+    gpio.set_as_output();
+    gpio.set_level(level);
 
-                                    if result.is_err() {
-                                        Response::InvalidRequest
-                                    } else {
-                                        Response::Spi(SpiResponse {
-                                            status: Status::Success,
-                                            size: spi_request.size,
-                                            data: Some(&bus_buf[..size]),
-                                        })
-                                    }
-                                } else {
-                                    Response::InvalidRequest
-                                }
-                            }
-                            SpiOpcode::Flush => {
-                                let result = gallo.spi.flush();
+    Ok(())
+}
 
-                                if result.is_err() {
-                                    Response::InvalidRequest
-                                } else {
-                                    Response::Spi(SpiResponse {
-                                        status: Status::Success,
-                                        size: None,
-                                        data: None,
-                                    })
-                                }
-                            }
-                        },
+async fn set_config_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    req: SetConfigurationRequest,
+) -> SetConfigurationResponse {
+    let mut i2c_config = i2c::Config::default();
+    let mut spi_config = spi::Config::default();
 
-                        Request::Gpio(gpio_request) => match gpio_request.opcode {
-                            GpioOpcode::GetState => {
-                                let pin = gpio_request.pin;
-                                let gpio = &mut gallo.gpios[usize::from(pin.index)];
+    i2c_config.frequency = req.i2c_frequency;
+    spi_config.frequency = req.spi_frequency;
+    spi_config.phase = match req.spi_phase {
+        SpiPhase::CaptureOnFirstTransition => Phase::CaptureOnFirstTransition,
+        SpiPhase::CaptureOnSecondTransition => Phase::CaptureOnSecondTransition,
+    };
+    spi_config.polarity = match req.spi_polarity {
+        SpiPolarity::IdleLow => Polarity::IdleLow,
+        SpiPolarity::IdleHigh => Polarity::IdleHigh,
+    };
 
-                                gpio.set_as_input();
-                                let level = gpio.get_level();
-                                let state = if level == Level::High {
-                                    GpioState::High
-                                } else {
-                                    GpioState::Low
-                                };
+    context.spi.set_config(&spi_config);
+    context.i2c.set_config(&i2c_config).map_err(|_| SetConfigurationFail)
+}
 
-                                Response::Gpio(GpioResponse {
-                                    status: Status::Success,
-                                    pin,
-                                    state: Some(state),
-                                })
-                            }
-                            GpioOpcode::SetState => {
-                                if gpio_request.state.is_none() {
-                                    error!("Missing 'state' field");
-                                    Response::InvalidRequest
-                                } else {
-                                    let pin = gpio_request.pin;
-                                    let gpio = &mut gallo.gpios[usize::from(pin.index)];
-                                    let state = gpio_request.state.unwrap();
-
-                                    gpio.set_as_output();
-                                    gpio.set_level(if state == GpioState::Low {
-                                        Level::Low
-                                    } else {
-                                        Level::High
-                                    });
-
-                                    Response::Gpio(GpioResponse {
-                                        status: Status::Success,
-                                        pin,
-                                        state: None,
-                                    })
-                                }
-                            }
-                        },
-                        Request::SetConfig(set_config_request) => {
-                            let mut i2c_config = i2c::Config::default();
-                            i2c_config.frequency = set_config_request.i2c_frequency;
-
-                            let mut spi_config = spi::Config::default();
-                            spi_config.frequency = set_config_request.spi_frequency;
-                            spi_config.phase = if set_config_request.spi_phase == SpiPhase::CaptureOnFirstTransition {
-                                Phase::CaptureOnFirstTransition
-                            } else {
-                                Phase::CaptureOnSecondTransition
-                            };
-                            spi_config.polarity = if set_config_request.spi_polarity == SpiPolarity::IdleLow {
-                                Polarity::IdleLow
-                            } else {
-                                Polarity::IdleHigh
-                            };
-
-                            let result = gallo.i2c.set_config(&i2c_config);
-                            gallo.spi.set_config(&spi_config);
-
-                            if result.is_err() {
-                                Response::InvalidRequest
-                            } else {
-                                Response::SetConfig(SetConfigResponse {
-                                    status: Status::Success,
-                                })
-                            }
-                        }
-                    }
-                }
-            };
-            trace!("Prepared response: {}", response);
-
-            let ser = to_slice(&response, &mut tx_buf);
-
-            if result.is_err() {
-                error!("Failed to serialize response");
-                break;
-            } else {
-                let result = gallo.write_data(ser.unwrap()).await;
-
-                if result.is_err() {
-                    error!("Failed to send response");
-                    break;
-                }
-            }
-        }
-
-        debug!("Pico De Gallo disconnected");
+async fn version_handler(_context: &mut Context, _header: VarHeader, _req: ()) -> VersionInfo {
+    VersionInfo {
+        major: VERSION_MAJOR,
+        minor: VERSION_MINOR,
+        patch: VERSION_PATCH,
     }
 }
