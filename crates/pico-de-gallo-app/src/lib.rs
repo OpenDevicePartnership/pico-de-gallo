@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use color_eyre::Result;
-use pico_de_gallo::{PicoDeGallo, SpiPhase, SpiPolarity};
+use pico_de_gallo_lib::{PicoDeGallo, SpiPhase, SpiPolarity};
 use std::num::ParseIntError;
 
 #[derive(Parser, Debug)]

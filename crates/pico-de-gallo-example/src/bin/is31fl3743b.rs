@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use embedded_hal_bus::spi::ExclusiveDevice;
 use is31fl3743b_driver::{CSy, Is31fl3743b, SWx};
-use pico_de_gallo::{Config, PicoDeGallo};
+use pico_de_gallo_lib::{Config, PicoDeGallo};
 use std::time::Duration;
 
 fn main() -> Result<()> {

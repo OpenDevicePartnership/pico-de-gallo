@@ -1,6 +1,6 @@
 use color_eyre::Result;
 use embedded_hal::digital::OutputPin;
-use pico_de_gallo::PicoDeGallo;
+use pico_de_gallo_lib::PicoDeGallo;
 use std::time::Duration;
 
 fn main() -> Result<()> {

@@ -9,7 +9,7 @@ embedded-hal = "1.0.0"
 embedded-hal-bus = "0.3.0"
 is31fl3743b-driver = { version = "0.1.1", features = [ "is_blocking" ]}
 mpu6050-dmp = "0.6.1"
-pico-de-gallo = { path = "../library" }
+pico-de-gallo-lib = { path = "../pico-de-gallo-lib" }
 shtcx = "1.0.0"
 tracing = "0.1.41"
 tracing-subscriber = "0.3.19"

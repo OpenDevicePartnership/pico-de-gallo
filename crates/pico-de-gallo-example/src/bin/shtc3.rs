@@ -1,5 +1,5 @@
 use color_eyre::Result;
-use pico_de_gallo::PicoDeGallo;
+use pico_de_gallo_lib::PicoDeGallo;
 use shtcx::{PowerMode, shtc3};
 
 fn main() -> Result<()> {

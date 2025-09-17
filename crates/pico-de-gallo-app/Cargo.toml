@@ -6,4 +6,4 @@ edition = "2024"
 [dependencies]
 clap = { version = "4.5.45", features = ["derive"] }
 color-eyre = "0.6.5"
-pico-de-gallo = { path = "../library" }
+pico-de-gallo-lib = { path = "../pico-de-gallo-lib" }

@@ -1,7 +1,7 @@
 use color_eyre::Result;
 use mpu6050_dmp::address::Address;
 use mpu6050_dmp::sensor::Mpu6050;
-use pico_de_gallo::PicoDeGallo;
+use pico_de_gallo_lib::PicoDeGallo;
 use std::time::Duration;
 
 fn main() -> Result<()> {
