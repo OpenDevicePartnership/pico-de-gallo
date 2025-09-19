@@ -5,6 +5,7 @@ use defmt::info;
 use embassy_embedded_hal::SetConfig;
 use embassy_executor::Spawner;
 use embassy_rp::bind_interrupts;
+use embassy_rp::clocks::ClockConfig;
 use embassy_rp::gpio::{Flex, Level};
 use embassy_rp::i2c::{self, I2c};
 use embassy_rp::peripherals::{I2C1, SPI0, USB};
@@ -171,9 +172,8 @@ define_dispatch! {
 
 #[embassy_executor::main]
 async fn main(spawner: Spawner) {
-    // SYSTEM INIT
-    info!("Start");
-    let p = embassy_rp::init(Default::default());
+    let config = embassy_rp::config::Config::new(ClockConfig::system_freq(150_000_000).unwrap());
+    let p = embassy_rp::init(config);
 
     // USB/RPC INIT
     let driver = Driver::new(p.USB, Irqs);
