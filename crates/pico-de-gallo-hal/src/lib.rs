@@ -3,6 +3,8 @@ use std::sync::{Arc, OnceLock};
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
+pub use pico_de_gallo_lib::{SpiPhase, SpiPolarity};
+
 pub struct Hal(Arc<Mutex<PicoDeGallo>>);
 
 static RUNTIME: OnceLock<Runtime> = OnceLock::new();
@@ -33,6 +35,21 @@ impl Hal {
         RUNTIME.set(runtime).ok().unwrap();
 
         Self(Arc::new(Mutex::new(gallo)))
+    }
+
+    /// Set interface configuration parameters
+    pub fn set_config(
+        &mut self,
+        i2c_frequency: u32,
+        spi_frequency: u32,
+        spi_phase: SpiPhase,
+        spi_polarity: SpiPolarity,
+    ) {
+        let runtime = RUNTIME.get().unwrap();
+        let gallo = runtime.block_on(self.0.lock());
+        runtime
+            .block_on(gallo.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity))
+            .unwrap();
     }
 
     /// Gpio
