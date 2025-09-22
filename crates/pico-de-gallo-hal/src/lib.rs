@@ -1,13 +1,16 @@
 use pico_de_gallo_lib::{GpioState, PicoDeGallo};
 use std::sync::Arc;
-use tokio::runtime::Runtime;
+use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Mutex;
+use tokio::task::block_in_place;
 
 pub use pico_de_gallo_lib::{SpiPhase, SpiPolarity};
 
 pub struct Hal {
     gallo: Arc<Mutex<PicoDeGallo>>,
-    runtime: Arc<Runtime>,
+    _runtime: Option<Runtime>,
+    handle: Handle,
+    in_async: bool,
 }
 
 impl Hal {
@@ -23,19 +26,36 @@ impl Hal {
     }
 
     fn new_inner(serial_number: Option<&str>) -> Self {
-        let runtime = Runtime::new().unwrap();
+        let (runtime, handle, in_async) = match Handle::try_current() {
+            Ok(handle) => (None, handle, true),
+            Err(_) => {
+                let runtime = Runtime::new().unwrap();
+                let handle = runtime.handle().clone();
+                (Some(runtime), handle, false)
+            }
+        };
 
-        let gallo = runtime.block_on(async {
+        let gallo = if in_async {
             if serial_number.is_some() {
                 PicoDeGallo::new_with_serial_number(serial_number.unwrap())
             } else {
                 PicoDeGallo::new()
             }
-        });
+        } else {
+            handle.block_on(async {
+                if serial_number.is_some() {
+                    PicoDeGallo::new_with_serial_number(serial_number.unwrap())
+                } else {
+                    PicoDeGallo::new()
+                }
+            })
+        };
 
         Self {
             gallo: Arc::new(Mutex::new(gallo)),
-            runtime: Arc::new(runtime),
+            _runtime: runtime,
+            handle,
+            in_async,
         }
     }
 
@@ -47,9 +67,9 @@ impl Hal {
         spi_phase: SpiPhase,
         spi_polarity: SpiPolarity,
     ) {
-        let runtime = Arc::clone(&self.runtime);
-        let gallo = runtime.block_on(self.gallo.lock());
-        runtime
+        let handle = self.handle.clone();
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
             .block_on(gallo.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity))
             .unwrap();
     }
@@ -57,26 +77,35 @@ impl Hal {
     /// Gpio
     pub fn gpio(&self, pin: u8) -> Gpio {
         let gallo = Arc::clone(&self.gallo);
-        let runtime = Arc::clone(&self.runtime);
+        let handle = self.handle.clone();
         Gpio {
             pin,
             gallo,
-            runtime,
+            handle,
+            in_async: self.in_async,
         }
     }
 
     /// I2c
     pub fn i2c(&self) -> I2c {
         let gallo = Arc::clone(&self.gallo);
-        let runtime = Arc::clone(&self.runtime);
-        I2c { gallo, runtime }
+        let handle = self.handle.clone();
+        I2c {
+            gallo,
+            handle,
+            in_async: self.in_async,
+        }
     }
 
     /// Spi
     pub fn spi(&self) -> Spi {
         let gallo = Arc::clone(&self.gallo);
-        let runtime = Arc::clone(&self.runtime);
-        Spi { gallo, runtime }
+        let handle = self.handle.clone();
+        Spi {
+            gallo,
+            handle,
+            in_async: self.in_async,
+        }
     }
 
     /// Delay
@@ -99,7 +128,44 @@ pub enum Error {
 pub struct Gpio {
     pin: u8,
     gallo: Arc<Mutex<PicoDeGallo>>,
-    runtime: Arc<Runtime>,
+    handle: Handle,
+    in_async: bool,
+}
+
+impl Gpio {
+    fn set_low_inner(&mut self) -> std::result::Result<(), Error> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.gpio_put(self.pin, GpioState::Low))
+            .map_err(|_| Error::Other)
+    }
+
+    fn set_high_inner(&mut self) -> std::result::Result<(), Error> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.gpio_put(self.pin, GpioState::High))
+            .map_err(|_| Error::Other)
+    }
+
+    fn is_low_inner(&mut self) -> std::result::Result<bool, Error> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.gpio_get(self.pin))
+            .map_err(|_| Error::Other)
+            .map(|s| if s == GpioState::Low { true } else { false })
+    }
+
+    fn is_high_inner(&mut self) -> std::result::Result<bool, Error> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.gpio_get(self.pin))
+            .map_err(|_| Error::Other)
+            .map(|s| if s == GpioState::High { true } else { false })
+    }
 }
 
 impl embedded_hal::digital::Error for Error {
@@ -114,39 +180,37 @@ impl embedded_hal::digital::ErrorType for Gpio {
 
 impl embedded_hal::digital::OutputPin for Gpio {
     fn set_low(&mut self) -> std::result::Result<(), Self::Error> {
-        let runtime = &self.runtime;
-        let gallo = runtime.block_on(self.gallo.lock());
-        runtime
-            .block_on(gallo.gpio_put(self.pin, GpioState::Low))
-            .map_err(|_| Self::Error::Other)
+        if self.in_async {
+            block_in_place(|| self.set_low_inner())
+        } else {
+            self.set_low_inner()
+        }
     }
 
     fn set_high(&mut self) -> std::result::Result<(), Self::Error> {
-        let runtime = &self.runtime;
-        let gallo = runtime.block_on(self.gallo.lock());
-        runtime
-            .block_on(gallo.gpio_put(self.pin, GpioState::High))
-            .map_err(|_| Self::Error::Other)
+        if self.in_async {
+            block_in_place(|| self.set_high_inner())
+        } else {
+            self.set_high_inner()
+        }
     }
 }
 
 impl embedded_hal::digital::InputPin for Gpio {
-    fn is_high(&mut self) -> std::result::Result<bool, Self::Error> {
-        let runtime = &self.runtime;
-        let gallo = runtime.block_on(self.gallo.lock());
-        runtime
-            .block_on(gallo.gpio_get(self.pin))
-            .map_err(|_| Self::Error::Other)
-            .map(|s| if s == GpioState::High { true } else { false })
+    fn is_low(&mut self) -> std::result::Result<bool, Self::Error> {
+        if self.in_async {
+            block_in_place(|| self.is_low_inner())
+        } else {
+            self.is_low_inner()
+        }
     }
 
-    fn is_low(&mut self) -> std::result::Result<bool, Self::Error> {
-        let runtime = &self.runtime;
-        let gallo = runtime.block_on(self.gallo.lock());
-        runtime
-            .block_on(gallo.gpio_get(self.pin))
-            .map_err(|_| Self::Error::Other)
-            .map(|s| if s == GpioState::Low { true } else { false })
+    fn is_high(&mut self) -> std::result::Result<bool, Self::Error> {
+        if self.in_async {
+            block_in_place(|| self.is_high_inner())
+        } else {
+            self.is_high_inner()
+        }
     }
 }
 
@@ -154,7 +218,36 @@ impl embedded_hal::digital::InputPin for Gpio {
 
 pub struct I2c {
     gallo: Arc<Mutex<PicoDeGallo>>,
-    runtime: Arc<Runtime>,
+    handle: Handle,
+    in_async: bool,
+}
+
+impl I2c {
+    fn transaction_inner(
+        &mut self,
+        address: embedded_hal::i2c::SevenBitAddress,
+        operations: &mut [embedded_hal::i2c::Operation<'_>],
+    ) -> std::result::Result<(), Error> {
+        let address = address.into();
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+
+        for op in operations {
+            match op {
+                embedded_hal::i2c::Operation::Read(read) => {
+                    let contents = handle
+                        .block_on(gallo.i2c_read(address, read.len() as u16))
+                        .map_err(|_| Error::Other)?;
+                    read.copy_from_slice(&contents);
+                }
+                embedded_hal::i2c::Operation::Write(write) => handle
+                    .block_on(gallo.i2c_write(address, write))
+                    .map_err(|_| Error::Other)?,
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl embedded_hal::i2c::Error for Error {
@@ -173,25 +266,11 @@ impl embedded_hal::i2c::I2c<embedded_hal::i2c::SevenBitAddress> for I2c {
         address: embedded_hal::i2c::SevenBitAddress,
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> std::result::Result<(), Self::Error> {
-        let address = address.into();
-        let runtime = &self.runtime;
-        let gallo = runtime.block_on(self.gallo.lock());
-
-        for op in operations {
-            match op {
-                embedded_hal::i2c::Operation::Read(read) => {
-                    let contents = runtime
-                        .block_on(gallo.i2c_read(address, read.len() as u16))
-                        .map_err(|_| Error::Other)?;
-                    read.copy_from_slice(&contents);
-                }
-                embedded_hal::i2c::Operation::Write(write) => runtime
-                    .block_on(gallo.i2c_write(address, write))
-                    .map_err(|_| Self::Error::Other)?,
-            }
+        if self.in_async {
+            block_in_place(|| self.transaction_inner(address, operations))
+        } else {
+            self.transaction_inner(address, operations)
         }
-
-        Ok(())
     }
 }
 
@@ -210,7 +289,7 @@ impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for 
                     let contents = gallo
                         .i2c_read(address, read.len() as u16)
                         .await
-                        .map_err(|_| Error::Other)?;
+                        .map_err(|_| Self::Error::Other)?;
                     read.copy_from_slice(&contents);
                 }
                 embedded_hal_async::i2c::Operation::Write(write) => gallo
@@ -228,7 +307,34 @@ impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for 
 
 pub struct Spi {
     gallo: Arc<Mutex<PicoDeGallo>>,
-    runtime: Arc<Runtime>,
+    handle: Handle,
+    in_async: bool,
+}
+
+impl Spi {
+    fn read_inner(&mut self, words: &mut [u8]) -> std::result::Result<(), Error> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        let contents = handle
+            .block_on(gallo.spi_read(words.len() as u16))
+            .map_err(|_| Error::Other)?;
+        words.copy_from_slice(&contents);
+        Ok(())
+    }
+
+    fn write_inner(&mut self, words: &[u8]) -> std::result::Result<(), Error> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.spi_write(words))
+            .map_err(|_| Error::Other)
+    }
+
+    fn flush_inner(&mut self) -> std::result::Result<(), Error> {
+        let handle = &self.handle;
+        let gallo = handle.block_on(self.gallo.lock());
+        handle.block_on(gallo.spi_flush()).map_err(|_| Error::Other)
+    }
 }
 
 impl embedded_hal::spi::Error for Error {
@@ -243,39 +349,51 @@ impl embedded_hal::spi::ErrorType for Spi {
 
 impl embedded_hal::spi::SpiBus for Spi {
     fn read(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        let runtime = &self.runtime;
-        let gallo = runtime.block_on(self.gallo.lock());
-        let contents = runtime
-            .block_on(gallo.spi_read(words.len() as u16))
-            .map_err(|_| Self::Error::Other)?;
-        words.copy_from_slice(&contents);
-        Ok(())
+        if self.in_async {
+            block_in_place(|| self.read_inner(words))
+        } else {
+            self.read_inner(words)
+        }
     }
 
     fn write(&mut self, words: &[u8]) -> std::result::Result<(), Self::Error> {
-        let runtime = &self.runtime;
-        let gallo = runtime.block_on(self.gallo.lock());
-        runtime
-            .block_on(gallo.spi_write(words))
-            .map_err(|_| Self::Error::Other)
+        if self.in_async {
+            block_in_place(|| self.write_inner(words))
+        } else {
+            self.write_inner(words)
+        }
     }
 
     fn transfer(&mut self, read: &mut [u8], write: &[u8]) -> std::result::Result<(), Self::Error> {
-        self.write(write)?;
-        self.read(read)
+        if self.in_async {
+            block_in_place(|| {
+                self.write_inner(write)?;
+                self.read_inner(read)
+            })
+        } else {
+            self.write_inner(write)?;
+            self.read_inner(read)
+        }
     }
 
     fn transfer_in_place(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        self.write(words)?;
-        self.read(words)
+        if self.in_async {
+            block_in_place(|| {
+                self.write_inner(words)?;
+                self.read_inner(words)
+            })
+        } else {
+            self.write_inner(words)?;
+            self.read_inner(words)
+        }
     }
 
     fn flush(&mut self) -> std::result::Result<(), Self::Error> {
-        let runtime = &self.runtime;
-        let gallo = runtime.block_on(self.gallo.lock());
-        runtime
-            .block_on(gallo.spi_flush())
-            .map_err(|_| Self::Error::Other)
+        if self.in_async {
+            block_in_place(|| self.flush_inner())
+        } else {
+            self.flush_inner()
+        }
     }
 }
 
