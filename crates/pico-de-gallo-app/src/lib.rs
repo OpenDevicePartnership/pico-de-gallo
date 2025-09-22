@@ -1,5 +1,5 @@
 use clap::{Parser, Subcommand};
-use color_eyre::{eyre::eyre, Result};
+use color_eyre::{Result, eyre::eyre};
 use pico_de_gallo_lib::PicoDeGallo;
 use std::num::ParseIntError;
 
@@ -21,6 +21,9 @@ pub struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Get firmware version
+    Version,
+
     /// I2C accessor
     I2c {
         /// I2C commands
@@ -133,6 +136,7 @@ impl Cli {
     pub async fn run(&self) -> Result<()> {
         match &self.command {
             None => Ok(()),
+            Some(Commands::Version) => self.version().await,
             Some(Commands::I2c { command }) => match command {
                 None => Ok(()),
                 Some(I2cCommands::Scan { reserved }) => self.i2c_scan(*reserved).await,
@@ -157,6 +161,25 @@ impl Cli {
                 self.set_config(*i2c_frequency, *spi_frequency, *spi_first_transition, *spi_idle_low)
                     .await
             }
+        }
+    }
+
+    async fn version(&self) -> Result<()> {
+        let pg = if self.serial_number.is_some() {
+            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        } else {
+            PicoDeGallo::new()
+        };
+
+        match pg.version().await {
+            Ok(version) => {
+                println!(
+                    "Pico de Gallo FW v{}.{}.{}",
+                    version.major, version.minor, version.patch
+                );
+                Ok(())
+            }
+            Err(_) => Err(eyre!("Failed to get version")),
         }
     }
 
