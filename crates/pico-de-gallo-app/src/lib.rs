@@ -38,6 +38,7 @@ enum Commands {
         command: Option<SpiCommands>,
     },
 
+    /// Set bus parameters for I2C and SPI
     SetConfig {
         /// I2C frequency
         #[arg(short = 'i', long)]
