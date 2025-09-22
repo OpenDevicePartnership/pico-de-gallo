@@ -1,6 +1,6 @@
 use clap::{Parser, Subcommand};
 use color_eyre::{Result, eyre::eyre};
-use pico_de_gallo_lib::PicoDeGallo;
+use pico_de_gallo_lib::{PicoDeGallo, SpiPhase, SpiPolarity};
 use std::num::ParseIntError;
 use tabled::builder::Builder;
 use tabled::settings::object::Rows;
@@ -328,29 +328,38 @@ impl Cli {
 
     async fn set_config(
         &self,
-        _i2c_frequency: u32,
-        _spi_frequency: u32,
-        _spi_first_transition: bool,
-        _spi_idle_low: bool,
+        i2c_frequency: u32,
+        spi_frequency: u32,
+        spi_first_transition: bool,
+        spi_idle_low: bool,
     ) -> Result<()> {
-        // let pg = PicoDeGallo::new(Default::default())?;
-        // let mut io = pg.usb.borrow_mut();
+        let pg = if self.serial_number.is_some() {
+            PicoDeGallo::new_with_serial_number(self.serial_number.as_ref().unwrap())
+        } else {
+            PicoDeGallo::new()
+        };
 
-        // let spi_polarity = if spi_idle_low {
-        //     SpiPolarity::IdleLow
-        // } else {
-        //     SpiPolarity::IdleHigh
-        // };
+        let spi_polarity = if spi_idle_low {
+            SpiPolarity::IdleLow
+        } else {
+            SpiPolarity::IdleHigh
+        };
 
-        // let spi_phase = if spi_first_transition {
-        //     SpiPhase::CaptureOnFirstTransition
-        // } else {
-        //     SpiPhase::CaptureOnSecondTransition
-        // };
+        let spi_phase = if spi_first_transition {
+            SpiPhase::CaptureOnFirstTransition
+        } else {
+            SpiPhase::CaptureOnSecondTransition
+        };
 
-        // io.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity)?;
-
-        Ok(())
+        if pg
+            .set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity)
+            .await
+            .is_err()
+        {
+            Err(eyre!("set config failed"))
+        } else {
+            Ok(())
+        }
     }
 }
 
