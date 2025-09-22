@@ -1,9 +1,10 @@
 use nusb::DeviceInfo;
 use pico_de_gallo_internal::{
-    GpioGet, GpioGetFail, GpioGetRequest, GpioPut, GpioPutFail, GpioPutRequest, I2cRead, I2cReadFail, I2cReadRequest,
-    I2cWrite, I2cWriteFail, I2cWriteRequest, MICROSOFT_VID, PICO_DE_GALLO_PID, SetConfiguration, SetConfigurationFail,
-    SetConfigurationRequest, SpiFlush, SpiFlushFail, SpiRead, SpiReadFail, SpiReadRequest, SpiWrite, SpiWriteFail,
-    SpiWriteRequest, Version,
+    GpioGet, GpioGetFail, GpioGetRequest, GpioPut, GpioPutFail, GpioPutRequest, GpioWaitFail, GpioWaitForAny,
+    GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising, GpioWaitRequest, I2cRead, I2cReadFail,
+    I2cReadRequest, I2cWrite, I2cWriteFail, I2cWriteRequest, MICROSOFT_VID, PICO_DE_GALLO_PID, SetConfiguration,
+    SetConfigurationFail, SetConfigurationRequest, SpiFlush, SpiFlushFail, SpiRead, SpiReadFail, SpiReadRequest,
+    SpiWrite, SpiWriteFail, SpiWriteRequest, Version,
 };
 
 pub use pico_de_gallo_internal::{GpioState, SpiPhase, SpiPolarity, VersionInfo};
@@ -147,6 +148,57 @@ impl PicoDeGallo {
     pub async fn gpio_put(&self, pin: u8, state: GpioState) -> Result<(), PicoDeGalloError<GpioPutFail>> {
         self.client
             .send_resp::<GpioPut>(&GpioPutRequest { pin, state })
+            .await?
+            .flatten()
+    }
+
+    /// Wait for GPIO numbered by `pin` to reach `High` state.
+    ///
+    /// Pico de Gallo offers 8 total GPIOs, numbered 0 through 7.
+    pub async fn gpio_wait_for_high(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioWaitFail>> {
+        self.client
+            .send_resp::<GpioWaitForHigh>(&GpioWaitRequest { pin })
+            .await?
+            .flatten()
+    }
+
+    /// Wait for GPIO numbered by `pin` to reach `Low` state.
+    ///
+    /// Pico de Gallo offers 8 total GPIOs, numbered 0 through 7.
+    pub async fn gpio_wait_for_low(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioWaitFail>> {
+        self.client
+            .send_resp::<GpioWaitForLow>(&GpioWaitRequest { pin })
+            .await?
+            .flatten()
+    }
+
+    /// Wait for a rising edge on the GPIO numbered by `pin`.
+    ///
+    /// Pico de Gallo offers 8 total GPIOs, numbered 0 through 7.
+    pub async fn gpio_wait_for_rising_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioWaitFail>> {
+        self.client
+            .send_resp::<GpioWaitForRising>(&GpioWaitRequest { pin })
+            .await?
+            .flatten()
+    }
+
+    /// Wait for a falling edge on the GPIO numbered by `pin`.
+    ///
+    /// Pico de Gallo offers 8 total GPIOs, numbered 0 through 7.
+    pub async fn gpio_wait_for_falling_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioWaitFail>> {
+        self.client
+            .send_resp::<GpioWaitForFalling>(&GpioWaitRequest { pin })
+            .await?
+            .flatten()
+    }
+
+    /// Wait for either a rising edge or a falling edge on the GPIO
+    /// numbered by `pin`.
+    ///
+    /// Pico de Gallo offers 8 total GPIOs, numbered 0 through 7.
+    pub async fn gpio_wait_for_any_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioWaitFail>> {
+        self.client
+            .send_resp::<GpioWaitForAny>(&GpioWaitRequest { pin })
             .await?
             .flatten()
     }

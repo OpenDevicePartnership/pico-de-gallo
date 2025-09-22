@@ -33,10 +33,12 @@ pub enum Status {
     GpioGetFailed = -10,
     /// Gpio put failed
     GpioPutFailed = -11,
+    /// Gpio wait failed
+    GpioWaitFailed = -12,
     /// Set config failed
-    SetConfigFailed = -12,
+    SetConfigFailed = -13,
     /// Version failed
-    VersionFailed = -13,
+    VersionFailed = -14,
 }
 
 // ----------------------------- Library Lifetime -----------------------------
@@ -420,6 +422,122 @@ pub unsafe extern "C" fn gallo_gpio_put(gallo: *mut PicoDeGallo, pin: u8, state:
     match result {
         Ok(()) => Status::Ok,
         Err(_) => Status::GpioPutFailed,
+    }
+}
+
+/// gallo_gpio_wait_for_high - Waits for a high level on a given GPIO pin.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_gpio_wait_for_high(gallo: *mut PicoDeGallo, pin: u8) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { Box::from_raw(gallo) };
+
+    let result = block_on(gallo.0.gpio_wait_for_high(pin));
+
+    match result {
+        Ok(()) => Status::Ok,
+        Err(_) => Status::GpioWaitFailed,
+    }
+}
+
+/// gallo_gpio_wait_for_low - Waits for a low level on a given GPIO pin.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_gpio_wait_for_low(gallo: *mut PicoDeGallo, pin: u8) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { Box::from_raw(gallo) };
+
+    let result = block_on(gallo.0.gpio_wait_for_low(pin));
+
+    match result {
+        Ok(()) => Status::Ok,
+        Err(_) => Status::GpioWaitFailed,
+    }
+}
+
+/// gallo_gpio_wait_for_rising_edge - Waits for a rising edge on a given GPIO pin.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_gpio_wait_for_rising_edge(
+    gallo: *mut PicoDeGallo,
+    pin: u8,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { Box::from_raw(gallo) };
+
+    let result = block_on(gallo.0.gpio_wait_for_rising_edge(pin));
+
+    match result {
+        Ok(()) => Status::Ok,
+        Err(_) => Status::GpioWaitFailed,
+    }
+}
+
+/// gallo_gpio_wait_for_falling_edge - Waits for a falling edge on a given GPIO pin.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_gpio_wait_for_falling_edge(
+    gallo: *mut PicoDeGallo,
+    pin: u8,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { Box::from_raw(gallo) };
+
+    let result = block_on(gallo.0.gpio_wait_for_falling_edge(pin));
+
+    match result {
+        Ok(()) => Status::Ok,
+        Err(_) => Status::GpioWaitFailed,
+    }
+}
+
+/// gallo_gpio_wait_for_any_edge - Waits for a any edge on a given GPIO pin.
+///
+/// Returns `Status::Ok` in case of success or various error codes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_gpio_wait_for_any_edge(gallo: *mut PicoDeGallo, pin: u8) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque
+    // pointer to `PicoDeGallo` returned by `gallo_init()`.
+    let gallo = unsafe { Box::from_raw(gallo) };
+
+    let result = block_on(gallo.0.gpio_wait_for_any_edge(pin));
+
+    match result {
+        Ok(()) => Status::Ok,
+        Err(_) => Status::GpioWaitFailed,
     }
 }
 

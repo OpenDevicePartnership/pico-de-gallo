@@ -26,22 +26,28 @@ pub type SpiReadResponse<'a> = Result<&'a [u8], SpiReadFail>;
 pub type SpiFlushResponse = Result<(), SpiFlushFail>;
 pub type GpioGetResponse = Result<GpioState, GpioGetFail>;
 pub type GpioPutResponse = Result<(), GpioPutFail>;
+pub type GpioWaitResponse = Result<(), GpioWaitFail>;
 pub type SetConfigurationResponse = Result<(), SetConfigurationFail>;
 
 endpoints! {
     list = ENDPOINT_LIST;
-    | EndpointTy       | RequestTy               | ResponseTy               | Path         |
-    | ----------       | ---------               | ----------               | ----         |
-    | PingEndpoint     | u32                     | u32                      | "ping"       |
-    | I2cRead          | I2cReadRequest          | I2cReadResponse<'a>      | "i2c/read"   |
-    | I2cWrite         | I2cWriteRequest<'a>     | I2cWriteResponse         | "i2c/write"  |
-    | SpiRead          | SpiReadRequest          | SpiReadResponse<'a>      | "spi/read"   |
-    | SpiWrite         | SpiWriteRequest<'a>     | SpiWriteResponse         | "spi/write"  |
-    | SpiFlush         | ()                      | SpiFlushResponse         | "spi/flush"  |
-    | GpioGet          | GpioGetRequest          | GpioGetResponse          | "gpio/get"   |
-    | GpioPut          | GpioPutRequest          | GpioPutResponse          | "gpio/put"   |
-    | SetConfiguration | SetConfigurationRequest | SetConfigurationResponse | "set-config" |
-    | Version          | ()                      | VersionInfo              | "version"    |
+    | EndpointTy         | RequestTy               | ResponseTy               | Path                |
+    | ----------         | ---------               | ----------               | ----                |
+    | PingEndpoint       | u32                     | u32                      | "ping"              |
+    | I2cRead            | I2cReadRequest          | I2cReadResponse<'a>      | "i2c/read"          |
+    | I2cWrite           | I2cWriteRequest<'a>     | I2cWriteResponse         | "i2c/write"         |
+    | SpiRead            | SpiReadRequest          | SpiReadResponse<'a>      | "spi/read"          |
+    | SpiWrite           | SpiWriteRequest<'a>     | SpiWriteResponse         | "spi/write"         |
+    | SpiFlush           | ()                      | SpiFlushResponse         | "spi/flush"         |
+    | GpioGet            | GpioGetRequest          | GpioGetResponse          | "gpio/get"          |
+    | GpioPut            | GpioPutRequest          | GpioPutResponse          | "gpio/put"          |
+    | GpioWaitForHigh    | GpioWaitRequest         | GpioWaitResponse         | "gpio/wait-high"    |
+    | GpioWaitForLow     | GpioWaitRequest         | GpioWaitResponse         | "gpio/wait-low"     |
+    | GpioWaitForRising  | GpioWaitRequest         | GpioWaitResponse         | "gpio/wait-rising"  |
+    | GpioWaitForFalling | GpioWaitRequest         | GpioWaitResponse         | "gpio/wait-falling" |
+    | GpioWaitForAny     | GpioWaitRequest         | GpioWaitResponse         | "gpio/wait-any"     |
+    | SetConfiguration   | SetConfigurationRequest | SetConfigurationResponse | "set-config"        |
+    | Version            | ()                      | VersionInfo              | "version"           |
 }
 
 topics! {
@@ -123,6 +129,14 @@ pub enum GpioState {
     Low,
     High,
 }
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct GpioWaitRequest {
+    pub pin: u8,
+}
+
+#[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
+pub struct GpioWaitFail;
 
 // --- Set config
 

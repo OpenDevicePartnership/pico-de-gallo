@@ -214,6 +214,48 @@ impl embedded_hal::digital::InputPin for Gpio {
     }
 }
 
+impl embedded_hal_async::digital::Wait for Gpio {
+    async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
+        let gallo = self.gallo.lock().await;
+        gallo
+            .gpio_wait_for_high(self.pin)
+            .await
+            .map_err(|_| Self::Error::Other)
+    }
+
+    async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
+        let gallo = self.gallo.lock().await;
+        gallo
+            .gpio_wait_for_low(self.pin)
+            .await
+            .map_err(|_| Self::Error::Other)
+    }
+
+    async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
+        let gallo = self.gallo.lock().await;
+        gallo
+            .gpio_wait_for_rising_edge(self.pin)
+            .await
+            .map_err(|_| Self::Error::Other)
+    }
+
+    async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
+        let gallo = self.gallo.lock().await;
+        gallo
+            .gpio_wait_for_falling_edge(self.pin)
+            .await
+            .map_err(|_| Self::Error::Other)
+    }
+
+    async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
+        let gallo = self.gallo.lock().await;
+        gallo
+            .gpio_wait_for_any_edge(self.pin)
+            .await
+            .map_err(|_| Self::Error::Other)
+    }
+}
+
 // ----------------------------- I2c -----------------------------
 
 pub struct I2c {

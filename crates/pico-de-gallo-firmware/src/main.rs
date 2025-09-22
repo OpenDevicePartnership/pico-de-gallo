@@ -15,11 +15,12 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_usb::{Config, UsbDevice};
 use pico_de_gallo_internal::{
     ENDPOINT_LIST, GpioGet, GpioGetRequest, GpioGetResponse, GpioPut, GpioPutRequest, GpioPutResponse, GpioState,
-    I2cRead, I2cReadFail, I2cReadRequest, I2cReadResponse, I2cWrite, I2cWriteFail, I2cWriteRequest, I2cWriteResponse,
-    MICROSOFT_VID, PICO_DE_GALLO_PID, PingEndpoint, SetConfiguration, SetConfigurationFail, SetConfigurationRequest,
-    SetConfigurationResponse, SpiFlush, SpiFlushFail, SpiFlushResponse, SpiPhase, SpiPolarity, SpiRead, SpiReadFail,
-    SpiReadRequest, SpiReadResponse, SpiWrite, SpiWriteFail, SpiWriteRequest, SpiWriteResponse, TOPICS_IN_LIST,
-    TOPICS_OUT_LIST, Version, VersionInfo,
+    GpioWaitForAny, GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising, GpioWaitRequest,
+    GpioWaitResponse, I2cRead, I2cReadFail, I2cReadRequest, I2cReadResponse, I2cWrite, I2cWriteFail, I2cWriteRequest,
+    I2cWriteResponse, MICROSOFT_VID, PICO_DE_GALLO_PID, PingEndpoint, SetConfiguration, SetConfigurationFail,
+    SetConfigurationRequest, SetConfigurationResponse, SpiFlush, SpiFlushFail, SpiFlushResponse, SpiPhase, SpiPolarity,
+    SpiRead, SpiReadFail, SpiReadRequest, SpiReadResponse, SpiWrite, SpiWriteFail, SpiWriteRequest, SpiWriteResponse,
+    TOPICS_IN_LIST, TOPICS_OUT_LIST, Version, VersionInfo,
 };
 use postcard_rpc::{
     define_dispatch,
@@ -146,18 +147,23 @@ define_dispatch! {
     endpoints: {
         list: ENDPOINT_LIST;
 
-        | EndpointTy       | kind     | handler            |
-        | ----------       | ----     | -------            |
-        | PingEndpoint     | blocking | ping_handler       |
-        | I2cRead          | async    | i2c_read_handler   |
-        | I2cWrite         | async    | i2c_write_handler  |
-        | SpiRead          | async    | spi_read_handler   |
-        | SpiWrite         | async    | spi_write_handler  |
-        | SpiFlush         | async    | spi_flush_handler  |
-        | GpioGet          | async    | gpio_get_handler   |
-        | GpioPut          | async    | gpio_put_handler   |
-        | SetConfiguration | async    | set_config_handler |
-        | Version          | async    | version_handler    |
+        | EndpointTy         | kind     | handler                       |
+        | ----------         | ----     | -------                       |
+        | PingEndpoint       | blocking | ping_handler                  |
+        | I2cRead            | async    | i2c_read_handler              |
+        | I2cWrite           | async    | i2c_write_handler             |
+        | SpiRead            | async    | spi_read_handler              |
+        | SpiWrite           | async    | spi_write_handler             |
+        | SpiFlush           | async    | spi_flush_handler             |
+        | GpioGet            | async    | gpio_get_handler              |
+        | GpioPut            | async    | gpio_put_handler              |
+        | GpioWaitForHigh    | async    | gpio_wait_for_high_handler    |
+        | GpioWaitForLow     | async    | gpio_wait_for_low_handler     |
+        | GpioWaitForRising  | async    | gpio_wait_for_rising_handler  |
+        | GpioWaitForFalling | async    | gpio_wait_for_falling_handler |
+        | GpioWaitForAny     | async    | gpio_wait_for_any_handler     |
+        | SetConfiguration   | async    | set_config_handler            |
+        | Version            | async    | version_handler               |
     };
     topics_in: {
         list: TOPICS_IN_LIST;
@@ -307,6 +313,76 @@ async fn gpio_put_handler(context: &mut Context, _header: VarHeader, req: GpioPu
 
     gpio.set_as_output();
     gpio.set_level(level);
+
+    Ok(())
+}
+
+async fn gpio_wait_for_high_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    req: GpioWaitRequest,
+) -> GpioWaitResponse {
+    let pin = req.pin;
+    let gpio = &mut context.gpios[usize::from(pin)];
+
+    gpio.set_as_input();
+    gpio.wait_for_high().await;
+
+    Ok(())
+}
+
+async fn gpio_wait_for_low_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    req: GpioWaitRequest,
+) -> GpioWaitResponse {
+    let pin = req.pin;
+    let gpio = &mut context.gpios[usize::from(pin)];
+
+    gpio.set_as_input();
+    gpio.wait_for_low().await;
+
+    Ok(())
+}
+
+async fn gpio_wait_for_rising_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    req: GpioWaitRequest,
+) -> GpioWaitResponse {
+    let pin = req.pin;
+    let gpio = &mut context.gpios[usize::from(pin)];
+
+    gpio.set_as_input();
+    gpio.wait_for_rising_edge().await;
+
+    Ok(())
+}
+
+async fn gpio_wait_for_falling_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    req: GpioWaitRequest,
+) -> GpioWaitResponse {
+    let pin = req.pin;
+    let gpio = &mut context.gpios[usize::from(pin)];
+
+    gpio.set_as_input();
+    gpio.wait_for_falling_edge().await;
+
+    Ok(())
+}
+
+async fn gpio_wait_for_any_handler(
+    context: &mut Context,
+    _header: VarHeader,
+    req: GpioWaitRequest,
+) -> GpioWaitResponse {
+    let pin = req.pin;
+    let gpio = &mut context.gpios[usize::from(pin)];
+
+    gpio.set_as_input();
+    gpio.wait_for_any_edge().await;
 
     Ok(())
 }
