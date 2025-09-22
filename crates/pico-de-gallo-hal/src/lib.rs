@@ -1,13 +1,14 @@
 use pico_de_gallo_lib::{GpioState, PicoDeGallo};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tokio::runtime::Runtime;
 use tokio::sync::Mutex;
 
 pub use pico_de_gallo_lib::{SpiPhase, SpiPolarity};
 
-pub struct Hal(Arc<Mutex<PicoDeGallo>>);
-
-static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+pub struct Hal {
+    gallo: Arc<Mutex<PicoDeGallo>>,
+    runtime: Arc<Runtime>,
+}
 
 impl Hal {
     /// Instantiate the library context.
@@ -32,9 +33,10 @@ impl Hal {
             }
         });
 
-        RUNTIME.set(runtime).ok().unwrap();
-
-        Self(Arc::new(Mutex::new(gallo)))
+        Self {
+            gallo: Arc::new(Mutex::new(gallo)),
+            runtime: Arc::new(runtime),
+        }
     }
 
     /// Set interface configuration parameters
@@ -45,8 +47,8 @@ impl Hal {
         spi_phase: SpiPhase,
         spi_polarity: SpiPolarity,
     ) {
-        let runtime = RUNTIME.get().unwrap();
-        let gallo = runtime.block_on(self.0.lock());
+        let runtime = Arc::clone(&self.runtime);
+        let gallo = runtime.block_on(self.gallo.lock());
         runtime
             .block_on(gallo.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity))
             .unwrap();
@@ -54,20 +56,27 @@ impl Hal {
 
     /// Gpio
     pub fn gpio(&self, pin: u8) -> Gpio {
-        let gallo = Arc::clone(&self.0);
-        Gpio { pin, gallo }
+        let gallo = Arc::clone(&self.gallo);
+        let runtime = Arc::clone(&self.runtime);
+        Gpio {
+            pin,
+            gallo,
+            runtime,
+        }
     }
 
     /// I2c
     pub fn i2c(&self) -> I2c {
-        let gallo = Arc::clone(&self.0);
-        I2c { gallo }
+        let gallo = Arc::clone(&self.gallo);
+        let runtime = Arc::clone(&self.runtime);
+        I2c { gallo, runtime }
     }
 
     /// Spi
     pub fn spi(&self) -> Spi {
-        let gallo = Arc::clone(&self.0);
-        Spi { gallo }
+        let gallo = Arc::clone(&self.gallo);
+        let runtime = Arc::clone(&self.runtime);
+        Spi { gallo, runtime }
     }
 
     /// Delay
@@ -90,6 +99,7 @@ pub enum Error {
 pub struct Gpio {
     pin: u8,
     gallo: Arc<Mutex<PicoDeGallo>>,
+    runtime: Arc<Runtime>,
 }
 
 impl embedded_hal::digital::Error for Error {
@@ -104,8 +114,7 @@ impl embedded_hal::digital::ErrorType for Gpio {
 
 impl embedded_hal::digital::OutputPin for Gpio {
     fn set_low(&mut self) -> std::result::Result<(), Self::Error> {
-        let runtime = RUNTIME.get().unwrap();
-
+        let runtime = &self.runtime;
         let gallo = runtime.block_on(self.gallo.lock());
         runtime
             .block_on(gallo.gpio_put(self.pin, GpioState::Low))
@@ -113,8 +122,7 @@ impl embedded_hal::digital::OutputPin for Gpio {
     }
 
     fn set_high(&mut self) -> std::result::Result<(), Self::Error> {
-        let runtime = RUNTIME.get().unwrap();
-
+        let runtime = &self.runtime;
         let gallo = runtime.block_on(self.gallo.lock());
         runtime
             .block_on(gallo.gpio_put(self.pin, GpioState::High))
@@ -124,7 +132,7 @@ impl embedded_hal::digital::OutputPin for Gpio {
 
 impl embedded_hal::digital::InputPin for Gpio {
     fn is_high(&mut self) -> std::result::Result<bool, Self::Error> {
-        let runtime = RUNTIME.get().unwrap();
+        let runtime = &self.runtime;
         let gallo = runtime.block_on(self.gallo.lock());
         runtime
             .block_on(gallo.gpio_get(self.pin))
@@ -133,7 +141,7 @@ impl embedded_hal::digital::InputPin for Gpio {
     }
 
     fn is_low(&mut self) -> std::result::Result<bool, Self::Error> {
-        let runtime = RUNTIME.get().unwrap();
+        let runtime = &self.runtime;
         let gallo = runtime.block_on(self.gallo.lock());
         runtime
             .block_on(gallo.gpio_get(self.pin))
@@ -146,6 +154,7 @@ impl embedded_hal::digital::InputPin for Gpio {
 
 pub struct I2c {
     gallo: Arc<Mutex<PicoDeGallo>>,
+    runtime: Arc<Runtime>,
 }
 
 impl embedded_hal::i2c::Error for Error {
@@ -165,7 +174,7 @@ impl embedded_hal::i2c::I2c<embedded_hal::i2c::SevenBitAddress> for I2c {
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> std::result::Result<(), Self::Error> {
         let address = address.into();
-        let runtime = RUNTIME.get().unwrap();
+        let runtime = &self.runtime;
         let gallo = runtime.block_on(self.gallo.lock());
 
         for op in operations {
@@ -219,6 +228,7 @@ impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for 
 
 pub struct Spi {
     gallo: Arc<Mutex<PicoDeGallo>>,
+    runtime: Arc<Runtime>,
 }
 
 impl embedded_hal::spi::Error for Error {
@@ -233,7 +243,7 @@ impl embedded_hal::spi::ErrorType for Spi {
 
 impl embedded_hal::spi::SpiBus for Spi {
     fn read(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
-        let runtime = RUNTIME.get().unwrap();
+        let runtime = &self.runtime;
         let gallo = runtime.block_on(self.gallo.lock());
         let contents = runtime
             .block_on(gallo.spi_read(words.len() as u16))
@@ -243,7 +253,7 @@ impl embedded_hal::spi::SpiBus for Spi {
     }
 
     fn write(&mut self, words: &[u8]) -> std::result::Result<(), Self::Error> {
-        let runtime = RUNTIME.get().unwrap();
+        let runtime = &self.runtime;
         let gallo = runtime.block_on(self.gallo.lock());
         runtime
             .block_on(gallo.spi_write(words))
@@ -261,7 +271,7 @@ impl embedded_hal::spi::SpiBus for Spi {
     }
 
     fn flush(&mut self) -> std::result::Result<(), Self::Error> {
-        let runtime = RUNTIME.get().unwrap();
+        let runtime = &self.runtime;
         let gallo = runtime.block_on(self.gallo.lock());
         runtime
             .block_on(gallo.spi_flush())
