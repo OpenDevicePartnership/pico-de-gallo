@@ -13,6 +13,12 @@ pub struct Hal {
     in_async: bool,
 }
 
+impl Default for Hal {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Hal {
     /// Instantiate the library context.
     pub fn new() -> Self {
@@ -36,15 +42,15 @@ impl Hal {
         };
 
         let gallo = if in_async {
-            if serial_number.is_some() {
-                PicoDeGallo::new_with_serial_number(serial_number.unwrap())
+            if let Some(serial_number) = serial_number {
+                PicoDeGallo::new_with_serial_number(serial_number)
             } else {
                 PicoDeGallo::new()
             }
         } else {
             handle.block_on(async {
-                if serial_number.is_some() {
-                    PicoDeGallo::new_with_serial_number(serial_number.unwrap())
+                if let Some(serial_number) = serial_number {
+                    PicoDeGallo::new_with_serial_number(serial_number)
                 } else {
                     PicoDeGallo::new()
                 }
@@ -155,7 +161,7 @@ impl Gpio {
         handle
             .block_on(gallo.gpio_get(self.pin))
             .map_err(|_| Error::Other)
-            .map(|s| if s == GpioState::Low { true } else { false })
+            .map(|s| s == GpioState::Low)
     }
 
     fn is_high_inner(&mut self) -> std::result::Result<bool, Error> {
@@ -164,7 +170,7 @@ impl Gpio {
         handle
             .block_on(gallo.gpio_get(self.pin))
             .map_err(|_| Error::Other)
-            .map(|s| if s == GpioState::High { true } else { false })
+            .map(|s| s == GpioState::High)
     }
 }
 
@@ -270,7 +276,6 @@ impl I2c {
         address: embedded_hal::i2c::SevenBitAddress,
         operations: &mut [embedded_hal::i2c::Operation<'_>],
     ) -> std::result::Result<(), Error> {
-        let address = address.into();
         let handle = &self.handle;
         let gallo = handle.block_on(self.gallo.lock());
 
@@ -322,7 +327,6 @@ impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for 
         address: embedded_hal_async::i2c::SevenBitAddress,
         operations: &mut [embedded_hal_async::i2c::Operation<'_>],
     ) -> std::result::Result<(), Self::Error> {
-        let address = address.into();
         let gallo = self.gallo.lock().await;
 
         for op in operations {

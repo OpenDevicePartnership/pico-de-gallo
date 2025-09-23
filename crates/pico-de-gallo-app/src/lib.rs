@@ -211,15 +211,15 @@ impl Cli {
                         if reserved {
                             match pg.i2c_read(address, 1).await {
                                 Ok(_) => format!("{:02x}", address),
-                                Err(_) => format!("--"),
+                                Err(_) => "--".to_string(),
                             }
                         } else {
-                            format!("RR")
+                            "RR".to_string()
                         }
                     }
                     _ => match pg.i2c_read(address, 1).await {
                         Ok(_) => format!("{:02x}", address),
-                        Err(_) => format!("--"),
+                        Err(_) => "--".to_string(),
                     },
                 };
 
@@ -252,13 +252,13 @@ impl Cli {
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {
-                print!("\n");
+                println!();
             }
 
             print!("{:02x} ", b);
         }
 
-        print!("\n");
+        println!();
 
         Ok(())
     }
@@ -296,13 +296,13 @@ impl Cli {
 
         for (i, b) in buf.iter().enumerate() {
             if i > 0 && i % 16 == 0 {
-                print!("\n");
+                println!();
             }
 
             print!("{:02x} ", b);
         }
 
-        print!("\n");
+        println!();
 
         Ok(())
     }
@@ -364,11 +364,11 @@ impl Cli {
 }
 
 fn parse_byte(s: &str) -> Result<u8, ParseIntError> {
-    if s.starts_with("0x") {
-        u8::from_str_radix(&s[2..], 16)
-    } else if s.starts_with("0b") {
-        u8::from_str_radix(&s[2..], 2)
+    if let Some(hex) = s.strip_prefix("0x") {
+        u8::from_str_radix(hex, 16)
+    } else if let Some(bin) = s.strip_prefix("0b") {
+        u8::from_str_radix(bin, 2)
     } else {
-        u8::from_str_radix(&s[2..], 10)
+        s.parse::<u8>()
     }
 }

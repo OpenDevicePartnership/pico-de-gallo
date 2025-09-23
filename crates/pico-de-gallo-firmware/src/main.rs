@@ -66,6 +66,7 @@ pub struct Context {
 }
 
 impl Context {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         i2c: I2c<'static, I2C1, i2c::Async>,
         spi: Spi<'static, SPI0, spi::Async>,

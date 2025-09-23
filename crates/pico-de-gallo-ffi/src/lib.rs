@@ -59,8 +59,14 @@ pub extern "C" fn gallo_init() -> *const PicoDeGallo {
 ///
 /// Returns an opaque representation of the underlying PicoDeGallo
 /// device.
+///
+/// # Safety
+///
+/// `c_serial_number` must either be NULL or point to a valid c-string
+/// containing a valid Pico de Gallo serial number with a
+/// NULL-terminator.
 #[unsafe(no_mangle)]
-pub extern "C" fn gallo_init_with_serial_number(
+pub unsafe extern "C" fn gallo_init_with_serial_number(
     c_serial_number: *const c_char,
 ) -> *const PicoDeGallo {
     if c_serial_number.is_null() {
@@ -84,8 +90,13 @@ pub extern "C" fn gallo_init_with_serial_number(
     Box::into_raw(gallo) as *const PicoDeGallo
 }
 
-#[unsafe(no_mangle)]
 /// gallo_free - Releases and destroys the library context created by `gallo_init`.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
+#[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_free(gallo: *const PicoDeGallo) {
     if !gallo.is_null() {
         // Safety: caller must ensure that `gallo` is a valid opaque
@@ -99,6 +110,11 @@ pub unsafe extern "C" fn gallo_free(gallo: *const PicoDeGallo) {
 /// gallo_ping - Ping the firmware and wait for a response
 ///
 /// Returns the same `u32` passed as the first argument.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_ping(gallo: *mut PicoDeGallo, id: &mut u32) -> Status {
     if gallo.is_null() {
@@ -125,6 +141,12 @@ pub unsafe extern "C" fn gallo_ping(gallo: *mut PicoDeGallo, id: &mut u32) -> St
 /// gallo_i2c_read - Read `len` bytes from the device at `address` into `buf`.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()` and `buf` must be valid
+/// for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_i2c_read(
     gallo: *mut PicoDeGallo,
@@ -168,6 +190,12 @@ pub unsafe extern "C" fn gallo_i2c_read(
 /// gallo_i2c_write - Write `len` bytes from `buf` to the device at `address`.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()` and `buf` must be valid
+/// for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_i2c_write(
     gallo: *mut PicoDeGallo,
@@ -208,6 +236,12 @@ pub unsafe extern "C" fn gallo_i2c_write(
 /// gallo_i2c_write_read - Perform a write followed by a read.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, `txbuf` must be valid
+/// for `txlen` bytes, and `rxbuf` must be valid for `rxlen` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_i2c_write_read(
     gallo: *mut PicoDeGallo,
@@ -262,6 +296,12 @@ pub unsafe extern "C" fn gallo_i2c_write_read(
 /// gallo_spi_read - Read `len` bytes.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()` and `buf` must be valid
+/// for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_spi_read(
     gallo: *mut PicoDeGallo,
@@ -304,6 +344,12 @@ pub unsafe extern "C" fn gallo_spi_read(
 /// gallo_spi_write - Write `len` bytes from `buf`.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()` and `buf` must be valid
+/// for `len` bytes.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_spi_write(
     gallo: *mut PicoDeGallo,
@@ -343,6 +389,11 @@ pub unsafe extern "C" fn gallo_spi_write(
 /// gallo_spi_flush - Flush the SPI interface.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_spi_flush(gallo: *mut PicoDeGallo) -> Status {
     if gallo.is_null() {
@@ -367,6 +418,11 @@ pub unsafe extern "C" fn gallo_spi_flush(gallo: *mut PicoDeGallo) -> Status {
 /// gallo_gpio_get - Get the state of a given GPIO pin.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_get(
     gallo: *mut PicoDeGallo,
@@ -386,12 +442,7 @@ pub unsafe extern "C" fn gallo_gpio_get(
 
     match result {
         Ok(s) => {
-            if s == lib::GpioState::Low {
-                *state = false;
-            } else {
-                *state = true;
-            }
-
+            *state = s == lib::GpioState::High;
             Status::Ok
         }
         Err(_) => Status::GpioGetFailed,
@@ -401,6 +452,11 @@ pub unsafe extern "C" fn gallo_gpio_get(
 /// gallo_gpio_put - Set the state of a given GPIO pin.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_put(gallo: *mut PicoDeGallo, pin: u8, state: bool) -> Status {
     if gallo.is_null() {
@@ -428,6 +484,11 @@ pub unsafe extern "C" fn gallo_gpio_put(gallo: *mut PicoDeGallo, pin: u8, state:
 /// gallo_gpio_wait_for_high - Waits for a high level on a given GPIO pin.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_wait_for_high(gallo: *mut PicoDeGallo, pin: u8) -> Status {
     if gallo.is_null() {
@@ -450,6 +511,11 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_high(gallo: *mut PicoDeGallo, pin: 
 /// gallo_gpio_wait_for_low - Waits for a low level on a given GPIO pin.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_wait_for_low(gallo: *mut PicoDeGallo, pin: u8) -> Status {
     if gallo.is_null() {
@@ -472,6 +538,11 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_low(gallo: *mut PicoDeGallo, pin: u
 /// gallo_gpio_wait_for_rising_edge - Waits for a rising edge on a given GPIO pin.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_wait_for_rising_edge(
     gallo: *mut PicoDeGallo,
@@ -497,6 +568,11 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_rising_edge(
 /// gallo_gpio_wait_for_falling_edge - Waits for a falling edge on a given GPIO pin.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_wait_for_falling_edge(
     gallo: *mut PicoDeGallo,
@@ -522,6 +598,11 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_falling_edge(
 /// gallo_gpio_wait_for_any_edge - Waits for a any edge on a given GPIO pin.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_gpio_wait_for_any_edge(gallo: *mut PicoDeGallo, pin: u8) -> Status {
     if gallo.is_null() {
@@ -553,6 +634,11 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_any_edge(gallo: *mut PicoDeGallo, p
 /// high" or CPOL=1.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_set_config(
     gallo: *mut PicoDeGallo,
@@ -596,10 +682,15 @@ pub unsafe extern "C" fn gallo_set_config(
 
 // ----------------------------- Version endpoint -----------------------------
 
+#[unsafe(no_mangle)]
 /// gallo_version - Gets the firmware version.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
-#[unsafe(no_mangle)]
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`.
 pub unsafe extern "C" fn gallo_version(
     gallo: *mut PicoDeGallo,
     major: &mut u16,

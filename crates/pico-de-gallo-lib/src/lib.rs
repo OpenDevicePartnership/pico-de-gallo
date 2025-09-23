@@ -47,6 +47,12 @@ pub struct PicoDeGallo {
     pub client: HostClient<WireError>,
 }
 
+impl Default for PicoDeGallo {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl PicoDeGallo {
     /// Create a new instance for the Pico de Gallo device.
     ///
