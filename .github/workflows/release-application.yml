@@ -1,0 +1,100 @@
+name: Upload Application Release Assets
+on:
+ push:
+   tags:
+     - "application-v*"
+
+permissions:
+ contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Create new release
+        uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prefix: "application"
+
+  upload-linux-binary:
+    strategy:
+      matrix:
+        target: [aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu]
+
+    needs: create-release
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install stable rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install targets
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          manifest-path: crates/pico-de-gallo-app/Cargo.toml
+          target: ${{ matrix.target }}
+          bin: gallo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-windows-binary:
+    strategy:
+      matrix:
+        target: [aarch64-pc-windows-msvc, x86_64-pc-windows-msvc]
+
+    needs: create-release
+
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install stable rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install targets
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          manifest-path: crates/pico-de-gallo-app/Cargo.toml
+          target: ${{ matrix.target }}
+          bin: gallo
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  upload-macos-binary:
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin ]
+
+    needs: create-release
+
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install stable rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install targets
+        run: rustup target add ${{ matrix.target }}
+
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          manifest-path: crates/pico-de-gallo-app/Cargo.toml
+          target: ${{ matrix.target }}
+          bin: gallo
+          token: ${{ secrets.GITHUB_TOKEN }}
