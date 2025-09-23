@@ -1,0 +1,85 @@
+name: Upload Firmware Release Assets
+on:
+ push:
+   tags:
+     - "firmware-v*"
+
+permissions:
+ contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Create new release
+        uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prefix: "firmware"
+
+  upload-uf2:
+    needs: create-release
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download pico-sdk-tools
+        run: |
+          curl -L -o picotool.tar.gz https://github.com/raspberrypi/pico-sdk-tools/releases/download/v2.2.0-2/picotool-2.2.0-a4-x86_64-lin.tar.gz
+
+      - name: Install pico-sdk-tools
+        run: |
+          tar -vzxf picotool.tar.gz -C $HOME
+          chmod +x $HOME/picotool/picotool
+          echo "$HOME/picotool" >> $GITHUB_PATH
+
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install stable rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rustup target add thumbv8m.main-none-eabihf
+        run: rustup target add thumbv8m.main-none-eabihf
+
+      - name: Build firmware
+        run: cargo build --release --manifest-path crates/pico-de-gallo-firmware/Cargo.toml --target thumbv8m.main-none-eabihf
+
+      - name: Generate uf2
+        run: |
+          picotool uf2 convert crates/pico-de-gallo-firmware/target/thumbv8m.main-none-eabihf/release/pico-de-gallo-fw -t elf firmware.uf2
+
+      - name: Upload binaries to release
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: firmware.uf2
+          asset_name: firmware.uf2
+          tag: ${{ github.ref }}
+          overwrite: true
+
+  upload-elf:
+    needs: create-release
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install stable rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: rustup target add thumbv8m.main-none-eabihf
+        run: rustup target add thumbv8m.main-none-eabihf
+
+      - uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          manifest-path: crates/pico-de-gallo-firmware/Cargo.toml
+          target: thumbv8m.main-none-eabihf
+          bin: pico-de-gallo-fw
+          token: ${{ secrets.GITHUB_TOKEN }}
