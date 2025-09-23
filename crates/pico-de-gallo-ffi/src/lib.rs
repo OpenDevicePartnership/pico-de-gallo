@@ -62,9 +62,8 @@ pub extern "C" fn gallo_init() -> *const PicoDeGallo {
 ///
 /// # Safety
 ///
-/// `c_serial_number` must either be NULL or point to a valid c-string
-/// containing a valid Pico de Gallo serial number with a
-/// NULL-terminator.
+/// `c_serial_number` must point to a valid c-string containing a
+/// valid Pico de Gallo serial number with a NULL-terminator.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_init_with_serial_number(
     c_serial_number: *const c_char,
