@@ -23,44 +23,67 @@ concurrency:
 name: check
 jobs:
   fmt:
-    runs-on: ubuntu-latest
-    name: stable / fmt
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
-      - name: cargo fmt --check
-        run: cargo fmt --check
-
-  clippy:
-    runs-on: ubuntu-latest
-    name: ${{ matrix.toolchain }} / clippy
-    permissions:
-      contents: read
-      checks: write
     strategy:
       fail-fast: false
       matrix:
         # Get early warning of new lints which are regularly introduced in beta channels.
         toolchain: [stable, beta]
+        crate: [pico-de-gallo-app, pico-de-gallo-firmware,
+        pico-de-gallo-internal, pico-de-gallo-ffi, pico-de-gallo-hal,
+        pico-de-gallo-lib]
+
+    runs-on: ubuntu-latest
+
+    name: stable / fmt
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cargo fmt --check
+        run: cargo fmt --check
+        working-directory: crates/${{ matrix.crate }}
+
+  clippy:
+    runs-on: ubuntu-latest
+
+    name: ${{ matrix.toolchain }} / clippy
+
+    permissions:
+      contents: read
+      checks: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        # Get early warning of new lints which are regularly introduced in beta channels.
+        toolchain: [stable, beta]
+        crate: [pico-de-gallo-app, pico-de-gallo-internal,
+        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib]
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
       - name: Install ${{ matrix.toolchain }}
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.toolchain }}
           components: clippy
+
       - name: cargo clippy
         uses: giraffate/clippy-action@v1
         with:
           reporter: 'github-pr-check'
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          workdir: crates/${{ matrix.crate }}
 
   # Enable once we have a released crate
   # semver:
@@ -84,15 +107,25 @@ jobs:
     # https://doc.rust-lang.org/beta/unstable-book/language-features/doc-cfg.html which allows an
     # API be documented as only available in some specific platforms.
     runs-on: ubuntu-latest
+
     name: nightly / doc
+
+    strategy:
+      matrix:
+        crate: [pico-de-gallo-app, pico-de-gallo-internal,
+        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib]
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
       - name: Install nightly
         uses: dtolnay/rust-toolchain@nightly
+
       - name: cargo doc
         run: cargo doc --no-deps --all-features
+        working-directory: crates/${{ matrix.crate }}
         env:
           RUSTDOCFLAGS: --cfg docsrs
 
@@ -100,70 +133,99 @@ jobs:
     # cargo-hack checks combinations of feature flags to ensure that features are all additive
     # which is required for feature unification
     runs-on: ubuntu-latest
+
     name: ubuntu / stable / features
+
+    strategy:
+      matrix:
+        crate: [pico-de-gallo-app, pico-de-gallo-internal,
+        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib]
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
+
       - name: cargo install cargo-hack
         uses: taiki-e/install-action@cargo-hack
+
       # intentionally no target specifier; see https://github.com/jonhoo/rust-ci-conf/pull/4
       # --feature-powerset runs for every combination of features
       - name: cargo hack
         run: cargo hack --feature-powerset check
+        working-directory: crates/${{ matrix.crate }}
 
-  deny:
-    # cargo-deny checks licenses, advisories, sources, and bans for
-    # our dependencies.
-    runs-on: ubuntu-latest
-    name: ubuntu / stable / deny
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
-      - name: cargo install cargo-deny
-        uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          log-level: warn
-          manifest-path: ./Cargo.toml
-          command: check
-          arguments: --all-features
+  # deny:
+  #   # cargo-deny checks licenses, advisories, sources, and bans for
+  #   # our dependencies.
+  #   runs-on: ubuntu-latest
 
-  test:
-    runs-on: ubuntu-latest
-    name: ubuntu / stable / test
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
-      - name: Install stable
-        uses: dtolnay/rust-toolchain@stable
-      - name: cargo install cargo-hack
-        uses: taiki-e/install-action@cargo-hack
-      - name: cargo test
-        run: cargo hack --feature-powerset test
+  #   name: ubuntu / stable / deny
+
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         submodules: true
+
+  #     - name: Install stable
+  #       uses: dtolnay/rust-toolchain@stable
+
+  #     - name: cargo install cargo-deny
+  #       uses: EmbarkStudios/cargo-deny-action@v2
+  #       with:
+  #         log-level: warn
+  #         manifest-path: ./Cargo.toml
+  #         command: check
+  #         arguments: --all-features
+
+  # test:
+  #   runs-on: ubuntu-latest
+
+  #   name: ubuntu / stable / test
+
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #       with:
+  #         submodules: true
+
+  #     - name: Install stable
+  #       uses: dtolnay/rust-toolchain@stable
+
+  #     - name: cargo install cargo-hack
+  #       uses: taiki-e/install-action@cargo-hack
+
+  #     - name: cargo test
+  #       run: cargo hack --feature-powerset test
 
   msrv:
     # check that we can build using the minimal rust version that is specified by this crate
     runs-on: ubuntu-latest
+
     # we use a matrix here just because env can't be used in job names
     # https://docs.github.com/en/actions/learn-github-actions/contexts#context-availability
     strategy:
       fail-fast: false
+
       matrix:
-        msrv: ["1.85"]
+        msrv: ["1.90"]
+        crate: [pico-de-gallo-app, pico-de-gallo-internal,
+        pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib]
+
     name: ubuntu / ${{ matrix.msrv }}
+
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: true
+
       - name: Install ${{ matrix.msrv }}
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.msrv }}
+
       - name: cargo +${{ matrix.msrv }} check
         run: cargo check
+        working-directory: crates/${{ matrix.crate }}

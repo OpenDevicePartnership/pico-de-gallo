@@ -27,4 +27,4 @@ jobs:
       - name: rustup target add ${{ matrix.target }}
         run: rustup target add ${{ matrix.target }}
       - name: cargo check
-        run: cargo check --target ${{ matrix.target }}
+        run: cargo check --target ${{ matrix.target }} --manifest-path crates/pico-de-gallo-firmware/Cargo.toml
