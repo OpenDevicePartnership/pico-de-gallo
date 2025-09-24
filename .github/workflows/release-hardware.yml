@@ -1,0 +1,87 @@
+name: Upload Hardware Release Assets
+on:
+  push:
+    tags:
+      - "hardware-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Create new release
+        uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prefix: "hardware"
+
+  upload-kicad-files:
+    needs: create-release
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v5
+
+      - name: Run KiCad actions
+        uses: felipebalbi/kicad-actions@generate-pth-npth-and-drill-map
+        with:
+          schematic_file_name: ./hardware/pico-de-gallo.kicad_sch
+          run_erc: true
+
+          schematic_output_pdf: true
+          schematic_output_pdf_file_name: pico-de-gallo-schematic.pdf
+
+          pcb_file_name: ./hardware/pico-de-gallo.kicad_pcb
+          run_drc: true
+          pcb_output_gerbers_and_drill: true
+          pcb_output_layers: B.Cu,B.Mask,B.Paste,B.Silkscreen,Edge.Cuts,F.Cu,F.Mask,F.Paste,F.Silkscreen,In1.Cu,In2.Cu
+
+          pcb_output_image: true
+          pcb_output_image_file_name: pico-de-gallo-pcb-top.png
+
+          # pcb_output_step: true
+          # pcb_output_step_file_name: pico-de-gallo.step
+
+      - name: Zip gerbers
+        run: zip -r gerbers gerbers
+
+      - name: Upload schematic
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: pico-de-gallo-schematic.pdf
+          tag: ${{ github.ref }}
+          overwrite: true
+
+      - name: Upload Gerbers
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: gerbers.zip
+          tag: ${{ github.ref }}
+          overwrite: true
+          file_glob: true
+
+      - name: Upload Image Render
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: pico-de-gallo-pcb-top.png
+          tag: ${{ github.ref }}
+          overwrite: true
+
+      # - name: Upload Board Assembly
+      #   uses: svenstaro/upload-release-action@v2
+      #   with:
+      #     repo_token: ${{ secrets.GITHUB_TOKEN }}
+      #     file: pico-de-gallo.step
+      #     tag: ${{ github.ref }}
+      #     overwrite: true
