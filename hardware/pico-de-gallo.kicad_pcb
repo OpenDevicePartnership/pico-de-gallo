@@ -157,7 +157,7 @@
 	(property "AUTHOR" "Felipe Balbi")
 	(property "COMPANY" "Open Device Partnership")
 	(property "PROJECT" "Pico de Gallo")
-	(property "REVISION" "2")
+	(property "REVISION" "0.2")
 	(net 0 "")
 	(net 1 "/MOSI")
 	(net 2 "unconnected-(A1-GPIO16-Pad21)")
