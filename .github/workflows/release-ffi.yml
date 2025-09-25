@@ -1,0 +1,132 @@
+name: Upload FFI Release Assets
+on:
+ push:
+   tags:
+     - "ffi-v*"
+
+permissions:
+ contents: write
+
+jobs:
+  create-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Create new release
+        uses: taiki-e/create-gh-release-action@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          prefix: "ffi"
+
+  upload-linux-binary:
+    strategy:
+      matrix:
+        target: [aarch64-unknown-linux-gnu, x86_64-unknown-linux-gnu]
+
+    needs: create-release
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install stable rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install targets
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Install cross linker and set it up with cargo (Aarch64 only)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: |
+          sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+          mkdir -p .cargo
+          echo '[target.aarch64-unknown-linux-gnu]' > .cargo/config.toml
+          echo 'linker = "aarch64-linux-gnu-gcc"' >> .cargo/config.toml
+
+      - name: Build FFI
+        run: cargo build --release --target ${{ matrix.target }} --manifest-path crates/pico-de-gallo-ffi/Cargo.toml
+
+      - name: Upload library asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: crates/pico-de-gallo-ffi/target/${{ matrix.target }}/release/libpico_de_gallo_ffi.so
+          asset_name: ${{ matrix.target }}-libpico_de_gallo.so
+          tag: ${{ github.ref }}
+          overwrite: true
+
+      - name: Upload header asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: crates/pico-de-gallo-ffi/include/pico_de_gallo.h
+          asset_name: pico_de_gallo.h
+          tag: ${{ github.ref }}
+          overwrite: true
+
+  upload-windows-binary:
+    strategy:
+      matrix:
+        target: [aarch64-pc-windows-msvc, x86_64-pc-windows-msvc]
+
+    needs: create-release
+
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install stable rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install targets
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build FFI
+        run: cargo build --release --target ${{ matrix.target }} --manifest-path crates/pico-de-gallo-ffi/Cargo.toml
+
+      - name: Upload library asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: crates/pico-de-gallo-ffi/target/${{ matrix.target }}/release/pico_de_gallo_ffi.dll
+          asset_name: ${{ matrix.target }}-pico_de_gallo.lib
+          tag: ${{ github.ref }}
+          overwrite: true
+
+  upload-macos-binary:
+    strategy:
+      matrix:
+        target: [aarch64-apple-darwin ]
+
+    needs: create-release
+
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v5
+
+      - name: Install stable rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install targets
+        run: rustup target add ${{ matrix.target }}
+
+      - name: Build FFI
+        run: cargo build --release --target ${{ matrix.target }} --manifest-path crates/pico-de-gallo-ffi/Cargo.toml
+
+      - name: Upload library asset
+        uses: svenstaro/upload-release-action@v2
+        with:
+          repo_token: ${{ secrets.GITHUB_TOKEN }}
+          file: crates/pico-de-gallo-ffi/target/${{ matrix.target }}/release/libpico_de_gallo_ffi.dylib
+          asset_name: ${{ matrix.target }}-libpico_de_gallo.dylib
+          tag: ${{ github.ref }}
+          overwrite: true
