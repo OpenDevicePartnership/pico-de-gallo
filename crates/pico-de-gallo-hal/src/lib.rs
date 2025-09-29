@@ -73,7 +73,24 @@ impl Hal {
         spi_phase: SpiPhase,
         spi_polarity: SpiPolarity,
     ) {
+        if self.in_async {
+            block_in_place(|| {
+                self.set_config_inner(i2c_frequency, spi_frequency, spi_phase, spi_polarity)
+            });
+        } else {
+            self.set_config_inner(i2c_frequency, spi_frequency, spi_phase, spi_polarity);
+        };
+    }
+
+    pub fn set_config_inner(
+        &mut self,
+        i2c_frequency: u32,
+        spi_frequency: u32,
+        spi_phase: SpiPhase,
+        spi_polarity: SpiPolarity,
+    ) {
         let handle = self.handle.clone();
+
         let gallo = handle.block_on(self.gallo.lock());
         handle
             .block_on(gallo.set_config(i2c_frequency, spi_frequency, spi_phase, spi_polarity))
