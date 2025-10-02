@@ -1,0 +1,12 @@
+[book]
+authors = ["Felipe Balbi"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Pico de Gallo"
+
+# cargo install mdbook-alerts
+[preprocessor.alerts]
+
+[output.html]
+mathjax-support = true
