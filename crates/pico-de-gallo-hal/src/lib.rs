@@ -82,7 +82,7 @@ impl Hal {
         };
     }
 
-    pub fn set_config_inner(
+    fn set_config_inner(
         &mut self,
         i2c_frequency: u32,
         spi_frequency: u32,
