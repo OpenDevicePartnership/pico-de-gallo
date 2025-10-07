@@ -1,0 +1,9 @@
+[workspace]
+resolver = "2"
+members = [
+    "pico-de-gallo-app",
+    "pico-de-gallo-ffi",
+    "pico-de-gallo-hal",
+    "pico-de-gallo-internal",
+    "pico-de-gallo-lib"
+]
