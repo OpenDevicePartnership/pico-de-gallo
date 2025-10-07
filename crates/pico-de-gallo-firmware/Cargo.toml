@@ -4,6 +4,9 @@ version = "0.4.1"
 edition = "2024"
 license = "MIT"
 rust-version = "1.89"
+description = "Pico de Gallo firmware"
+license = "MIT"
+repository = "https://github.com/OpenDevicePartnership/pico-de-gallo"
 
 [dependencies]
 cortex-m = { version = "0.7.7", features = ["inline-asm"] }
@@ -20,7 +23,7 @@ embassy-time = { version = "0.4", features = ["defmt", "defmt-timestamp-uptime"]
 embassy-usb = { version = "0.5.1", features = ["defmt"] }
 heapless = "0.9.1"
 panic-probe = "1.0.0"
-pico-de-gallo-internal = { path = "../pico-de-gallo-internal" }
+pico-de-gallo-internal = "0.1.0"
 postcard-rpc = { version = "0.11",   features = ["embassy-usb-0_5-server"] }
 static_cell = "2.1.1"
 

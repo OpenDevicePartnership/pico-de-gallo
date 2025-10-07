@@ -1,11 +1,16 @@
 [package]
 name = "pico-de-gallo-lib"
-version = "0.3.0"
+version = "0.1.0"
 edition = "2024"
+description = "High-level library to communicate with Pico de Gallo device"
+categories = ["embedded", "hardware-support",]
+keywords = ["embedded-hal", "embedded-hal-async", "pico-de-gallo"]
+license = "MIT"
+repository = "https://github.com/OpenDevicePartnership/pico-de-gallo"
 
 [dependencies]
 embedded-hal = "1.0.0"
-pico-de-gallo-internal = { path = "../pico-de-gallo-internal", features = ["use-std"] }
+pico-de-gallo-internal = { version = "0.1.0", features = ["use-std"] }
 postcard-rpc = { version = "0.11", features = ["use-std", "raw-nusb"] }
 tokio = { version = "1.37", features = ["rt-multi-thread", "macros", "time"] }
 nusb = "0.1.9"

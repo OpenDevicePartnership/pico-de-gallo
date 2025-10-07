@@ -1,12 +1,17 @@
 [package]
 name = "pico-de-gallo-hal"
-version = "0.2.1"
+version = "0.1.0"
 edition = "2024"
+description = "embedded-hal and embedded-hal-async implementation for Pico de Gallo"
+categories = ["embedded", "hardware-support",]
+keywords = ["embedded-hal", "embedded-hal-async", "pico-de-gallo"]
+license = "MIT"
+repository = "https://github.com/OpenDevicePartnership/pico-de-gallo"
 
 [dependencies]
 embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
-pico-de-gallo-lib = { path = "../pico-de-gallo-lib" }
+pico-de-gallo-lib = "0.1.0"
 tokio = { version = "1.47.1", features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
