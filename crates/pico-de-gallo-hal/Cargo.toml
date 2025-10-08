@@ -3,6 +3,7 @@ name = "pico-de-gallo-hal"
 version = "0.1.0"
 edition = "2024"
 description = "embedded-hal and embedded-hal-async implementation for Pico de Gallo"
+readme = "README.md"
 categories = ["embedded", "hardware-support",]
 keywords = ["embedded-hal", "embedded-hal-async", "pico-de-gallo"]
 license = "MIT"

@@ -3,6 +3,7 @@ name = "pico-de-gallo-ffi"
 version = "0.1.0"
 edition = "2024"
 description = "C-FFI for Pico de Gallo device"
+readme = "README.md"
 categories = ["api-bindings", "embedded", "hardware-support"]
 keywords = ["binding", "ffi", "c", "pico-de-gallo"]
 license = "MIT"

@@ -3,6 +3,7 @@ name = "gallo"
 version = "0.1.0"
 edition = "2024"
 description = "Batch mode application to control a Pico de Gallo device"
+readme = "README.md"
 categories = ["command-line-utilities", "development-tools", ]
 keywords = ["cli", "utility", "pico-de-gallo"]
 license = "MIT"

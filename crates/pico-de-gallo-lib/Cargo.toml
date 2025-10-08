@@ -3,6 +3,7 @@ name = "pico-de-gallo-lib"
 version = "0.1.0"
 edition = "2024"
 description = "High-level library to communicate with Pico de Gallo device"
+readme = "README.md"
 categories = ["embedded", "hardware-support",]
 keywords = ["embedded-hal", "embedded-hal-async", "pico-de-gallo"]
 license = "MIT"
