@@ -7,3 +7,4 @@ members = [
     "pico-de-gallo-internal",
     "pico-de-gallo-lib"
 ]
+exclude = [ "pico-de-gallo-firmware" ]
