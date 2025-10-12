@@ -58,5 +58,3 @@ regular Pico2 board.
 This folder contains a 3D printable case, designed with
 [FreeCAD](https://freecad.org), that can house the board. The case is
 designed in two parts &mdash; body and lid &mdash; which snap together.
-
-A simple tool for testing Embedded Rust drivers for discrete I2C/SPI components.
