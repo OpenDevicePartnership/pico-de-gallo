@@ -31,7 +31,7 @@ embassy-time = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"]
 embassy-usb = { version = "0.5", features = ["defmt"] }
 # Pin embassy-usb-driver to 0.2.0: 0.2.1 bumped embedded-io-async to 0.7,
 # which breaks embassy-usb 0.5.1's CDC-ACM impl (still on 0.6).
-embassy-usb-driver = "=0.2.0"
+embassy-usb-driver = "=0.2.1"
 embedded-io-async = "0.7.0"
 panic-probe = "1.0.0"
 pico-de-gallo-internal = { version = "0.5.0", path = "../pico-de-gallo-internal" }
