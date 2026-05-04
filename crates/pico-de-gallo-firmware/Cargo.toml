@@ -26,7 +26,7 @@ embassy-executor = { version = "0.9", features = ["arch-cortex-m", "executor-thr
 embassy-futures = "0.1"
 embassy-rp = { version = "0.10.0", features = ["defmt", "unstable-pac", "time-driver", "critical-section-impl", "rp235xa", "binary-info"] }
 fixed = "1.28.0"
-embassy-sync = { version = "0.7.2", features = ["defmt"] }
+embassy-sync = { version = "0.8.0", features = ["defmt"] }
 embassy-time = { version = "0.5", features = ["defmt", "defmt-timestamp-uptime"] }
 embassy-usb = { version = "0.5", features = ["defmt"] }
 # Pin embassy-usb-driver to 0.2.0: 0.2.1 bumped embedded-io-async to 0.7,
