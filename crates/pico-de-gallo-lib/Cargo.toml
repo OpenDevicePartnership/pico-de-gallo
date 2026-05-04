@@ -16,4 +16,4 @@ embedded-hal = "1.0.0"
 pico-de-gallo-internal = { version = "0.5.0", path = "../pico-de-gallo-internal", features = ["use-std"] }
 postcard-rpc = { version = "0.12", features = ["use-std", "raw-nusb"] }
 tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "time"] }
-nusb = "0.1.9"
+nusb = "0.2.3"
