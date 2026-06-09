@@ -5,6 +5,25 @@ All notable changes to `pico-de-gallo-firmware` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0](https://github.com/OpenDevicePartnership/pico-de-gallo/compare/firmware-v0.9.0...firmware-v0.10.0) (2026-06-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **internal:** wire-protocol minor bump. Pre-0.7 firmware cannot decode 0.7 client requests (they include 4 extra bytes per wait request). Pre-0.7 hosts cannot decode 0.7 firmware responses that return GpioError::Timeout (unknown enum variant). Lockstep release required per AGENTS.md §6.5.
+* **internal,firmware,lib,hal,ffi,application,pyco:** pico-de-gallo-internal gains the `system/reset-subscriptions` endpoint; postcard-rpc requires firmware and every host crate to be rebuilt against the matching SCHEMA_VERSION_MINOR. Mixing a 0.5.x firmware with a 0.6.x host (or vice versa) will fail `validate()` with a schema-version mismatch. Additionally, the FFI handle-borrowing entry points now take `*const PicoDeGallo`; this is source-compatible for C consumers but technically a signature change.
+
+### Features
+
+* **firmware:** enable watchdog, bound gpio_wait and i2c_scan ([ee05d98](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/ee05d9845dbb4b3b4e3d9d69c4566d3d0236330b))
+* **internal,firmware,lib,hal,ffi,application,pyco:** address P1 review findings ([00ea9df](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/00ea9dfde78dd8ec531cfdd986b7205671d2ae25))
+* **internal:** add timeout_ms to GpioWaitRequest, GpioError::Timeout ([fdb3ba1](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/fdb3ba15e64d03a07167203cb3897930a7e3dfbf))
+
+
+### Bug Fixes
+
+* address P1 findings from REVIEW-2026-05-29 (validate mapping, FFI surface, GPIO subscription leak, const handles) ([ce5cc15](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/ce5cc15267bb3ab982e007e6bb56742db238cdd1))
+
 ## [Unreleased]
 
 ### Added (2026-06-03 — Category A hotfix)
