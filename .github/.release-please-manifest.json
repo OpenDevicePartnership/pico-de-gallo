@@ -1,5 +1,5 @@
 {
-  "crates/pico-de-gallo-internal": "0.5.0",
+  "crates/pico-de-gallo-internal": "0.6.0",
   "crates/pico-de-gallo-lib": "0.5.0",
   "crates/pico-de-gallo-hal": "0.5.0",
   "crates/pico-de-gallo-ffi": "0.6.0",
