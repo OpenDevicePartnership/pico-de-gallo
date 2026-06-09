@@ -1,6 +1,6 @@
 [package]
 name = "gallo"
-version = "0.8.1"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Batch mode application to control a Pico de Gallo device"
