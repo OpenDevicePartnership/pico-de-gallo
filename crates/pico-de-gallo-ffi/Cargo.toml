@@ -1,6 +1,6 @@
 [package]
 name = "pico-de-gallo-ffi"
-version = "0.8.1"
+version = "0.7.0"
 edition = "2024"
 rust-version = "1.90"
 description = "C-FFI for Pico de Gallo device"
