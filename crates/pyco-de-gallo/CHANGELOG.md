@@ -5,6 +5,26 @@ All notable changes to `pyco-de-gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0](https://github.com/OpenDevicePartnership/pico-de-gallo/compare/pyco-v0.2.0...pyco-v0.3.0) (2026-06-09)
+
+
+### ⚠ BREAKING CHANGES
+
+* **internal,firmware,lib,hal,ffi,application,pyco:** pico-de-gallo-internal gains the `system/reset-subscriptions` endpoint; postcard-rpc requires firmware and every host crate to be rebuilt against the matching SCHEMA_VERSION_MINOR. Mixing a 0.5.x firmware with a 0.6.x host (or vice versa) will fail `validate()` with a schema-version mismatch. Additionally, the FFI handle-borrowing entry points now take `*const PicoDeGallo`; this is source-compatible for C consumers but technically a signature change.
+
+### Features
+
+* **internal,firmware,lib,hal,ffi,application,pyco:** address P1 review findings ([00ea9df](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/00ea9dfde78dd8ec531cfdd986b7205671d2ae25))
+* **lib,hal,ffi,application,pyco:** enforce schema validation, expose HAL recovery ([c8e2f13](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/c8e2f13be1bacf83e905d9e1453f6ec4b3abc69c))
+* **lib:** add gpio_wait_for_*_with_timeout, bump internal to 0.7 ([9840232](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/98402325a49a21f773d30fba7007c2da8addd698))
+* **pyco:** add gpio_wait_for_*_with_timeout Python methods ([9b324da](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/9b324da75131b1a0bcacb2faebc8eee523dcb6ad))
+* **pyco:** add PycoDeGallo.open_strict for validation-on-construct ([5b671f3](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/5b671f37a226f64273742a19b3f001e1f9af1fc5))
+
+
+### Bug Fixes
+
+* address P1 findings from REVIEW-2026-05-29 (validate mapping, FFI surface, GPIO subscription leak, const handles) ([ce5cc15](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/ce5cc15267bb3ab982e007e6bb56742db238cdd1))
+
 ## [Unreleased]
 
 ### Added (2026-06-04 — Category A hotfix host-only PR)
