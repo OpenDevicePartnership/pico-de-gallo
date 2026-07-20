@@ -1,6 +1,6 @@
 [package]
 name = "gallo"
-version = "0.7.0"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Batch mode application to control a Pico de Gallo device"
@@ -14,6 +14,6 @@ documentation = "https://docs.rs/gallo"
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
 color-eyre = "0.6.5"
-pico-de-gallo-lib = { version = "0.6.0", path = "../pico-de-gallo-lib" }
+pico-de-gallo-lib = { version = "0.10.0", path = "../pico-de-gallo-lib" }
 tabled = "0.21.0"
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "signal", "time"] }

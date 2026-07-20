@@ -1,6 +1,6 @@
 [package]
 name = "pyco-de-gallo"
-version = "0.4.2"
+version = "0.10.0"
 edition = "2024"
 rust-version = "1.90"
 license = "MIT"
@@ -11,6 +11,6 @@ name = "pyco_de_gallo"
 crate-type = ["cdylib"]
 
 [dependencies]
-pico-de-gallo-lib = { version = "0.6.0", path = "../pico-de-gallo-lib" }
+pico-de-gallo-lib = { version = "0.10.0", path = "../pico-de-gallo-lib" }
 pyo3 = "0.29"
 tokio = { version = "1.52.3", features = ["rt"] }

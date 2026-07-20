@@ -5,6 +5,34 @@ All notable changes to `pico-de-gallo-lib` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0](https://github.com/OpenDevicePartnership/pico-de-gallo/compare/library-v0.5.0...library-v0.10.0) (2026-07-20)
+
+
+### ⚠ BREAKING CHANGES
+
+* **internal:** wire-protocol minor bump. Pre-0.7 firmware cannot decode 0.7 client requests (they include 4 extra bytes per wait request). Pre-0.7 hosts cannot decode 0.7 firmware responses that return GpioError::Timeout (unknown enum variant). Lockstep release required per AGENTS.md §6.5.
+* **internal,firmware,lib,hal,ffi,application,pyco:** pico-de-gallo-internal gains the `system/reset-subscriptions` endpoint; postcard-rpc requires firmware and every host crate to be rebuilt against the matching SCHEMA_VERSION_MINOR. Mixing a 0.5.x firmware with a 0.6.x host (or vice versa) will fail `validate()` with a schema-version mismatch. Additionally, the FFI handle-borrowing entry points now take `*const PicoDeGallo`; this is source-compatible for C consumers but technically a signature change.
+
+### Features
+
+* **internal,firmware,lib,hal,ffi,application,pyco:** address P1 review findings ([00ea9df](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/00ea9dfde78dd8ec531cfdd986b7205671d2ae25))
+* **internal:** add timeout_ms to GpioWaitRequest, GpioError::Timeout ([fdb3ba1](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/fdb3ba15e64d03a07167203cb3897930a7e3dfbf))
+* **lib,hal,ffi,application,pyco:** enforce schema validation, expose HAL recovery ([c8e2f13](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/c8e2f13be1bacf83e905d9e1453f6ec4b3abc69c))
+* **lib:** add gpio_wait_for_*_with_timeout, bump internal to 0.7 ([9840232](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/98402325a49a21f773d30fba7007c2da8addd698))
+
+
+### Bug Fixes
+
+* address P1 findings from REVIEW-2026-05-29 (validate mapping, FFI surface, GPIO subscription leak, const handles) ([ce5cc15](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/ce5cc15267bb3ab982e007e6bb56742db238cdd1))
+* **lib:** check schema_major in validate(), extend SchemaMismatch payload ([8257e2b](https://github.com/OpenDevicePartnership/pico-de-gallo/commit/8257e2b0bbb8a3ece5f95685bd7de040dff2fdc1))
+
+
+### Dependencies
+
+* The following workspace dependencies were updated
+  * dependencies
+    * pico-de-gallo-internal bumped from 0.6.0 to 0.10.0
+
 ## [0.6.0] — 2026-06-22
 
 ### Fixed (2026-06-04 — Category A hotfix host-only PR)
