@@ -425,6 +425,19 @@ impl Hal {
     /// Returns `SpiHalError` if the initial CS-high drive fails (e.g. the
     /// device is not connected or `cs_pin` is out of range).
     pub fn spi_device(&self, cs_pin: u8) -> Result<SpiDev, SpiHalError> {
+        // Bridge to async like every other device method: inside a tokio
+        // runtime the inner `block_on`s must run under `block_in_place` or they
+        // panic (a runtime cannot be driven from within a runtime). Regression:
+        // this previously did a raw `handle.block_on` and panicked whenever it
+        // was called from an async context.
+        if Self::in_async_context() {
+            block_in_place(|| self.spi_device_inner(cs_pin))
+        } else {
+            self.spi_device_inner(cs_pin)
+        }
+    }
+
+    fn spi_device_inner(&self, cs_pin: u8) -> Result<SpiDev, SpiHalError> {
         let gallo = Arc::clone(&self.gallo);
         let handle = self.handle.clone();
 
