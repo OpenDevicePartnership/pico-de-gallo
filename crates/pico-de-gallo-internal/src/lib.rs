@@ -1357,7 +1357,7 @@ impl core::fmt::Display for SpiBatchError {
 pub fn encode_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Vec<u8> {
     assert!(ops.len() <= MAX_BATCH_OPS, "too many batch operations");
     let mut buf = Vec::new();
-    let mut tmp = [0u8; 128];
+    let mut tmp = [0u8; 1024];
     for op in ops {
         let encoded = postcard::to_slice(op, &mut tmp).expect("I2cBatchOp encode failed");
         buf.extend_from_slice(encoded);
@@ -1376,7 +1376,7 @@ pub fn encode_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Vec<u8> {
 pub fn encode_spi_batch_ops(ops: &[SpiBatchOp<'_>]) -> Vec<u8> {
     assert!(ops.len() <= MAX_BATCH_OPS, "too many batch operations");
     let mut buf = Vec::new();
-    let mut tmp = [0u8; 128];
+    let mut tmp = [0u8; 1024];
     for op in ops {
         let encoded = postcard::to_slice(op, &mut tmp).expect("SpiBatchOp encode failed");
         buf.extend_from_slice(encoded);
@@ -3050,6 +3050,34 @@ mod tests {
             .map(|_| SpiBatchOp::Read { len: 1 })
             .collect();
         encode_spi_batch_ops(&ops);
+    }
+
+    /// Regression: a single Write op whose data exceeds the old 128-byte
+    /// per-op scratch buffer must encode without panicking
+    /// (`SerializeBufferFull`). 256 bytes is a flash page-program payload —
+    /// the exact case that overflowed before the buffer was widened.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn encode_i2c_batch_ops_handles_large_write_op() {
+        let data = [0xA5u8; 256];
+        let encoded = encode_i2c_batch_ops(&[I2cBatchOp::Write { data: &data }]);
+        let (decoded, rest) = postcard::take_from_bytes::<I2cBatchOp>(&encoded).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(decoded, I2cBatchOp::Write { data: &data });
+    }
+
+    /// Regression: a single Write op whose data exceeds the old 128-byte
+    /// per-op scratch buffer must encode without panicking
+    /// (`SerializeBufferFull`). 256 bytes is a flash page-program payload —
+    /// the exact case that overflowed before the buffer was widened.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn encode_spi_batch_ops_handles_large_write_op() {
+        let data = [0xA5u8; 256];
+        let encoded = encode_spi_batch_ops(&[SpiBatchOp::Write { data: &data }]);
+        let (decoded, rest) = postcard::take_from_bytes::<SpiBatchOp>(&encoded).unwrap();
+        assert!(rest.is_empty());
+        assert_eq!(decoded, SpiBatchOp::Write { data: &data });
     }
 
     #[cfg(feature = "use-std")]
