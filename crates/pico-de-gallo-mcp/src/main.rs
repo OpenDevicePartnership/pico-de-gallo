@@ -5,6 +5,7 @@
 #![allow(dead_code)]
 
 mod encoding;
+mod error;
 
 fn main() {
     eprintln!("gallo-mcp scaffold");
