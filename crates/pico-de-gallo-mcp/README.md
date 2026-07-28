@@ -20,9 +20,14 @@ cargo install gallo-mcp
 gallo-mcp [--serial-number <SN>]
 ```
 
-The server connects to the device lazily: it starts even with no board
-attached, and tools begin working as soon as a Pico de Gallo is plugged in.
-Logs go to stderr; stdout carries the MCP protocol.
+The server holds no persistent connection to the board. Each tool call opens
+the device, runs the operation, and releases it when the call completes, so
+the board stays free for the `gallo` CLI or other host processes between
+calls. Each call re-opens and re-validates the device, so there is a small
+fixed per-call connection cost. The server starts even with no board
+attached; tools begin working as soon as a Pico de Gallo is plugged in. Logs
+go to stderr; stdout carries the
+MCP protocol.
 
 ## Use with an MCP client
 

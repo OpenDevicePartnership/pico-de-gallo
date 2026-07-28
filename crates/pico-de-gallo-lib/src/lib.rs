@@ -259,9 +259,17 @@ fn check_schema_compatible(info: &DeviceInfo) -> Result<(), ValidateError> {
 /// for every firmware endpoint. The client is cheaply cloneable (the inner
 /// transport is reference-counted) and safe to share across tasks.
 ///
-/// Connection happens lazily in the background — constructing a `PicoDeGallo`
-/// does not block or fail. If the device is not connected, methods will return
-/// errors when called.
+/// The USB device is enumerated when the client is constructed: [`new`] and
+/// [`new_with_serial_number`] **panic** if no matching device is present or
+/// the interface cannot be claimed. Use the fallible [`try_new`] /
+/// [`try_new_with_serial_number`] variants to handle those cases. Once
+/// constructed, the connection handshake completes in the background, so
+/// per-RPC calls fail (rather than the constructor) if the link drops later.
+///
+/// [`new`]: Self::new
+/// [`new_with_serial_number`]: Self::new_with_serial_number
+/// [`try_new`]: Self::try_new
+/// [`try_new_with_serial_number`]: Self::try_new_with_serial_number
 #[derive(Clone)]
 pub struct PicoDeGallo {
     client: HostClient<WireError>,
@@ -297,9 +305,29 @@ impl PicoDeGallo {
         })
     }
 
+    /// Fallible variant of [`new`](Self::new): returns an error instead of
+    /// panicking when no matching device is present or the interface cannot
+    /// be claimed.
+    pub fn try_new() -> Result<Self, String> {
+        Self::try_new_inner(|dev| dev.vendor_id() == MICROSOFT_VID && dev.product_id() == PICO_DE_GALLO_PID)
+    }
+
+    /// Fallible variant of [`new_with_serial_number`](Self::new_with_serial_number).
+    pub fn try_new_with_serial_number(serial_number: &str) -> Result<Self, String> {
+        Self::try_new_inner(|dev| {
+            dev.vendor_id() == MICROSOFT_VID
+                && dev.product_id() == PICO_DE_GALLO_PID
+                && dev.serial_number() == Some(serial_number)
+        })
+    }
+
+    fn try_new_inner<F: FnMut(&NusbDeviceInfo) -> bool>(func: F) -> Result<Self, String> {
+        let client = HostClient::try_new_raw_nusb(func, ERROR_PATH, 8, VarSeqKind::Seq2)?;
+        Ok(Self { client })
+    }
+
     fn new_inner<F: FnMut(&NusbDeviceInfo) -> bool>(func: F) -> Self {
-        let client = HostClient::new_raw_nusb(func, ERROR_PATH, 8, VarSeqKind::Seq2);
-        Self { client }
+        Self::try_new_inner(func).expect("should have found nusb device")
     }
 
     /// Wait until the client has closed the connection.

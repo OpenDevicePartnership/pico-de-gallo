@@ -20,5 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `destructiveHint`. Write approval is delegated to the MCP client.
 - Timeout-bounded GPIO edge waits (non-zero timeout enforced). No infinite
   waits or push subscriptions in this release.
-- Lazy device connection: the server starts with no board attached and begins
-  serving as soon as one is present.
+- Per-call device connection: each tool opens the board, runs, and releases it
+  when the call completes, so the board stays free for the `gallo` CLI and
+  other host processes between calls. The server starts with no board attached
+  and each tool begins working as soon as one is present.

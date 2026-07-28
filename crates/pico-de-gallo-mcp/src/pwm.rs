@@ -41,8 +41,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let d = self
-            .device
+        let dev = self.connect().await?;
+        let d = dev
             .pwm_get_duty_cycle(p.channel)
             .await
             .map_err(map_pdg_err)?;
@@ -57,11 +57,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let c = self
-            .device
-            .pwm_get_config(p.channel)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let c = dev.pwm_get_config(p.channel).await.map_err(map_pdg_err)?;
         ok_json(&format!("{c:?}"))
     }
     /// Set PWM raw duty cycle.
@@ -73,8 +70,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmSetDutyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device
-            .pwm_set_duty_cycle(p.channel, p.duty)
+        let dev = self.connect().await?;
+        dev.pwm_set_duty_cycle(p.channel, p.duty)
             .await
             .map_err(map_pdg_err)?;
         ok_json(&"ok")
@@ -88,10 +85,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device
-            .pwm_enable(p.channel)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.pwm_enable(p.channel).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
     /// Disable a PWM channel.
@@ -103,10 +98,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device
-            .pwm_disable(p.channel)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.pwm_disable(p.channel).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
     /// Configure PWM frequency and phase-correct.
@@ -118,8 +111,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmSetConfigParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device
-            .pwm_set_config(p.channel, p.frequency, p.phase_correct)
+        let dev = self.connect().await?;
+        dev.pwm_set_config(p.channel, p.frequency, p.phase_correct)
             .await
             .map_err(map_pdg_err)?;
         ok_json(&"ok")
