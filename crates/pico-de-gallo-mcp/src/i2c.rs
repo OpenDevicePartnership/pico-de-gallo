@@ -47,6 +47,23 @@ pub struct I2cSetConfigParams {
     pub frequency: String,
 }
 
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+#[serde(tag = "op", rename_all = "lowercase")]
+pub enum I2cBatchOpParam {
+    /// Read `count` bytes.
+    Read { count: u16 },
+    /// Write `data` (hex string).
+    Write { data: String },
+}
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct I2cBatchParams {
+    /// 7-bit I2C address.
+    pub address: u8,
+    /// Ordered list of operations.
+    pub ops: Vec<I2cBatchOpParam>,
+}
+
 #[tool_router(router = i2c_router, vis = "pub(crate)")]
 impl GalloMcp {
     /// Read bytes from an I2C device.
@@ -154,6 +171,46 @@ impl GalloMcp {
             .map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
+
+    /// Execute a batch of I2C operations under one address.
+    #[tool(
+        description = "Execute a batch of I2C operations under one address",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn i2c_batch(
+        &self,
+        Parameters(p): Parameters<I2cBatchParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        use pico_de_gallo_lib::I2cBatchOp;
+        let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
+        // Parse all write payloads into owned buffers FIRST so the borrowed
+        // ops below can reference them (I2cBatchOp::Write borrows &[u8]).
+        let mut write_bufs: Vec<Vec<u8>> = Vec::new();
+        for op in &p.ops {
+            if let I2cBatchOpParam::Write { data } = op {
+                write_bufs.push(parse_bytes(data).map_err(invalid_arg)?);
+            }
+        }
+        let mut ops: Vec<I2cBatchOp<'_>> = Vec::with_capacity(p.ops.len());
+        let mut w = 0usize;
+        for op in &p.ops {
+            match op {
+                I2cBatchOpParam::Read { count } => ops.push(I2cBatchOp::Read { len: *count }),
+                I2cBatchOpParam::Write { .. } => {
+                    ops.push(I2cBatchOp::Write {
+                        data: &write_bufs[w],
+                    });
+                    w += 1;
+                }
+            }
+        }
+        let out = self
+            .device
+            .i2c_batch(addr, &ops)
+            .await
+            .map_err(map_pdg_err)?;
+        ok_json(&Bytes::from_slice(&out))
+    }
 }
 
 #[cfg(test)]
@@ -175,6 +232,16 @@ mod tests {
         assert_eq!(p.data, "0x00,0x10");
     }
 
+    #[test]
+    fn batch_params_deserialize() {
+        let p: I2cBatchParams = serde_json::from_str(
+            r#"{"address":80,"ops":[{"op":"write","data":"0x00,0x10"},{"op":"read","count":16}]}"#,
+        )
+        .unwrap();
+        assert_eq!(p.address, 80);
+        assert_eq!(p.ops.len(), 2);
+    }
+
     #[tokio::test]
     async fn i2c_tools_registered() {
         let svc = crate::GalloMcp::new(None);
@@ -191,6 +258,7 @@ mod tests {
             "i2c_scan",
             "i2c_set_config",
             "i2c_get_config",
+            "i2c_batch",
         ] {
             assert!(names.contains(&e.to_string()), "missing {e}");
         }
