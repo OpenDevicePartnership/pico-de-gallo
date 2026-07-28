@@ -5,6 +5,17 @@ All notable changes to `pico-de-gallo-lib` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] — 2026-07-28
+
+### Added
+
+- Add fallible constructors `PicoDeGallo::try_new()` and
+  `PicoDeGallo::try_new_with_serial_number()` returning
+  `Result<PicoDeGallo, String>`. Unlike `new()` / `new_with_serial_number()`
+  (which panic when no matching device is present or the interface cannot be
+  claimed), these surface the error, letting callers report "no device
+  attached" or retry a transient claim failure. Additive and non-breaking.
+
 ## [0.7.0] — 2026-07-28
 
 ### Added

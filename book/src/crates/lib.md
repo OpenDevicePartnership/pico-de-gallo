@@ -11,9 +11,12 @@ of it.
 ## Connection Model
 
 `PicoDeGallo::new()` and `PicoDeGallo::new_with_serial_number()` are **synchronous
-constructors**. They do not perform an async handshake up front; the client
-connects lazily in the background and operations fail only when you actually try
-to use the device.
+constructors**. They enumerate USB when called and **panic** if no matching board
+is present or the interface cannot be claimed; the fallible `PicoDeGallo::try_new()`
+and `PicoDeGallo::try_new_with_serial_number()` return a `Result<PicoDeGallo, String>`
+instead. They do not perform an async handshake up front — once constructed, the
+client completes the connection in the background and per-RPC calls (not the
+constructor) fail if the link drops later.
 
 That gives you a simple startup story:
 
@@ -27,6 +30,8 @@ That gives you a simple startup story:
 |---|---|
 | `PicoDeGallo::new()` | Targets the first matching board the host sees |
 | `PicoDeGallo::new_with_serial_number(serial)` | Targets one specific board by USB serial |
+| `PicoDeGallo::try_new()` | Fallible `new()` — `Err` instead of panic when absent/unclaimable |
+| `PicoDeGallo::try_new_with_serial_number(serial)` | Fallible `new_with_serial_number()` |
 | `list_devices()` | Returns `DeviceDescription` values for every attached board |
 | `wait_closed().await` | Resolves when the underlying USB connection closes |
 
