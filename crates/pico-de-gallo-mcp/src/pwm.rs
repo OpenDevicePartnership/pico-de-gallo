@@ -138,11 +138,9 @@ mod tests {
         assert_eq!(p.frequency, 1000);
         assert!(!p.phase_correct);
     }
-    #[tokio::test]
-    async fn pwm_tools_registered() {
-        let svc = crate::GalloMcp::new(None);
-        let names: Vec<String> = svc
-            .tool_router
+    #[test]
+    fn pwm_tools_registered() {
+        let names: Vec<String> = crate::GalloMcp::router_for_test()
             .list_all()
             .iter()
             .map(|t| t.name.to_string())

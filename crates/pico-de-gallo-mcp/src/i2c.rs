@@ -242,11 +242,9 @@ mod tests {
         assert_eq!(p.ops.len(), 2);
     }
 
-    #[tokio::test]
-    async fn i2c_tools_registered() {
-        let svc = crate::GalloMcp::new(None);
-        let names: Vec<String> = svc
-            .tool_router
+    #[test]
+    fn i2c_tools_registered() {
+        let names: Vec<String> = crate::GalloMcp::router_for_test()
             .list_all()
             .iter()
             .map(|t| t.name.to_string())

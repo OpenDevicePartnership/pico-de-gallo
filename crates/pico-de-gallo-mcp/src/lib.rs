@@ -69,6 +69,22 @@ impl GalloMcp {
         }
     }
 
+    /// Build the merged tool router without constructing a device.
+    ///
+    /// Test-only: lets registration tests assert the tool surface without
+    /// touching USB hardware (avoids the exclusive WinUSB claim race).
+    #[cfg(test)]
+    pub(crate) fn router_for_test() -> ToolRouter<Self> {
+        Self::device_router()
+            + Self::i2c_router()
+            + Self::spi_router()
+            + Self::uart_router()
+            + Self::gpio_router()
+            + Self::pwm_router()
+            + Self::adc_router()
+            + Self::onewire_router()
+    }
+
     /// Validate schema compatibility once and cache the result. Also performs
     /// the connect-time subscription reset the host is expected to do.
     pub(crate) async fn ensure_validated(&self) -> Result<&DeviceInfo, ErrorData> {

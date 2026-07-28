@@ -162,11 +162,9 @@ mod tests {
         assert_eq!(p.pin, 5);
         assert_eq!(p.timeout_ms, 1000);
     }
-    #[tokio::test]
-    async fn gpio_tools_registered() {
-        let svc = crate::GalloMcp::new(None);
-        let names: Vec<String> = svc
-            .tool_router
+    #[test]
+    fn gpio_tools_registered() {
+        let names: Vec<String> = crate::GalloMcp::router_for_test()
             .list_all()
             .iter()
             .map(|t| t.name.to_string())

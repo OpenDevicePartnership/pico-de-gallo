@@ -55,11 +55,9 @@ mod tests {
         let p: AdcReadParams = serde_json::from_str(r#"{"channel":2}"#).unwrap();
         assert_eq!(p.channel, 2);
     }
-    #[tokio::test]
-    async fn adc_tools_registered() {
-        let svc = crate::GalloMcp::new(None);
-        let names: Vec<String> = svc
-            .tool_router
+    #[test]
+    fn adc_tools_registered() {
+        let names: Vec<String> = crate::GalloMcp::router_for_test()
             .list_all()
             .iter()
             .map(|t| t.name.to_string())

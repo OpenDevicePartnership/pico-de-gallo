@@ -111,20 +111,15 @@ impl GalloMcp {
 mod tests {
     use crate::GalloMcp;
 
-    #[tokio::test]
-    async fn device_tools_are_registered() {
-        let svc = GalloMcp::new(None);
-        let names: Vec<String> = svc
-            .tool_router
+    #[test]
+    fn device_tools_are_registered() {
+        let names: Vec<String> = GalloMcp::router_for_test()
             .list_all()
             .iter()
             .map(|t| t.name.to_string())
             .collect();
-        for expected in ["list_devices", "status", "device_info", "version", "ping"] {
-            assert!(
-                names.contains(&expected.to_string()),
-                "missing tool {expected}; have {names:?}"
-            );
+        for e in ["list_devices", "status", "device_info", "version", "ping"] {
+            assert!(names.contains(&e.to_string()), "missing {e}");
         }
     }
 }
