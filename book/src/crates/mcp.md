@@ -36,9 +36,13 @@ interactively.
 
 - `-s, --serial-number <SN>` selects a specific board by USB serial when
   more than one is attached.
-- **Lazy connect:** the server starts even with no board attached and
-  begins serving as soon as a Pico de Gallo is present. You can plug the
-  board in mid-session; the tools work once it appears.
+- **Per-call connection:** the server holds no persistent USB claim. Each
+  tool call opens the board, runs, and releases it when the call completes,
+  so the device is free for the `gallo` CLI or other host processes between
+  calls. Each call re-opens and re-validates the board, so there is a small
+  fixed per-call connection cost. The server starts even with no board
+  attached and tools begin working as soon as a Pico de Gallo is present;
+  you can plug the board in mid-session.
 
 ## Using it with an MCP client
 
