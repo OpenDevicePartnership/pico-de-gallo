@@ -1,8 +1,123 @@
-//! uart tools — populated in a later task.
+//! UART tools.
 
-use rmcp::tool_router;
+use rmcp::handler::server::wrapper::Parameters;
+use rmcp::model::CallToolResult;
+use rmcp::{ErrorData, tool, tool_router};
 
-use crate::GalloMcp;
+use crate::encoding::{Bytes, parse_bytes};
+use crate::error::{invalid_arg, map_pdg_err};
+use crate::{GalloMcp, ok_json};
+
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UartReadParams {
+    /// Number of bytes to read.
+    pub count: u16,
+    /// Read timeout in milliseconds.
+    pub timeout_ms: u32,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UartWriteParams {
+    /// Bytes to write, as a hex string.
+    pub data: String,
+}
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
+pub struct UartSetConfigParams {
+    /// Baud rate in bits per second.
+    pub baud_rate: u32,
+}
 
 #[tool_router(router = uart_router, vis = "pub(crate)")]
-impl GalloMcp {}
+impl GalloMcp {
+    /// Read bytes from UART with a timeout.
+    #[tool(
+        description = "Read bytes from UART with a timeout",
+        annotations(read_only_hint = true)
+    )]
+    async fn uart_read(
+        &self,
+        Parameters(p): Parameters<UartReadParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let data = self
+            .device
+            .uart_read(p.count, p.timeout_ms)
+            .await
+            .map_err(map_pdg_err)?;
+        ok_json(&Bytes::from_slice(&data))
+    }
+    /// Write bytes to UART.
+    #[tool(
+        description = "Write bytes to UART",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn uart_write(
+        &self,
+        Parameters(p): Parameters<UartWriteParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
+        self.device.uart_write(&bytes).await.map_err(map_pdg_err)?;
+        ok_json(&"ok")
+    }
+    /// Flush the UART TX buffer.
+    #[tool(
+        description = "Flush the UART TX buffer",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn uart_flush(&self) -> Result<CallToolResult, ErrorData> {
+        self.device.uart_flush().await.map_err(map_pdg_err)?;
+        ok_json(&"ok")
+    }
+    /// Get the current UART configuration.
+    #[tool(
+        description = "Get the current UART configuration",
+        annotations(read_only_hint = true)
+    )]
+    async fn uart_get_config(&self) -> Result<CallToolResult, ErrorData> {
+        let c = self.device.uart_get_config().await.map_err(map_pdg_err)?;
+        ok_json(&format!("{c:?}"))
+    }
+    /// Set the UART baud rate.
+    #[tool(
+        description = "Set the UART baud rate",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn uart_set_config(
+        &self,
+        Parameters(p): Parameters<UartSetConfigParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        self.device
+            .uart_set_config(p.baud_rate)
+            .await
+            .map_err(map_pdg_err)?;
+        ok_json(&"ok")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn read_params_deserialize() {
+        let p: UartReadParams = serde_json::from_str(r#"{"count":4,"timeout_ms":1000}"#).unwrap();
+        assert_eq!(p.count, 4);
+        assert_eq!(p.timeout_ms, 1000);
+    }
+    #[tokio::test]
+    async fn uart_tools_registered() {
+        let svc = crate::GalloMcp::new(None);
+        let names: Vec<String> = svc
+            .tool_router
+            .list_all()
+            .iter()
+            .map(|t| t.name.to_string())
+            .collect();
+        for e in [
+            "uart_read",
+            "uart_write",
+            "uart_flush",
+            "uart_get_config",
+            "uart_set_config",
+        ] {
+            assert!(names.contains(&e.to_string()), "missing {e}");
+        }
+    }
+}
