@@ -6,11 +6,6 @@
 //! annotated `destructive_hint = true`; approval is delegated to the MCP
 //! client.
 
-// Peripheral tool modules land item-by-item across later tasks; some encoding
-// validators have no consumer yet. Remove this crate-level allow once every
-// peripheral task has landed.
-#![allow(dead_code)]
-
 pub mod adc;
 pub mod device;
 pub mod encoding;
