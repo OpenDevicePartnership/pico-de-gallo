@@ -18,6 +18,7 @@ pub mod spi;
 pub mod uart;
 
 use std::sync::Arc;
+use std::time::Duration;
 
 use pico_de_gallo_lib::{DeviceInfo, PicoDeGallo};
 use rmcp::handler::server::router::tool::ToolRouter;
@@ -31,18 +32,27 @@ pub(crate) fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorDa
     Ok(CallToolResult::success(vec![ContentBlock::json(value)?]))
 }
 
+/// Substring of the error postcard-rpc's `try_new_raw_nusb` returns when USB
+/// enumeration finds no matching device (postcard-rpc 0.12.1, raw_nusb.rs).
+/// [`GalloMcp::connect`] classifies on it to distinguish "no board attached"
+/// from a transient claim failure.
+const NOT_FOUND: &str = "Failed to find matching nusb device";
+
 /// A live, validated connection to a Pico de Gallo device.
 ///
 /// Constructed per tool call by [`GalloMcp::connect`]. Dereferences to the
 /// underlying [`PicoDeGallo`] so tool handlers call device methods directly.
-/// It also holds the shared connection lock (`_claim`) for its whole lifetime,
-/// so at most one connection exists at a time (see [`GalloMcp::connect`]).
+/// It holds the shared connection lock (`_claim`) for its whole lifetime, so
+/// at most one connection exists at a time (see [`GalloMcp::connect`]).
 ///
-/// Field order matters: `inner` is declared before `_claim` so that on drop
-/// the transport is torn down — releasing the USB interface claim — *before*
-/// the lock is released to the next waiting tool call. Dropping the guard thus
-/// frees the board for other host processes (e.g. the `gallo` CLI) between
-/// tool calls.
+/// Dropping the guard drops the transport and then releases the lock. The
+/// transport tears down asynchronously (postcard-rpc owns the USB interface on
+/// detached tasks and exposes no "released" signal), so the next [`connect`]
+/// may briefly observe the interface still claimed; `connect` absorbs that with
+/// a bounded retry. Between tool calls the board is free for other host
+/// processes (e.g. the `gallo` CLI).
+///
+/// [`connect`]: GalloMcp::connect
 pub(crate) struct Device {
     inner: PicoDeGallo,
     info: DeviceInfo,
@@ -117,27 +127,51 @@ impl GalloMcp {
 
     /// Open and validate a fresh connection to the target device.
     ///
-    /// Acquires the shared connection lock, constructs a new [`PicoDeGallo`],
-    /// validates schema compatibility, and performs the connect-time
-    /// subscription reset the host is expected to do. The returned [`Device`]
-    /// owns the connection and the lock; dropping it releases the USB claim,
-    /// then the lock.
+    /// Serializes device access with the shared lock (rmcp dispatches each tool
+    /// call on its own `tokio::spawn` task, so handlers can run concurrently),
+    /// constructs the [`PicoDeGallo`] with the fallible `try_new*`, validates
+    /// schema compatibility, and runs the connect-time subscription reset. The
+    /// returned [`Device`] owns the connection and the lock.
     ///
-    /// The lock is required for correctness, not just fairness. rmcp dispatches
-    /// each tool call on its own spawned task (`tokio::spawn`; this crate does
-    /// not enable rmcp's `local` feature), so tool handlers can run
-    /// concurrently — e.g. when an agent issues parallel tool calls. The
-    /// Pico de Gallo USB interface is an exclusive claim, so two concurrent
-    /// `connect`s would race and the second would fail with `ACCESS_DENIED` on
-    /// Windows (the WinUSB double-claim hazard in AGENTS.md §13.17). Holding
-    /// the lock for the whole connection serializes device access: concurrent
-    /// calls queue instead of racing, while the board is still released to
-    /// other host processes between calls.
+    /// If no matching board is present, returns a clean "no device attached"
+    /// error (so `status` can report `attached: false`). If the interface claim
+    /// fails transiently — e.g. the previous connection's asynchronous teardown
+    /// has not released the exclusive USB claim yet, the Windows double-claim
+    /// hazard in AGENTS.md §13.17 — retries a few times with a short backoff
+    /// before giving up.
     pub(crate) async fn connect(&self) -> Result<Device, ErrorData> {
+        /// Total attempts to claim the interface before giving up.
+        const MAX_ATTEMPTS: u32 = 5;
+        /// Backoff between claim attempts (absorbs async release window).
+        const BACKOFF: Duration = Duration::from_millis(100);
+
         let claim = self.connection.clone().lock_owned().await;
-        let inner = match self.serial_number.as_deref() {
-            Some(sn) => PicoDeGallo::new_with_serial_number(sn),
-            None => PicoDeGallo::new(),
+
+        let mut attempt: u32 = 1;
+        let inner = loop {
+            let result = match self.serial_number.as_deref() {
+                Some(sn) => PicoDeGallo::try_new_with_serial_number(sn),
+                None => PicoDeGallo::try_new(),
+            };
+            match result {
+                Ok(dev) => break dev,
+                Err(e) if e.contains(NOT_FOUND) => {
+                    return Err(ErrorData::internal_error(
+                        "no device attached: connect a Pico de Gallo and retry".to_string(),
+                        None,
+                    ));
+                }
+                Err(e) if attempt >= MAX_ATTEMPTS => {
+                    return Err(ErrorData::internal_error(
+                        format!("failed to open device after {attempt} attempts: {e}"),
+                        None,
+                    ));
+                }
+                Err(_) => {
+                    attempt += 1;
+                    tokio::time::sleep(BACKOFF).await;
+                }
+            }
         };
         let info = inner.validate().await.map_err(error::map_validate_err)?;
         let _ = inner.system_reset_subscriptions().await;
@@ -157,5 +191,20 @@ impl ServerHandler for GalloMcp {
                  Bytes are hex strings like \"0x48,0x00\". Read tools are safe; tools that \
                  write or actuate pins are marked destructive and may require approval.",
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// A sampled copy of the exact error text postcard-rpc's `try_new_raw_nusb`
+    /// returns when enumeration finds no match (postcard-rpc 0.12.1,
+    /// raw_nusb.rs). Ties [`crate::NOT_FOUND`] — the substring `connect()`
+    /// classifies on — to that literal, so editing the const in isolation
+    /// (breaking the match) fails this test. It cannot detect an upstream
+    /// change to the postcard-rpc message itself.
+    #[test]
+    fn not_found_substring_matches_postcard_error() {
+        let postcard_err = "Failed to find matching nusb device!";
+        assert!(postcard_err.contains(crate::NOT_FOUND));
     }
 }
