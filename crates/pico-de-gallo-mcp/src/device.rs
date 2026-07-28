@@ -54,16 +54,19 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn status(&self) -> Result<CallToolResult, ErrorData> {
-        match self.ensure_validated().await {
-            Ok(info) => ok_json(&StatusResult {
-                attached: true,
-                firmware_version: Some(format!(
-                    "{}.{}.{}",
-                    info.fw_major, info.fw_minor, info.fw_patch
-                )),
-                schema_major: Some(info.schema_major),
-                schema_minor: Some(info.schema_minor),
-            }),
+        match self.connect().await {
+            Ok(dev) => {
+                let info = dev.info();
+                ok_json(&StatusResult {
+                    attached: true,
+                    firmware_version: Some(format!(
+                        "{}.{}.{}",
+                        info.fw_major, info.fw_minor, info.fw_patch
+                    )),
+                    schema_major: Some(info.schema_major),
+                    schema_minor: Some(info.schema_minor),
+                })
+            }
             Err(_) => ok_json(&StatusResult {
                 attached: false,
                 firmware_version: None,
@@ -79,7 +82,8 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn device_info(&self) -> Result<CallToolResult, ErrorData> {
-        let info = self.device.device_info().await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let info = dev.device_info().await.map_err(map_pdg_err)?;
         ok_json(&info)
     }
 
@@ -89,7 +93,8 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn version(&self) -> Result<CallToolResult, ErrorData> {
-        let v = self.device.version().await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let v = dev.version().await.map_err(map_pdg_err)?;
         ok_json(&v)
     }
 
@@ -102,7 +107,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PingParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let echoed = self.device.ping(p.id).await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let echoed = dev.ping(p.id).await.map_err(map_pdg_err)?;
         ok_json(&echoed)
     }
 }

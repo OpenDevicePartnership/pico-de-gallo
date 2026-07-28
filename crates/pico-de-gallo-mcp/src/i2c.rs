@@ -76,11 +76,8 @@ impl GalloMcp {
         Parameters(p): Parameters<I2cReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
-        let data = self
-            .device
-            .i2c_read(addr, p.count)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let data = dev.i2c_read(addr, p.count).await.map_err(map_pdg_err)?;
         ok_json(&Bytes::from_slice(&data))
     }
 
@@ -95,10 +92,8 @@ impl GalloMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        self.device
-            .i2c_write(addr, &bytes)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.i2c_write(addr, &bytes).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
 
@@ -113,8 +108,8 @@ impl GalloMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        let data = self
-            .device
+        let dev = self.connect().await?;
+        let data = dev
             .i2c_write_read(addr, &bytes, p.count)
             .await
             .map_err(map_pdg_err)?;
@@ -130,8 +125,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<I2cScanParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let addrs = self
-            .device
+        let dev = self.connect().await?;
+        let addrs = dev
             .i2c_scan(p.include_reserved)
             .await
             .map_err(map_pdg_err)?;
@@ -145,7 +140,8 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn i2c_get_config(&self) -> Result<CallToolResult, ErrorData> {
-        let f = self.device.i2c_get_config().await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let f = dev.i2c_get_config().await.map_err(map_pdg_err)?;
         ok_json(&format!("{f:?}"))
     }
 
@@ -165,10 +161,8 @@ impl GalloMcp {
             "fast-plus" | "fastplus" => I2cFrequency::FastPlus,
             other => return Err(invalid_arg(format!("unknown frequency '{other}'"))),
         };
-        self.device
-            .i2c_set_config(freq)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.i2c_set_config(freq).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
 
@@ -204,11 +198,8 @@ impl GalloMcp {
                 }
             }
         }
-        let out = self
-            .device
-            .i2c_batch(addr, &ops)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let out = dev.i2c_batch(addr, &ops).await.map_err(map_pdg_err)?;
         ok_json(&Bytes::from_slice(&out))
     }
 }

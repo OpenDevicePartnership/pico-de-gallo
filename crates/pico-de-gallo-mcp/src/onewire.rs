@@ -44,7 +44,8 @@ impl GalloMcp {
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn onewire_reset(&self) -> Result<CallToolResult, ErrorData> {
-        let present = self.device.onewire_reset().await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let present = dev.onewire_reset().await.map_err(map_pdg_err)?;
         ok_json(&serde_json::json!({ "presence": present }))
     }
     /// Read bytes over 1-Wire.
@@ -56,7 +57,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<OneWireReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = self.device.onewire_read(p.len).await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let data = dev.onewire_read(p.len).await.map_err(map_pdg_err)?;
         ok_json(&Bytes::from_slice(&data))
     }
     /// Write bytes over 1-Wire.
@@ -69,10 +71,8 @@ impl GalloMcp {
         Parameters(p): Parameters<OneWireWriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        self.device
-            .onewire_write(&bytes)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.onewire_write(&bytes).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
     /// Write bytes over 1-Wire then apply strong pullup.
@@ -85,8 +85,8 @@ impl GalloMcp {
         Parameters(p): Parameters<OneWireWritePullupParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        self.device
-            .onewire_write_pullup(&bytes, p.duration_ms)
+        let dev = self.connect().await?;
+        dev.onewire_write_pullup(&bytes, p.duration_ms)
             .await
             .map_err(map_pdg_err)?;
         ok_json(&"ok")
@@ -100,13 +100,11 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<OneWireSearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        let dev = self.connect().await?;
         let rom = if p.continue_search {
-            self.device
-                .onewire_search_next()
-                .await
-                .map_err(map_pdg_err)?
+            dev.onewire_search_next().await.map_err(map_pdg_err)?
         } else {
-            self.device.onewire_search().await.map_err(map_pdg_err)?
+            dev.onewire_search().await.map_err(map_pdg_err)?
         };
         match rom {
             Some(id) => ok_json(&serde_json::json!({ "rom": format!("0x{id:016X}"), "raw": id })),

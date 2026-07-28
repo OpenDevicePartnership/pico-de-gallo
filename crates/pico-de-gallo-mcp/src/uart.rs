@@ -37,8 +37,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<UartReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = self
-            .device
+        let dev = self.connect().await?;
+        let data = dev
             .uart_read(p.count, p.timeout_ms)
             .await
             .map_err(map_pdg_err)?;
@@ -54,7 +54,8 @@ impl GalloMcp {
         Parameters(p): Parameters<UartWriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        self.device.uart_write(&bytes).await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.uart_write(&bytes).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
     /// Flush the UART TX buffer.
@@ -63,7 +64,8 @@ impl GalloMcp {
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn uart_flush(&self) -> Result<CallToolResult, ErrorData> {
-        self.device.uart_flush().await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.uart_flush().await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
     /// Get the current UART configuration.
@@ -72,7 +74,8 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn uart_get_config(&self) -> Result<CallToolResult, ErrorData> {
-        let c = self.device.uart_get_config().await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let c = dev.uart_get_config().await.map_err(map_pdg_err)?;
         ok_json(&format!("{c:?}"))
     }
     /// Set the UART baud rate.
@@ -84,8 +87,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<UartSetConfigParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        self.device
-            .uart_set_config(p.baud_rate)
+        let dev = self.connect().await?;
+        dev.uart_set_config(p.baud_rate)
             .await
             .map_err(map_pdg_err)?;
         ok_json(&"ok")

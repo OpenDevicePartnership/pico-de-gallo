@@ -67,7 +67,8 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<SpiReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let data = self.device.spi_read(p.count).await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let data = dev.spi_read(p.count).await.map_err(map_pdg_err)?;
         ok_json(&Bytes::from_slice(&data))
     }
     /// Write bytes to SPI.
@@ -80,7 +81,8 @@ impl GalloMcp {
         Parameters(p): Parameters<SpiWriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        self.device.spi_write(&bytes).await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.spi_write(&bytes).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
     /// Full-duplex SPI transfer.
@@ -93,11 +95,8 @@ impl GalloMcp {
         Parameters(p): Parameters<SpiTransferParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        let data = self
-            .device
-            .spi_transfer(&bytes)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let data = dev.spi_transfer(&bytes).await.map_err(map_pdg_err)?;
         ok_json(&Bytes::from_slice(&data))
     }
     /// Flush the SPI TX buffer.
@@ -106,7 +105,8 @@ impl GalloMcp {
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn spi_flush(&self) -> Result<CallToolResult, ErrorData> {
-        self.device.spi_flush().await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        dev.spi_flush().await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
     /// Get the current SPI configuration.
@@ -115,7 +115,8 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn spi_get_config(&self) -> Result<CallToolResult, ErrorData> {
-        let c = self.device.spi_get_config().await.map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let c = dev.spi_get_config().await.map_err(map_pdg_err)?;
         ok_json(&format!("{c:?}"))
     }
     /// Set SPI frequency/phase/polarity.
@@ -138,8 +139,8 @@ impl GalloMcp {
         } else {
             SpiPolarity::IdleHigh
         };
-        self.device
-            .spi_set_config(p.frequency, phase, pol)
+        let dev = self.connect().await?;
+        dev.spi_set_config(p.frequency, phase, pol)
             .await
             .map_err(map_pdg_err)?;
         ok_json(&"ok")
@@ -182,11 +183,8 @@ impl GalloMcp {
                 SpiBatchOpParam::Delay { ns } => ops.push(SpiBatchOp::DelayNs { ns: *ns }),
             }
         }
-        let out = self
-            .device
-            .spi_batch(p.cs, &ops)
-            .await
-            .map_err(map_pdg_err)?;
+        let dev = self.connect().await?;
+        let out = dev.spi_batch(p.cs, &ops).await.map_err(map_pdg_err)?;
         ok_json(&Bytes::from_slice(&out))
     }
 }
