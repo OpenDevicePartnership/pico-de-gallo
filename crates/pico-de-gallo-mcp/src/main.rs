@@ -1,12 +1,30 @@
-//! `gallo-mcp` — Model Context Protocol server for Pico de Gallo.
+//! `gallo-mcp` binary entry point.
 
-// Helpers land before their consumers during scaffolding; consumers arrive in a
-// later task. Remove this allow once the tool modules use these items.
-#![allow(dead_code)]
+use clap::Parser;
+use gallo_mcp::GalloMcp;
+use rmcp::ServiceExt;
+use rmcp::transport::stdio;
 
-mod encoding;
-mod error;
+/// MCP server bridging AI agents to a Pico de Gallo USB device.
+#[derive(Debug, Parser)]
+#[command(name = "gallo-mcp", version, about)]
+struct Cli {
+    /// Connect to the device with this USB serial number (default: first match).
+    #[arg(short, long)]
+    serial_number: Option<String>,
+}
 
-fn main() {
-    eprintln!("gallo-mcp scaffold");
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
+    tracing_subscriber::fmt()
+        .with_writer(std::io::stderr)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .init();
+
+    let cli = Cli::parse();
+    let service = GalloMcp::new(cli.serial_number.as_deref());
+
+    let server = service.serve(stdio()).await?;
+    server.waiting().await?;
+    Ok(())
 }
