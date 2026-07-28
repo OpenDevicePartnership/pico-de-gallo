@@ -30,7 +30,7 @@ jobs:
         toolchain: [stable, beta]
         crate: [pico-de-gallo-app, pico-de-gallo-firmware,
         pico-de-gallo-internal, pico-de-gallo-ffi, pico-de-gallo-hal,
-        pico-de-gallo-lib, pyco-de-gallo]
+        pico-de-gallo-lib, pico-de-gallo-mcp, pyco-de-gallo]
 
     runs-on: ubuntu-latest
 
@@ -66,7 +66,7 @@ jobs:
         toolchain: [stable, beta]
         crate: [pico-de-gallo-app, pico-de-gallo-internal,
         pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib,
-        pyco-de-gallo]
+        pico-de-gallo-mcp, pyco-de-gallo]
 
     steps:
       - uses: actions/checkout@v7
@@ -112,7 +112,7 @@ jobs:
       matrix:
         crate: [pico-de-gallo-app, pico-de-gallo-internal,
         pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib,
-        pyco-de-gallo]
+        pico-de-gallo-mcp, pyco-de-gallo]
 
     steps:
       - uses: actions/checkout@v7
@@ -139,7 +139,7 @@ jobs:
       matrix:
         crate: [pico-de-gallo-app, pico-de-gallo-internal,
         pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib,
-        pyco-de-gallo]
+        pico-de-gallo-mcp, pyco-de-gallo]
 
     steps:
       - uses: actions/checkout@v7
@@ -167,7 +167,7 @@ jobs:
       matrix:
         crate: [pico-de-gallo-internal, pico-de-gallo-ffi,
         pico-de-gallo-hal, pico-de-gallo-lib, pico-de-gallo-app,
-        pyco-de-gallo]
+        pico-de-gallo-mcp, pyco-de-gallo]
 
     steps:
       - uses: actions/checkout@v7
@@ -194,7 +194,7 @@ jobs:
         msrv: ["1.90"]
         crate: [pico-de-gallo-app, pico-de-gallo-internal,
         pico-de-gallo-ffi, pico-de-gallo-hal, pico-de-gallo-lib,
-        pyco-de-gallo]
+        pico-de-gallo-mcp, pyco-de-gallo]
 
     name: ubuntu / ${{ matrix.msrv }}
 
