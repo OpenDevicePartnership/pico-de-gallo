@@ -155,3 +155,42 @@ Host-only. No wire-protocol change, no CLI-surface change, no tool-surface
 change. `gallo-mcp` has never been published (still at its initial `0.1.0`),
 so **do not** bump `[package].version` — there is no released version to
 supersede. Commit as a `fix`/`refactor(mcp)`.
+
+## Revision 2 (2026-07-28) — robustness fixes found in review
+
+Two review findings, verified against source, falsified an assumption in the
+original design and required expanding scope beyond host-only:
+
+1. **rmcp 2.2.0 dispatches tool calls concurrently** (`service.rs:1184`
+   spawns each `handle_request` on a `tokio::spawn` task; `local` feature
+   off). Parallel tool calls would let two `connect()`s claim the exclusive
+   USB interface at once → Windows `ACCESS_DENIED` (AGENTS.md §13.17). Fixed
+   by a shared `Arc<Mutex<()>>` in `GalloMcp`; the `Device` guard holds the
+   `OwnedMutexGuard` for the connection's lifetime, so connections serialize.
+
+2. **`PicoDeGallo::new()` is not fail-safe.** It calls postcard-rpc's
+   `new_raw_nusb(...)` = `try_new_raw_nusb(...).expect(...)`, which enumerates
+   USB **at construction** and panics when no matching device is present or
+   the interface claim fails. The lib's doc comment ("constructing … does not
+   block or fail") is wrong. In the per-call model this means: with no board,
+   every tool call panics (defeating `status` → `attached:false` and the
+   "starts even with no board" promise); and the async USB release (postcard
+   has **no `Drop`**; teardown runs on detached tasks with no completion
+   signal) means a fresh claim can transiently fail even with the mutex.
+
+   **Robust fix (chosen):**
+   - Add fallible `PicoDeGallo::try_new()` / `try_new_with_serial_number()`
+     to `pico-de-gallo-lib` (non-breaking; uses `try_new_raw_nusb`), and
+     correct the lib's `PicoDeGallo` doc + `book/src/crates/lib.md`.
+   - `gallo-mcp::connect()` uses `try_new*`: classify "Failed to find matching
+     nusb device" as a clean "no device attached" error (returned immediately,
+     so `status` reports `attached:false`); retry other (claim) failures a
+     few times with short backoff to absorb the async-release window; keep the
+     mutex. Correct the `Device`/`connect` doc comments that over-claimed a
+     synchronous release ordering.
+
+This keeps the approved per-call model and its "board free between calls"
+benefit while making the no-board and reconnect-race paths return clean errors
+instead of panicking. Adds a `tokio` `time` feature to `gallo-mcp` for
+`sleep`. Still no version bumps (lib change is additive and unreleased-pending;
+gallo-mcp remains `0.1.0`).

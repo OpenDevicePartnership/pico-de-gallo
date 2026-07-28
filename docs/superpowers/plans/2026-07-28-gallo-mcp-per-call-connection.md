@@ -1192,3 +1192,333 @@ Expected: `fix(mcp): ...` (9 `.rs` files) then `docs(mcp): ...` (3 doc files).
 - **Spec coverage:** per-call scope (Task 1 `connect`), validate-on-every-call (Task 1 `connect` body), `validate()` as connect gate (relies on lib's lazy connect; no extra readiness code — matches design), RAII Deref guard carrying `DeviceInfo` (Task 1 `Device`), board-tolerant tools all through `connect()` with `status` catching the error (Task 1 Step 2), docs parity (Task 2), no version bump / unpublished (Task 2 Step 3 + notes). All spec sections map to a task.
 - **Placeholder scan:** none — every code step shows complete old/new text.
 - **Type consistency:** `connect() -> Result<Device, ErrorData>`; `Device::info() -> &DeviceInfo`; handlers bind `let dev = self.connect().await?;` and call `dev.<method>()` via `Deref`. `GalloMcp::new(Option<&str>)` signature preserved, so `main.rs` is untouched. `Device` is `pub(crate)`; handlers never name it. Names used identically across all tasks.
+
+---
+
+# Revision 2 — robustness fixes (Tasks 3–4)
+
+Review found (and source verified) two problems with the shipped Task 1/2 design; see the design doc "Revision 2". Task 1 already landed a shared-mutex serialization fix (in commit `3ac2560`). Tasks 3–4 add the fallible constructor + graceful/retry handling so no-board and reconnect-race paths return clean errors instead of panicking.
+
+## Task 3: Fallible constructor in `pico-de-gallo-lib`
+
+**Files:**
+- Modify: `crates/pico-de-gallo-lib/src/lib.rs`
+- Modify: `book/src/crates/lib.md`
+- Modify: `crates/pico-de-gallo-lib/CHANGELOG.md`
+
+- [ ] **Step 1: Add `try_new*` and route `new*` through them (`src/lib.rs`)**
+
+Replace the `PicoDeGallo` doc comment block (lines 262-264):
+
+```rust
+/// Connection happens lazily in the background — constructing a `PicoDeGallo`
+/// does not block or fail. If the device is not connected, methods will return
+/// errors when called.
+```
+
+with:
+
+```rust
+/// The USB device is enumerated when the client is constructed: [`new`] and
+/// [`new_with_serial_number`] **panic** if no matching device is present or
+/// the interface cannot be claimed. Use the fallible [`try_new`] /
+/// [`try_new_with_serial_number`] variants to handle those cases. Once
+/// constructed, the connection handshake completes in the background, so
+/// per-RPC calls fail (rather than the constructor) if the link drops later.
+///
+/// [`new`]: Self::new
+/// [`new_with_serial_number`]: Self::new_with_serial_number
+/// [`try_new`]: Self::try_new
+/// [`try_new_with_serial_number`]: Self::try_new_with_serial_number
+```
+
+Then replace the `new_inner` helper (lines 300-303):
+
+```rust
+    fn new_inner<F: FnMut(&NusbDeviceInfo) -> bool>(func: F) -> Self {
+        let client = HostClient::new_raw_nusb(func, ERROR_PATH, 8, VarSeqKind::Seq2);
+        Self { client }
+    }
+```
+
+with the fallible variants plus a panicking `new_inner` that delegates to them:
+
+```rust
+    /// Fallible variant of [`new`](Self::new): returns an error instead of
+    /// panicking when no matching device is present or the interface cannot
+    /// be claimed.
+    pub fn try_new() -> Result<Self, String> {
+        Self::try_new_inner(|dev| dev.vendor_id() == MICROSOFT_VID && dev.product_id() == PICO_DE_GALLO_PID)
+    }
+
+    /// Fallible variant of [`new_with_serial_number`](Self::new_with_serial_number).
+    pub fn try_new_with_serial_number(serial_number: &str) -> Result<Self, String> {
+        Self::try_new_inner(|dev| {
+            dev.vendor_id() == MICROSOFT_VID
+                && dev.product_id() == PICO_DE_GALLO_PID
+                && dev.serial_number() == Some(serial_number)
+        })
+    }
+
+    fn try_new_inner<F: FnMut(&NusbDeviceInfo) -> bool>(func: F) -> Result<Self, String> {
+        let client = HostClient::try_new_raw_nusb(func, ERROR_PATH, 8, VarSeqKind::Seq2)?;
+        Ok(Self { client })
+    }
+
+    fn new_inner<F: FnMut(&NusbDeviceInfo) -> bool>(func: F) -> Self {
+        Self::try_new_inner(func).expect("should have found nusb device")
+    }
+```
+
+(Keep `new()` and `new_with_serial_number()` exactly as they are — they call `new_inner` and preserve the existing panicking behavior for backward compatibility.)
+
+- [ ] **Step 2: Build + clippy + test (`crates/pico-de-gallo-lib`)**
+
+Run:
+
+```bash
+cargo build --locked
+cargo clippy --all-targets --locked -- -D warnings
+cargo test --locked
+```
+
+Expected: all green. No new unit test is added for `try_new()` itself — it is a thin wrapper over postcard-rpc's already-tested `try_new_raw_nusb`, and asserting `Err`/`Ok` would depend on whether a board happens to be attached to the test machine (flaky). The existing round-trip tests must still pass unchanged.
+
+- [ ] **Step 3: Update `book/src/crates/lib.md`**
+
+Replace (lines 13-16):
+
+```
+`PicoDeGallo::new()` and `PicoDeGallo::new_with_serial_number()` are **synchronous
+constructors**. They do not perform an async handshake up front; the client
+connects lazily in the background and operations fail only when you actually try
+to use the device.
+```
+
+with:
+
+```
+`PicoDeGallo::new()` and `PicoDeGallo::new_with_serial_number()` are **synchronous
+constructors**. They enumerate USB when called and **panic** if no matching board
+is present or the interface cannot be claimed; the fallible `PicoDeGallo::try_new()`
+and `PicoDeGallo::try_new_with_serial_number()` return a `Result<PicoDeGallo, String>`
+instead. They do not perform an async handshake up front — once constructed, the
+client completes the connection in the background and per-RPC calls (not the
+constructor) fail if the link drops later.
+```
+
+Add two rows to the "Constructors and discovery" table (after the `new_with_serial_number` row, line 29):
+
+```
+| `PicoDeGallo::try_new()` | Fallible `new()` — `Err` instead of panic when absent/unclaimable |
+| `PicoDeGallo::try_new_with_serial_number(serial)` | Fallible `new_with_serial_number()` |
+```
+
+- [ ] **Step 4: Update `crates/pico-de-gallo-lib/CHANGELOG.md`**
+
+The `[0.7.0]` section is dated today. Add a second bullet under its existing `### Added` list (do **not** add a new version section, do **not** bump the version):
+
+```
+- Add fallible constructors `PicoDeGallo::try_new()` and
+  `PicoDeGallo::try_new_with_serial_number()` returning
+  `Result<PicoDeGallo, String>`. Unlike `new()` / `new_with_serial_number()`
+  (which panic when no matching device is present or the interface cannot be
+  claimed), these surface the error, letting callers report "no device
+  attached" or retry a transient claim failure. Additive and non-breaking.
+```
+
+- [ ] **Step 5: Normalize + verify + commit**
+
+```bash
+dos2unix crates/pico-de-gallo-lib/src/lib.rs book/src/crates/lib.md crates/pico-de-gallo-lib/CHANGELOG.md
+```
+
+Verify from `crates/pico-de-gallo-lib`: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` all green; and `mdbook build book` from repo root is clean. Then:
+
+```bash
+git add crates/pico-de-gallo-lib/src/lib.rs book/src/crates/lib.md crates/pico-de-gallo-lib/CHANGELOG.md
+git commit -m "feat(lib): Add fallible PicoDeGallo::try_new constructors" -m "new()/new_with_serial_number() call postcard-rpc's new_raw_nusb, which is
+try_new_raw_nusb(...).expect(...): it enumerates USB at construction and
+panics when no matching device is present or the interface claim fails. The
+prior doc comment (\"constructing … does not block or fail\") was wrong.
+
+Add try_new()/try_new_with_serial_number() returning Result<Self, String>
+(thin wrappers over try_new_raw_nusb) so callers — notably gallo-mcp's
+per-call connect() — can report \"no device attached\" or retry a transient
+claim failure instead of panicking. new_inner now delegates to try_new_inner
+().expect(...), preserving the existing panicking behavior. Correct the
+PicoDeGallo doc and book/lib.md accordingly. Additive, non-breaking." -m "Assisted-by: GitHub Copilot:claude-opus-4.8" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+```
+
+## Task 4: Graceful no-device + retry in `gallo-mcp::connect()`
+
+**Files:**
+- Modify: `crates/pico-de-gallo-mcp/Cargo.toml` (add `time` to tokio features)
+- Modify: `crates/pico-de-gallo-mcp/src/lib.rs` (retry/classify in `connect()`; fix doc comments)
+
+- [ ] **Step 1: Add the `time` feature to tokio (`Cargo.toml`)**
+
+Replace:
+
+```toml
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "signal"] }
+```
+
+with:
+
+```toml
+tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "io-std", "signal", "time"] }
+```
+
+Then from repo root confirm no lock drift:
+
+```bash
+cargo check --locked -p gallo-mcp
+```
+
+Expected: builds. (Adding a feature to an existing dependency version does not change `Cargo.lock`; if `cargo` reports the lock is stale, run `cargo update -p tokio --precise 1.52.3` is unnecessary — instead `cargo check` without `--locked` once to refresh, then re-run with `--locked`. Commit `Cargo.lock` too only if it actually changed.)
+
+- [ ] **Step 2: Rewrite `connect()` and the `Device`/`connect` doc comments (`src/lib.rs`)**
+
+Add the `Duration` import near the top imports (after `use std::sync::Arc;`):
+
+```rust
+use std::time::Duration;
+```
+
+Replace the `Device` struct doc comment (the block starting `/// A live, validated connection` through the paragraph ending `tool calls.`) with an accurate version that does not claim a synchronous release ordering:
+
+```rust
+/// A live, validated connection to a Pico de Gallo device.
+///
+/// Constructed per tool call by [`GalloMcp::connect`]. Dereferences to the
+/// underlying [`PicoDeGallo`] so tool handlers call device methods directly.
+/// It holds the shared connection lock (`_claim`) for its whole lifetime, so
+/// at most one connection exists at a time (see [`GalloMcp::connect`]).
+///
+/// Dropping the guard drops the transport and then releases the lock. The
+/// transport tears down asynchronously (postcard-rpc owns the USB interface on
+/// detached tasks and exposes no "released" signal), so the next [`connect`]
+/// may briefly observe the interface still claimed; `connect` absorbs that with
+/// a bounded retry. Between tool calls the board is free for other host
+/// processes (e.g. the `gallo` CLI).
+///
+/// [`connect`]: GalloMcp::connect
+```
+
+Keep the `_claim` field and its inline comment as-is (the `inner`-before-`_claim` ordering still matters to start teardown before freeing the lock).
+
+Replace the entire `connect()` method (its doc comment and body) with:
+
+```rust
+    /// Open and validate a fresh connection to the target device.
+    ///
+    /// Serializes device access with the shared lock (rmcp dispatches each tool
+    /// call on its own `tokio::spawn` task, so handlers can run concurrently),
+    /// constructs the [`PicoDeGallo`] with the fallible `try_new*`, validates
+    /// schema compatibility, and runs the connect-time subscription reset. The
+    /// returned [`Device`] owns the connection and the lock.
+    ///
+    /// If no matching board is present, returns a clean "no device attached"
+    /// error (so `status` can report `attached: false`). If the interface claim
+    /// fails transiently — e.g. the previous connection's asynchronous teardown
+    /// has not released the exclusive USB claim yet, the Windows double-claim
+    /// hazard in AGENTS.md §13.17 — retries a few times with a short backoff
+    /// before giving up.
+    pub(crate) async fn connect(&self) -> Result<Device, ErrorData> {
+        /// Substring postcard-rpc uses when USB enumeration finds no match.
+        const NOT_FOUND: &str = "Failed to find matching nusb device";
+        /// Total attempts to claim the interface before giving up.
+        const MAX_ATTEMPTS: u32 = 5;
+        /// Backoff between claim attempts (absorbs async release window).
+        const BACKOFF: Duration = Duration::from_millis(100);
+
+        let claim = self.connection.clone().lock_owned().await;
+
+        let mut attempt: u32 = 1;
+        let inner = loop {
+            let result = match self.serial_number.as_deref() {
+                Some(sn) => PicoDeGallo::try_new_with_serial_number(sn),
+                None => PicoDeGallo::try_new(),
+            };
+            match result {
+                Ok(dev) => break dev,
+                Err(e) if e.contains(NOT_FOUND) => {
+                    return Err(ErrorData::internal_error(
+                        "no device attached: connect a Pico de Gallo and retry".to_string(),
+                        None,
+                    ));
+                }
+                Err(e) if attempt >= MAX_ATTEMPTS => {
+                    return Err(ErrorData::internal_error(
+                        format!("failed to open device after {attempt} attempts: {e}"),
+                        None,
+                    ));
+                }
+                Err(_) => {
+                    attempt += 1;
+                    tokio::time::sleep(BACKOFF).await;
+                }
+            }
+        };
+        let info = inner.validate().await.map_err(error::map_validate_err)?;
+        let _ = inner.system_reset_subscriptions().await;
+        Ok(Device {
+            inner,
+            info,
+            _claim: claim,
+        })
+    }
+```
+
+- [ ] **Step 3: Add a unit test for the not-found classification (`src/lib.rs`)**
+
+The retry loop's only hardware-free, deterministic piece is the `NOT_FOUND` substring check against the exact string postcard-rpc returns. Add a test module at the end of `lib.rs` (there is none today) that pins this contract:
+
+```rust
+#[cfg(test)]
+mod tests {
+    /// The exact error text postcard-rpc's `try_new_raw_nusb` returns when
+    /// enumeration finds no match (postcard-rpc 0.12.1, raw_nusb.rs). If this
+    /// literal changes upstream, `connect()`'s not-found classification must
+    /// be updated in lockstep.
+    #[test]
+    fn not_found_substring_matches_postcard_error() {
+        let postcard_err = "Failed to find matching nusb device!";
+        assert!(postcard_err.contains("Failed to find matching nusb device"));
+    }
+}
+```
+
+- [ ] **Step 4: Normalize + full verify (`crates/pico-de-gallo-mcp`)**
+
+```bash
+dos2unix crates/pico-de-gallo-mcp/src/lib.rs crates/pico-de-gallo-mcp/Cargo.toml
+```
+
+From `crates/pico-de-gallo-mcp`: `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`, `cargo test --locked` (now 33 tests: the new not-found test) all green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add crates/pico-de-gallo-mcp/Cargo.toml crates/pico-de-gallo-mcp/src/lib.rs
+git commit -m "fix(mcp): Handle missing board and claim races in connect" -m "PicoDeGallo::new() panics when no board is present or the USB claim fails,
+so the per-call connect() could panic instead of returning a clean error —
+defeating status's attached:false path and the \"starts even with no board\"
+promise — and the previous connection's asynchronous USB release could make
+a fresh claim transiently fail on Windows (AGENTS.md 13.17) even with the
+serialization mutex.
+
+connect() now uses the fallible PicoDeGallo::try_new*(): a \"Failed to find
+matching nusb device\" error maps to a clean \"no device attached\" result,
+and other (claim) failures are retried up to 5 times with a 100ms backoff to
+absorb the async release window. Adds the tokio time feature for sleep and a
+test pinning the not-found substring contract. Corrects the Device/connect
+doc comments that over-claimed a synchronous release ordering." -m "Assisted-by: GitHub Copilot:claude-opus-4.8" -m "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
+```
+
+## Revision 2 self-review
+
+- **Coverage:** fallible constructor (Task 3 Step 1), lib doc + book parity (Task 3 Steps 1,3), lib CHANGELOG (Step 4), graceful no-device (Task 4 Step 2 not-found arm), retry/backoff for the async-release race (Task 4 Step 2 loop), tokio `time` (Step 1), corrected over-claiming doc comments (Task 4 Step 2), test for the string contract (Step 3). Both review blockers addressed.
+- **Type consistency:** `try_new*() -> Result<Self, String>` in lib; `connect()` matches on `String` via `.contains(NOT_FOUND)`; return type `Result<Device, ErrorData>` unchanged, so all handlers are untouched. `Device` gains no new field beyond the `_claim` already added in Task 1.
+- **No version bumps:** lib change is additive (methods added; `new*` behavior preserved); gallo-mcp stays `0.1.0`. tokio feature add does not change `Cargo.lock` versions.
