@@ -78,11 +78,14 @@ pub use pico_de_gallo_internal::{
     encode_i2c_batch_ops, encode_spi_batch_ops, i2c_batch_response_len, spi_batch_response_len,
 };
 
+pub use postcard_rpc::host_client;
+pub use postcard_rpc::host_client::HostErr;
 pub use postcard_rpc::host_client::{IoClosed, MultiSubscription};
+pub use postcard_rpc::standard_icd::WireError;
 use postcard_rpc::{
     header::VarSeqKind,
-    host_client::{HostClient, HostErr},
-    standard_icd::{ERROR_PATH, PingEndpoint, WireError},
+    host_client::HostClient,
+    standard_icd::{ERROR_PATH, PingEndpoint},
 };
 use std::convert::Infallible;
 

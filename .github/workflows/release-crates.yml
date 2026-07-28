@@ -19,8 +19,10 @@ name: Publish to crates.io
 #
 # Token scope:
 #   CARGO_REGISTRY_TOKEN must have `publish-update` scope, restricted to
-#   the five crate names below. Do not grant `publish-new`; the crates
-#   already exist.
+#   the six crate names below. Do not grant `publish-new`; the crates
+#   already exist. Exception: gallo-mcp is a NEW crate, so its FIRST
+#   publish (the initial mcp-v* tag) needs `publish-new` scope once;
+#   after it exists on crates.io, `publish-update` is sufficient.
 
 on:
   push:
@@ -30,6 +32,7 @@ on:
       - "hal-v*"
       - "ffi-v*"
       - "application-v*"
+      - "mcp-v*"
 
 permissions:
   contents: read
@@ -53,6 +56,7 @@ jobs:
             hal-v*)         name="pico-de-gallo-hal"      ;;
             ffi-v*)         name="pico-de-gallo-ffi"      ;;
             application-v*) name="gallo"                  ;;
+            mcp-v*)         name="gallo-mcp"             ;;
             *)
               echo "::error::Unrecognized tag: ${GITHUB_REF_NAME}"
               exit 1

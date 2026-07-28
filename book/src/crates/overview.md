@@ -15,6 +15,7 @@ At a high level:
 - `pico-de-gallo-ffi` exports a stable **C ABI** as a `cdylib`.
 - `pyco-de-gallo` exposes the same device to **Python** via PyO3 + maturin.
 - `gallo` is the **CLI** built on top of the Rust library.
+- `gallo-mcp` is an **MCP server** exposing the device to AI agents over stdio.
 - `pico-de-gallo-firmware` is the **RP2350 no_std firmware** running on the board.
 
 > [!NOTE]
@@ -71,6 +72,7 @@ and firmware must move together.
 | `pico-de-gallo-ffi` | C-compatible shared library and generated header | Using Pico de Gallo from C, C++, Zig, or other FFI-friendly languages |
 | `pyco-de-gallo` | Python module `pyco_de_gallo` | Quick experiments, test scripts, notebooks, lab automation |
 | `gallo` | Command-line utility | Interactive bring-up, one-off reads/writes, smoke tests, scripting |
+| `gallo-mcp` | MCP server (stdio) exposing one tool per peripheral op | Letting AI coding agents probe and drive real hardware |
 | `pico-de-gallo-firmware` | Device-side implementation for the RP2350 | Flashing the board, adding endpoints, changing hardware behavior |
 
 ## Which crate do I want?
@@ -78,6 +80,7 @@ and firmware must move together.
 | If you want to... | Start here |
 |---|---|
 | Probe hardware from a shell | [`gallo`](./app.md) |
+| Let an AI agent drive hardware | [`gallo-mcp`](./mcp.md) |
 | Write a Rust host tool | [`pico-de-gallo-lib`](./lib.md) |
 | Test an `embedded-hal` driver on your laptop | [`pico-de-gallo-hal`](./hal.md) |
 | Call Pico de Gallo from C or C++ | [`pico-de-gallo-ffi`](./ffi.md) |

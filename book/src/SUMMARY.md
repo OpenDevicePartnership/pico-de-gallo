@@ -34,6 +34,7 @@
 - [`pico-de-gallo-hal`](./crates/hal.md)
 - [`pico-de-gallo-ffi`](./crates/ffi.md)
 - [`pyco-de-gallo`](./crates/python.md)
+- [`gallo-mcp` MCP server](./crates/mcp.md)
 
 # Part V — Writing a Device Driver
 

@@ -2,5 +2,8 @@
   "$schema": "https://opencode.ai/config.json",
   "experimental": {
     "primary_tools": []
+  },
+  "mcp": {
+    "pico-de-gallo": { "type": "local", "command": ["gallo-mcp"], "enabled": true }
   }
 }

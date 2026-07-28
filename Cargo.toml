@@ -6,6 +6,7 @@ members = [
     "crates/pico-de-gallo-hal",
     "crates/pico-de-gallo-internal",
     "crates/pico-de-gallo-lib",
+    "crates/pico-de-gallo-mcp",
     "crates/pyco-de-gallo",
 ]
 exclude = [ "crates/pico-de-gallo-firmware" ]
