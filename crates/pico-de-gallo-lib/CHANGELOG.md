@@ -5,6 +5,23 @@ All notable changes to `pico-de-gallo-lib` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] — 2026-07-28
+
+### Added
+
+- Re-export `HostErr` (from `postcard_rpc::host_client`) and
+  `WireError` (from `postcard_rpc::standard_icd`) from the crate
+  root, and make the `host_client` module path public. This lets
+  downstream crates name the transport error types when mapping
+  [`PicoDeGalloError`] and [`ValidateError`] into their own error
+  representations without taking a direct dependency on
+  `postcard-rpc`. Additive and non-breaking; the names were
+  previously imported privately for the crate's own use.
+
+  Motivated by the new `gallo-mcp` crate, whose error mapping
+  matches on `PicoDeGalloError::Comms(HostErr::Closed)` to surface
+  a distinct "no device attached" message.
+
 ## [0.6.0] — 2026-06-22
 
 ### Fixed (2026-06-04 — Category A hotfix host-only PR)

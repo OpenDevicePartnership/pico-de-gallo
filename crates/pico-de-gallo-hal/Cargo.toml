@@ -16,7 +16,7 @@ embedded-hal = "1.0.0"
 embedded-hal-async = "1.0.0"
 embedded-io = "0.6.1"
 embedded-io-async = "0.6.1"
-pico-de-gallo-lib = { version = "0.6.0", path = "../pico-de-gallo-lib" }
+pico-de-gallo-lib = { version = "0.7.0", path = "../pico-de-gallo-lib" }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "time"] }
 
 [dev-dependencies]
