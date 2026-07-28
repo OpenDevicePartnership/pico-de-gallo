@@ -152,5 +152,6 @@ which catches them and reports `attached:false`.
 ## Scope / release
 
 Host-only. No wire-protocol change, no CLI-surface change, no tool-surface
-change. Per AGENTS.md §4 rule #12, **do not** bump `[package].version` — that
-is a separate manual release step. Commit as a `fix`/`refactor(mcp)`.
+change. `gallo-mcp` has never been published (still at its initial `0.1.0`),
+so **do not** bump `[package].version` — there is no released version to
+supersede. Commit as a `fix`/`refactor(mcp)`.
