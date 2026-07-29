@@ -1,4 +1,9 @@
 //! Mapping from `pico-de-gallo-lib` errors to `rmcp::ErrorData`.
+//!
+//! Device-selection errors are the exception: they are mapped by
+//! [`crate::select::map_select_err`], co-located with
+//! [`crate::select::SelectError`] so that adding a variant breaks an
+//! exhaustive match in the file that defines it.
 
 use pico_de_gallo_lib::host_client::HostErr;
 use pico_de_gallo_lib::{PicoDeGalloError, ValidateError, WireError};

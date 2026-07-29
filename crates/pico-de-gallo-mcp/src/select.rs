@@ -31,8 +31,6 @@ pub enum SelectError {
         available: Vec<String>,
         /// Attached boards reporting no USB serial, which cannot be named.
         unaddressable: usize,
-        /// Total attached boards.
-        total: usize,
     },
     /// The requested serial is not among the attached boards.
     NotFound {
@@ -44,16 +42,23 @@ pub enum SelectError {
     /// The server is pinned and the call asked for a different board.
     PinConflict {
         /// The server's `--serial-number`.
-        pin: String,
+        pinned_serial: String,
         /// The serial the call asked for.
         requested: String,
     },
     /// The server is pinned to a board that is not attached.
     PinnedNotFound {
         /// The server's `--serial-number`.
-        pin: String,
+        pinned_serial: String,
         /// Serials that can be addressed.
         available: Vec<String>,
+    },
+    /// Two or more attached boards report the same serial number.
+    Duplicate {
+        /// The serial more than one board answers to.
+        serial: String,
+        /// How many boards report it.
+        count: usize,
     },
 }
 
@@ -61,12 +66,22 @@ pub enum SelectError {
 ///
 /// One formatter for every message, so the list format cannot drift between
 /// error cases.
-fn list(available: &[String]) -> String {
+fn format_serials(available: &[String]) -> String {
     if available.is_empty() {
         "(none addressable)".to_string()
     } else {
         available.join(", ")
     }
+}
+
+/// How many attached boards answer to `serial`.
+///
+/// More than one is refused rather than resolved: opening it would bind to
+/// whichever board enumerates first, which is the silent wrong-board guess
+/// this module exists to prevent. Reachable in practice — the firmware falls
+/// back to an all-zero serial when the OTP chip-ID read fails.
+fn count_matching(available: &[String], serial: &str) -> usize {
+    available.iter().filter(|s| s.as_str() == serial).count()
 }
 
 impl std::fmt::Display for SelectError {
@@ -81,43 +96,61 @@ impl std::fmt::Display for SelectError {
             Self::Ambiguous {
                 available,
                 unaddressable: 0,
-                ..
-            } => write!(
-                f,
-                "Multiple Pico de Gallo devices attached; `serial_number` is required.\n\
-                 Available: {}",
-                list(available)
-            ),
+            } => {
+                let serials = format_serials(available);
+                write!(
+                    f,
+                    "Multiple Pico de Gallo devices attached; `serial_number` is required.\n\
+                     Available: {serials}"
+                )
+            }
             Self::Ambiguous {
                 available,
                 unaddressable,
-                total,
-            } => write!(
-                f,
-                "{total} Pico de Gallo devices attached; `serial_number` is required, \
-                 but {unaddressable} of them report no USB serial number and cannot \
-                 be addressed.\nAvailable: {}",
-                list(available)
-            ),
+            } => {
+                let total = available.len() + unaddressable;
+                let serials = format_serials(available);
+                write!(
+                    f,
+                    "{total} Pico de Gallo devices attached; `serial_number` is required, \
+                     but {unaddressable} of them report no USB serial number and cannot \
+                     be addressed.\nAvailable: {serials}"
+                )
+            }
             Self::NotFound {
                 requested,
                 available,
+            } => {
+                let serials = format_serials(available);
+                write!(
+                    f,
+                    "No Pico de Gallo with serial number '{requested}' is attached.\n\
+                     Available: {serials}"
+                )
+            }
+            Self::PinConflict {
+                pinned_serial,
+                requested,
             } => write!(
                 f,
-                "No Pico de Gallo with serial number '{requested}' is attached.\n\
-                 Available: {}",
-                list(available)
+                "This server is pinned to serial number '{pinned_serial}' (--serial-number); \
+                 it cannot address '{requested}'. Omit serial_number, or pass '{pinned_serial}'."
             ),
-            Self::PinConflict { pin, requested } => write!(
+            Self::PinnedNotFound {
+                pinned_serial,
+                available,
+            } => {
+                let serials = format_serials(available);
+                write!(
+                    f,
+                    "This server is pinned to serial number '{pinned_serial}' (--serial-number), \
+                     which is not attached.\nAvailable: {serials}"
+                )
+            }
+            Self::Duplicate { serial, count } => write!(
                 f,
-                "This server is pinned to serial number '{pin}' (--serial-number); \
-                 it cannot address '{requested}'. Omit serial_number, or pass '{pin}'."
-            ),
-            Self::PinnedNotFound { pin, available } => write!(
-                f,
-                "This server is pinned to serial number '{pin}' (--serial-number), \
-                 which is not attached.\nAvailable: {}",
-                list(available)
+                "{count} attached Pico de Gallo devices report serial number \
+                 '{serial}'; they cannot be told apart. Detach all but one and retry."
             ),
         }
     }
@@ -130,10 +163,21 @@ impl std::error::Error for SelectError {}
 /// Errors the agent can fix by changing its arguments are `invalid_params`;
 /// errors about the environment are `internal_error`, because no argument
 /// change helps.
+///
+/// [`SelectError::Ambiguous`] and [`SelectError::NotFound`] sit on both sides
+/// of that line: they are argument-fixable only while something is
+/// addressable. With an empty `available` list there is no serial the agent
+/// could pass, so a human has to intervene and they are environmental too.
 pub fn map_select_err(err: SelectError) -> ErrorData {
     let msg = err.to_string();
     match err {
-        SelectError::NoDevice | SelectError::PinnedNotFound { .. } => {
+        SelectError::NoDevice
+        | SelectError::PinnedNotFound { .. }
+        | SelectError::Duplicate { .. } => ErrorData::internal_error(msg, None),
+        SelectError::Ambiguous { ref available, .. }
+        | SelectError::NotFound { ref available, .. }
+            if available.is_empty() =>
+        {
             ErrorData::internal_error(msg, None)
         }
         SelectError::Ambiguous { .. }
@@ -150,9 +194,14 @@ pub fn map_select_err(err: SelectError) -> ErrorData {
 /// Returns the serial to open. `Ok(None)` means "open the sole attached
 /// board, which reports no serial" — the only case where a target cannot be
 /// named.
+///
+/// The pinned serial wins over an omitted argument; a pin/argument conflict is
+/// reported before the pinned board's absence, because the conflict is the
+/// agent's actionable mistake. Any `Some` returned is byte-identical to an
+/// entry in `attached`, so the caller can open it by exact serial match.
 pub fn resolve_target(
     attached: &[Option<String>],
-    pin: Option<&str>,
+    pinned_serial: Option<&str>,
     requested: Option<&str>,
 ) -> Result<Option<String>, SelectError> {
     if attached.is_empty() {
@@ -162,36 +211,45 @@ pub fn resolve_target(
     // in an error's `available` list — but they still count toward ambiguity.
     let available: Vec<String> = attached.iter().flatten().cloned().collect();
 
-    if let Some(pin) = pin {
+    if let Some(pinned_serial) = pinned_serial {
         if let Some(req) = requested
-            && req != pin
+            && req != pinned_serial
         {
             return Err(SelectError::PinConflict {
-                pin: pin.to_string(),
+                pinned_serial: pinned_serial.to_string(),
                 requested: req.to_string(),
             });
         }
-        if !available.iter().any(|s| s == pin) {
-            return Err(SelectError::PinnedNotFound {
-                pin: pin.to_string(),
+        return match count_matching(&available, pinned_serial) {
+            0 => Err(SelectError::PinnedNotFound {
+                pinned_serial: pinned_serial.to_string(),
                 available,
-            });
-        }
-        return Ok(Some(pin.to_string()));
+            }),
+            1 => Ok(Some(pinned_serial.to_string())),
+            count => Err(SelectError::Duplicate {
+                serial: pinned_serial.to_string(),
+                count,
+            }),
+        };
     }
 
     match requested {
-        Some(req) if available.iter().any(|s| s == req) => Ok(Some(req.to_string())),
-        Some(req) => Err(SelectError::NotFound {
-            requested: req.to_string(),
-            available,
-        }),
+        Some(req) => match count_matching(&available, req) {
+            0 => Err(SelectError::NotFound {
+                requested: req.to_string(),
+                available,
+            }),
+            1 => Ok(Some(req.to_string())),
+            count => Err(SelectError::Duplicate {
+                serial: req.to_string(),
+                count,
+            }),
+        },
         // Exactly one board is unambiguous even when it reports no serial,
         // which is the only way `Ok(None)` is produced.
         None if attached.len() == 1 => Ok(attached[0].clone()),
         None => Err(SelectError::Ambiguous {
             unaddressable: attached.len() - available.len(),
-            total: attached.len(),
             available,
         }),
     }
@@ -256,7 +314,6 @@ mod tests {
             Err(SelectError::Ambiguous {
                 available: vec![A.to_string(), B.to_string()],
                 unaddressable: 0,
-                total: 2,
             })
         );
     }
@@ -305,7 +362,7 @@ mod tests {
         assert_eq!(
             resolve_target(&attached(&[A, B]), Some(A), Some(B)),
             Err(SelectError::PinConflict {
-                pin: A.to_string(),
+                pinned_serial: A.to_string(),
                 requested: B.to_string(),
             })
         );
@@ -318,7 +375,7 @@ mod tests {
         assert_eq!(
             resolve_target(&attached(&[B]), Some(A), Some(B)),
             Err(SelectError::PinConflict {
-                pin: A.to_string(),
+                pinned_serial: A.to_string(),
                 requested: B.to_string(),
             })
         );
@@ -329,7 +386,7 @@ mod tests {
         assert_eq!(
             resolve_target(&attached(&[B]), Some(A), None),
             Err(SelectError::PinnedNotFound {
-                pin: A.to_string(),
+                pinned_serial: A.to_string(),
                 available: vec![B.to_string()],
             })
         );
@@ -358,7 +415,6 @@ mod tests {
             Err(SelectError::Ambiguous {
                 available: vec![],
                 unaddressable: 2,
-                total: 2,
             })
         );
     }
@@ -371,7 +427,6 @@ mod tests {
             Err(SelectError::Ambiguous {
                 available: vec![A.to_string()],
                 unaddressable: 2,
-                total: 3,
             })
         );
     }
@@ -433,14 +488,13 @@ mod tests {
             SelectError::Ambiguous {
                 available: vec![A.to_string()],
                 unaddressable: 0,
-                total: 2,
             },
             SelectError::NotFound {
                 requested: B.to_string(),
                 available: vec![A.to_string()],
             },
             SelectError::PinConflict {
-                pin: A.to_string(),
+                pinned_serial: A.to_string(),
                 requested: B.to_string(),
             },
         ] {
@@ -457,7 +511,7 @@ mod tests {
         for err in [
             SelectError::NoDevice,
             SelectError::PinnedNotFound {
-                pin: A.to_string(),
+                pinned_serial: A.to_string(),
                 available: vec![],
             },
         ] {
@@ -470,10 +524,73 @@ mod tests {
     }
 
     #[test]
+    fn unsatisfiable_not_found_maps_to_internal_error() {
+        // Nothing is addressable, so no `serial_number` the agent could pass
+        // would help; a human has to attach an identifiable board.
+        assert_eq!(
+            map_select_err(SelectError::NotFound {
+                requested: A.to_string(),
+                available: vec![],
+            })
+            .code,
+            rmcp::model::ErrorCode::INTERNAL_ERROR
+        );
+    }
+
+    #[test]
     fn empty_available_list_reads_sensibly() {
         let msg = resolve_target(&[None, None], None, None)
             .unwrap_err()
             .to_string();
         assert!(msg.contains("(none addressable)"), "{msg}");
+    }
+
+    #[test]
+    fn no_device_text_says_nothing_is_attached() {
+        let msg = resolve_target(&[], None, None).unwrap_err().to_string();
+        assert!(msg.contains("No Pico de Gallo device attached"), "{msg}");
+    }
+
+    #[test]
+    fn duplicate_serials_are_refused_rather_than_guessed() {
+        // Opening this would bind to whichever board enumerates first, then
+        // report a serial number that two boards answer to.
+        assert_eq!(
+            resolve_target(&attached(&[A, A]), None, Some(A)),
+            Err(SelectError::Duplicate {
+                serial: A.to_string(),
+                count: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_serials_are_refused_on_the_pinned_path_too() {
+        assert_eq!(
+            resolve_target(&attached(&[A, A]), Some(A), None),
+            Err(SelectError::Duplicate {
+                serial: A.to_string(),
+                count: 2,
+            })
+        );
+    }
+
+    #[test]
+    fn duplicate_text_names_the_serial_and_the_count() {
+        let msg = resolve_target(&attached(&[A, A]), None, Some(A))
+            .unwrap_err()
+            .to_string();
+        assert!(msg.contains("2 attached Pico de Gallo devices"), "{msg}");
+        assert!(msg.contains(A), "{msg}");
+        assert!(msg.contains("Detach all but one"), "{msg}");
+    }
+
+    #[test]
+    fn target_params_default_to_no_serial() {
+        let p: TargetParams = serde_json::from_str("{}").unwrap();
+        assert_eq!(p.serial_number, None);
+        let p: TargetParams =
+            serde_json::from_str(r#"{"serial_number":"9A54ED7E3A1D9D98"}"#).unwrap();
+        assert_eq!(p.serial_number.as_deref(), Some("9A54ED7E3A1D9D98"));
     }
 }
