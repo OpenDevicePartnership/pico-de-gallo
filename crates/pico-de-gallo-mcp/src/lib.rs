@@ -14,6 +14,7 @@ pub mod gpio;
 pub mod i2c;
 pub mod onewire;
 pub mod pwm;
+pub mod select;
 pub mod spi;
 pub mod uart;
 
