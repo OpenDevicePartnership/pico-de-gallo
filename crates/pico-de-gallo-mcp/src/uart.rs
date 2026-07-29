@@ -37,7 +37,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<UartReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let data = dev
             .uart_read(p.count, p.timeout_ms)
             .await
@@ -54,7 +54,7 @@ impl GalloMcp {
         Parameters(p): Parameters<UartWriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.uart_write(&bytes).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
@@ -64,7 +64,7 @@ impl GalloMcp {
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn uart_flush(&self) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.uart_flush().await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
@@ -74,7 +74,7 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn uart_get_config(&self) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let c = dev.uart_get_config().await.map_err(map_pdg_err)?;
         ok_json(&format!("{c:?}"))
     }
@@ -87,7 +87,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<UartSetConfigParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.uart_set_config(p.baud_rate)
             .await
             .map_err(map_pdg_err)?;

@@ -44,7 +44,7 @@ impl GalloMcp {
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn onewire_reset(&self) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let present = dev.onewire_reset().await.map_err(map_pdg_err)?;
         ok_json(&serde_json::json!({ "presence": present }))
     }
@@ -57,7 +57,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<OneWireReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let data = dev.onewire_read(p.len).await.map_err(map_pdg_err)?;
         ok_json(&Bytes::from_slice(&data))
     }
@@ -71,7 +71,7 @@ impl GalloMcp {
         Parameters(p): Parameters<OneWireWriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.onewire_write(&bytes).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
@@ -85,7 +85,7 @@ impl GalloMcp {
         Parameters(p): Parameters<OneWireWritePullupParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.onewire_write_pullup(&bytes, p.duration_ms)
             .await
             .map_err(map_pdg_err)?;
@@ -100,7 +100,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<OneWireSearchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let rom = if p.continue_search {
             dev.onewire_search_next().await.map_err(map_pdg_err)?
         } else {

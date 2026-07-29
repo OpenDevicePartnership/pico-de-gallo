@@ -33,7 +33,7 @@ impl GalloMcp {
             2 => AdcChannel::Adc2,
             _ => AdcChannel::Adc3,
         };
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let raw = dev.adc_read(channel).await.map_err(map_pdg_err)?;
         ok_json(&serde_json::json!({ "raw": raw }))
     }
@@ -43,7 +43,7 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn adc_get_config(&self) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let c = dev.adc_get_config().await.map_err(map_pdg_err)?;
         ok_json(&format!("{c:?}"))
     }

@@ -41,7 +41,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let d = dev
             .pwm_get_duty_cycle(p.channel)
             .await
@@ -57,7 +57,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let c = dev.pwm_get_config(p.channel).await.map_err(map_pdg_err)?;
         ok_json(&format!("{c:?}"))
     }
@@ -70,7 +70,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmSetDutyParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.pwm_set_duty_cycle(p.channel, p.duty)
             .await
             .map_err(map_pdg_err)?;
@@ -85,7 +85,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.pwm_enable(p.channel).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
@@ -98,7 +98,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmChannelParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.pwm_disable(p.channel).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
@@ -111,7 +111,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PwmSetConfigParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.pwm_set_config(p.channel, p.frequency, p.phase_correct)
             .await
             .map_err(map_pdg_err)?;

@@ -55,7 +55,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<GpioGetParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let state = dev.gpio_get(p.pin).await.map_err(map_pdg_err)?;
         ok_json(&serde_json::json!({ "high": matches!(state, pico_de_gallo_lib::GpioState::High) }))
     }
@@ -74,7 +74,7 @@ impl GalloMcp {
         } else {
             GpioState::Low
         };
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.gpio_put(p.pin, s).await.map_err(map_pdg_err)?;
         ok_json(&"ok")
     }
@@ -99,7 +99,7 @@ impl GalloMcp {
             "down" => GpioPull::Down,
             o => return Err(invalid_arg(format!("unknown pull '{o}'"))),
         };
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.gpio_set_config(p.pin, dir, pull)
             .await
             .map_err(map_pdg_err)?;
@@ -115,7 +115,7 @@ impl GalloMcp {
         Parameters(p): Parameters<GpioWaitParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let ms = validate_timeout_ms(p.timeout_ms).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.gpio_wait_for_rising_edge_with_timeout(p.pin, Duration::from_millis(u64::from(ms)))
             .await
             .map_err(map_pdg_err)?;
@@ -131,7 +131,7 @@ impl GalloMcp {
         Parameters(p): Parameters<GpioWaitParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let ms = validate_timeout_ms(p.timeout_ms).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.gpio_wait_for_falling_edge_with_timeout(p.pin, Duration::from_millis(u64::from(ms)))
             .await
             .map_err(map_pdg_err)?;
@@ -147,7 +147,7 @@ impl GalloMcp {
         Parameters(p): Parameters<GpioWaitParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let ms = validate_timeout_ms(p.timeout_ms).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         dev.gpio_wait_for_any_edge_with_timeout(p.pin, Duration::from_millis(u64::from(ms)))
             .await
             .map_err(map_pdg_err)?;

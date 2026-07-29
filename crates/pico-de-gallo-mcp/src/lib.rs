@@ -33,6 +33,40 @@ pub(crate) fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorDa
     Ok(CallToolResult::success(vec![ContentBlock::json(value)?]))
 }
 
+/// A tool response tagged with the device that served it.
+///
+/// Every device tool returns this shape so an agent can see, on any call,
+/// which board answered — rather than only when it thinks to ask.
+#[derive(Serialize)]
+pub(crate) struct Envelope<'a, T: Serialize> {
+    /// Serial of the board that served the call. `null` only when the sole
+    /// attached board reports no USB serial number.
+    pub(crate) serial_number: Option<&'a str>,
+    /// The tool's own payload, unchanged.
+    pub(crate) result: &'a T,
+}
+
+/// Wrap a tool payload together with the serial of the device that served it.
+pub(crate) fn ok_device_json<T: Serialize>(
+    dev: &Device,
+    value: &T,
+) -> Result<CallToolResult, ErrorData> {
+    ok_json(&Envelope {
+        serial_number: dev.serial(),
+        result: value,
+    })
+}
+
+/// Serial of every attached Pico de Gallo, in enumeration order.
+///
+/// A `None` entry is a board that reports no USB serial number.
+pub(crate) fn attached_serials() -> Vec<Option<String>> {
+    pico_de_gallo_lib::list_devices()
+        .into_iter()
+        .map(|d| d.serial_number)
+        .collect()
+}
+
 /// Substring of the error postcard-rpc's `try_new_raw_nusb` returns when USB
 /// enumeration finds no matching device (postcard-rpc 0.12.1, raw_nusb.rs).
 /// [`GalloMcp::connect`] classifies on it to distinguish "no board attached"
@@ -57,6 +91,9 @@ const NOT_FOUND: &str = "Failed to find matching nusb device";
 pub(crate) struct Device {
     inner: PicoDeGallo,
     info: DeviceInfo,
+    /// Serial this connection was opened with, as chosen by
+    /// [`select::resolve_target`]. `None` only for a sole serial-less board.
+    serial: Option<String>,
     /// Serializes device access across concurrent tool calls; held for the
     /// lifetime of the connection. Released (after `inner`) when this drops.
     _claim: OwnedMutexGuard<()>,
@@ -74,6 +111,13 @@ impl Device {
     /// The device info captured during validation on connect.
     pub(crate) fn info(&self) -> &DeviceInfo {
         &self.info
+    }
+
+    /// USB serial of the board this connection is bound to.
+    ///
+    /// `None` only when the sole attached board reports no serial number.
+    pub(crate) fn serial(&self) -> Option<&str> {
+        self.serial.as_deref()
     }
 }
 
@@ -128,19 +172,23 @@ impl GalloMcp {
 
     /// Open and validate a fresh connection to the target device.
     ///
-    /// Serializes device access with the shared lock (rmcp dispatches each tool
-    /// call on its own `tokio::spawn` task, so handlers can run concurrently),
-    /// constructs the [`PicoDeGallo`] with the fallible `try_new*`, validates
-    /// schema compatibility, and runs the connect-time subscription reset. The
-    /// returned [`Device`] owns the connection and the lock.
+    /// `requested` is the call's optional `serial_number`. The target is
+    /// chosen by [`select::resolve_target`] from the attached boards, the
+    /// server's `--serial-number` pin, and `requested` — so an ambiguous
+    /// choice is refused rather than guessed.
     ///
-    /// If no matching board is present, returns a clean "no device attached"
-    /// error (so `status` can report `attached: false`). If the interface claim
-    /// fails transiently — e.g. the previous connection's asynchronous teardown
-    /// has not released the exclusive USB claim yet, the Windows double-claim
-    /// hazard in AGENTS.md §13.17 — retries a few times with a short backoff
-    /// before giving up.
-    pub(crate) async fn connect(&self) -> Result<Device, ErrorData> {
+    /// Serializes device access with the shared lock (rmcp dispatches each
+    /// tool call on its own `tokio::spawn` task, so handlers can run
+    /// concurrently), constructs the [`PicoDeGallo`] with the fallible
+    /// `try_new*`, validates schema compatibility, and runs the connect-time
+    /// subscription reset. The returned [`Device`] owns the connection, the
+    /// resolved serial, and the lock.
+    ///
+    /// If the interface claim fails transiently — e.g. the previous
+    /// connection's asynchronous teardown has not released the exclusive USB
+    /// claim yet, the Windows double-claim hazard in AGENTS.md §13.17 —
+    /// retries a few times with a short backoff before giving up.
+    pub(crate) async fn connect(&self, requested: Option<&str>) -> Result<Device, ErrorData> {
         /// Total attempts to claim the interface before giving up.
         const MAX_ATTEMPTS: u32 = 5;
         /// Backoff between claim attempts (absorbs async release window).
@@ -148,17 +196,37 @@ impl GalloMcp {
 
         let claim = self.connection.clone().lock_owned().await;
 
+        // Resolve before opening: with no board attached this returns
+        // `NoDevice` without touching USB at all.
+        let serial = select::resolve_target(
+            &attached_serials(),
+            self.serial_number.as_deref(),
+            requested,
+        )
+        .map_err(select::map_select_err)?;
+
         let mut attempt: u32 = 1;
         let inner = loop {
-            let result = match self.serial_number.as_deref() {
+            let result = match serial.as_deref() {
                 Some(sn) => PicoDeGallo::try_new_with_serial_number(sn),
                 None => PicoDeGallo::try_new(),
             };
             match result {
                 Ok(dev) => break dev,
                 Err(e) if e.contains(NOT_FOUND) => {
+                    // Enumeration just saw this board, so it went away
+                    // mid-call. Saying "no device attached" here would be
+                    // misleading.
                     return Err(ErrorData::internal_error(
-                        "no device attached: connect a Pico de Gallo and retry".to_string(),
+                        match serial.as_deref() {
+                            Some(sn) => format!(
+                                "device {sn} was attached a moment ago but is gone now; \
+                                 check the USB connection and retry"
+                            ),
+                            None => {
+                                "no device attached: connect a Pico de Gallo and retry".to_string()
+                            }
+                        },
                         None,
                     ));
                 }
@@ -179,6 +247,7 @@ impl GalloMcp {
         Ok(Device {
             inner,
             info,
+            serial,
             _claim: claim,
         })
     }
@@ -207,5 +276,28 @@ mod tests {
     fn not_found_substring_matches_postcard_error() {
         let postcard_err = "Failed to find matching nusb device!";
         assert!(postcard_err.contains(crate::NOT_FOUND));
+    }
+
+    #[test]
+    fn envelope_puts_the_payload_under_result() {
+        let payload = serde_json::json!({ "hex": "0x48" });
+        let env = crate::Envelope {
+            serial_number: Some("9A54ED7E3A1D9D98"),
+            result: &payload,
+        };
+        let v = serde_json::to_value(&env).unwrap();
+        assert_eq!(v["serial_number"], "9A54ED7E3A1D9D98");
+        assert_eq!(v["result"]["hex"], "0x48");
+    }
+
+    #[test]
+    fn envelope_reports_a_serialless_board_as_null() {
+        let env = crate::Envelope {
+            serial_number: None,
+            result: &"ok",
+        };
+        let v = serde_json::to_value(&env).unwrap();
+        assert!(v["serial_number"].is_null());
+        assert_eq!(v["result"], "ok");
     }
 }

@@ -54,7 +54,7 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn status(&self) -> Result<CallToolResult, ErrorData> {
-        match self.connect().await {
+        match self.connect(None).await {
             Ok(dev) => {
                 let info = dev.info();
                 ok_json(&StatusResult {
@@ -82,7 +82,7 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn device_info(&self) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let info = dev.device_info().await.map_err(map_pdg_err)?;
         ok_json(&info)
     }
@@ -93,7 +93,7 @@ impl GalloMcp {
         annotations(read_only_hint = true)
     )]
     async fn version(&self) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let v = dev.version().await.map_err(map_pdg_err)?;
         ok_json(&v)
     }
@@ -107,7 +107,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<PingParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(None).await?;
         let echoed = dev.ping(p.id).await.map_err(map_pdg_err)?;
         ok_json(&echoed)
     }
