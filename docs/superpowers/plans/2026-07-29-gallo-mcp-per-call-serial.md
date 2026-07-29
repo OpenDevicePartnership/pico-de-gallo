@@ -24,6 +24,30 @@
 | `crates/pico-de-gallo-mcp/src/{i2c,spi,uart,gpio,pwm,adc,onewire}.rs` | `serial_number` on each params struct; thread into `connect`; return through the envelope. |
 | `crates/pico-de-gallo-mcp/README.md`, `book/src/crates/mcp.md`, `crates/pico-de-gallo-mcp/CHANGELOG.md`, `AGENTS.md` | Documentation parity (AGENTS.md §15.1). |
 
+## Amendments During Execution
+
+Task 1's code review found a real hole the plan missed, so the shipped
+`select.rs` differs from the Task 1 text below. Later tasks assume the
+**shipped** shape:
+
+- `SelectError` has a sixth variant, `Duplicate { serial, count }`. Two boards
+  can report the same serial: the firmware falls back to chip ID `0`
+  (`crates/pico-de-gallo-firmware/src/main.rs:243-246`) when the OTP read
+  fails, which formats to the constant `"0000000000000000"`. `resolve_target`
+  now counts matches rather than testing membership, on both the pinned and
+  the requested path, and refuses a serial that names more than one board.
+- `SelectError::Ambiguous` no longer carries `total`; it is derived as
+  `available.len() + unaddressable` where the message needs it.
+- `resolve_target`'s pin parameter and the `PinConflict` / `PinnedNotFound`
+  fields are named `pinned_serial`, not `pin`, because `pin` means a GPIO pin
+  everywhere else in this repository. Task 7 below already reflects this.
+- The `list` formatter is named `format_serials`.
+- `map_select_err` classifies `Ambiguous` and `NotFound` as `internal_error`
+  when `available` is empty — no argument can fix a bench where nothing is
+  addressable.
+
+Commits: `d37f626c` (Task 1 as planned), `d378cfac` (review fixes).
+
 ## Task Order and Parallelism
 
 Task 1 → Task 2 → **Tasks 3-6 are independent** and may run in parallel: they
@@ -1553,7 +1577,7 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 
 **Files:**
 - Modify: `crates/pico-de-gallo-mcp/src/device.rs`
-- Modify: `crates/pico-de-gallo-mcp/src/lib.rs` (add `GalloMcp::pin`)
+- Modify: `crates/pico-de-gallo-mcp/src/lib.rs` (add `GalloMcp::pinned_serial`)
 
 Run this **after** Tasks 3-6, because it also touches `lib.rs`.
 
@@ -1561,7 +1585,7 @@ Run this **after** Tasks 3-6, because it also touches `lib.rs`.
 so their JSON shapes — including the ambiguity reporting that this whole issue
 turns on — are unit-testable with no board attached.
 
-- [ ] **Step 1: Add the pin accessor**
+- [ ] **Step 1: Add the pinned-serial accessor**
 
 In `crates/pico-de-gallo-mcp/src/lib.rs`, add to `impl GalloMcp` immediately
 before `connect`:
@@ -1571,13 +1595,16 @@ before `connect`:
     ///
     /// A pinned server cannot address any other board; that is the only
     /// guarantee enforced by construction rather than by agent diligence.
-    pub(crate) fn pin(&self) -> Option<&str> {
+    ///
+    /// Named `pinned_serial` rather than `pin` because in this repository
+    /// `pin` means a GPIO pin.
+    pub(crate) fn pinned_serial(&self) -> Option<&str> {
         self.serial_number.as_deref()
     }
 ```
 
 Then, inside `connect`, replace `self.serial_number.as_deref()` in the
-`resolve_target` call with `self.pin()`.
+`resolve_target` call with `self.pinned_serial()`.
 
 - [ ] **Step 2: Write the failing response-shape tests**
 
@@ -1790,9 +1817,12 @@ struct PingParams {
 ///
 /// Asks [`resolve_target`] the same question `connect` asks, so the advertised
 /// default can never drift from the board a bare call actually reaches.
-fn build_list_result(descs: Vec<DeviceDescription>, pin: Option<&str>) -> ListDevicesResult {
+fn build_list_result(
+    descs: Vec<DeviceDescription>,
+    pinned_serial: Option<&str>,
+) -> ListDevicesResult {
     let attached: Vec<Option<String>> = descs.iter().map(|d| d.serial_number.clone()).collect();
-    let resolved = resolve_target(&attached, pin, None);
+    let resolved = resolve_target(&attached, pinned_serial, None);
     let serial_number_required = matches!(resolved, Err(SelectError::Ambiguous { .. }));
     // `Some(t)` is the board a bare call would use. `t` is itself optional
     // because a sole serial-less board is still a valid target.
@@ -1801,7 +1831,7 @@ fn build_list_result(descs: Vec<DeviceDescription>, pin: Option<&str>) -> ListDe
     let devices: Vec<DeviceEntry> = descs
         .into_iter()
         .map(|d| DeviceEntry {
-            pinned: pin.is_some() && d.serial_number.as_deref() == pin,
+            pinned: pinned_serial.is_some() && d.serial_number.as_deref() == pinned_serial,
             default_target: matches!(&default_target, Some(t) if *t == d.serial_number),
             serial_number: d.serial_number,
             manufacturer: d.manufacturer,
@@ -1819,7 +1849,7 @@ fn build_list_result(descs: Vec<DeviceDescription>, pin: Option<&str>) -> ListDe
 
     ListDevicesResult {
         devices,
-        pinned: pin.map(str::to_string),
+        pinned: pinned_serial.map(str::to_string),
         serial_number_required,
         note,
     }
@@ -1832,15 +1862,15 @@ fn build_list_result(descs: Vec<DeviceDescription>, pin: Option<&str>) -> ListDe
 /// device fields if it manages to connect.
 fn build_status(
     available: Vec<Option<String>>,
-    pin: Option<&str>,
+    pinned_serial: Option<&str>,
     requested: Option<&str>,
 ) -> StatusResult {
-    let resolved = resolve_target(&available, pin, requested);
+    let resolved = resolve_target(&available, pinned_serial, requested);
     StatusResult {
         attached: !available.is_empty(),
         serial_number: None,
         ambiguous: matches!(resolved, Err(SelectError::Ambiguous { .. })),
-        pinned: pin.map(str::to_string),
+        pinned: pinned_serial.map(str::to_string),
         reason: resolved.err().map(|e| e.to_string()),
         available,
         firmware_version: None,
@@ -1864,7 +1894,7 @@ Replace the body of the `#[tool_router(router = device_router, vis = "pub(crate)
     async fn list_devices(&self) -> Result<CallToolResult, ErrorData> {
         ok_json(&build_list_result(
             pico_de_gallo_lib::list_devices(),
-            self.pin(),
+            self.pinned_serial(),
         ))
     }
 
@@ -1878,7 +1908,7 @@ Replace the body of the `#[tool_router(router = device_router, vis = "pub(crate)
         Parameters(p): Parameters<TargetParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let requested = p.serial_number.as_deref();
-        let mut out = build_status(attached_serials(), self.pin(), requested);
+        let mut out = build_status(attached_serials(), self.pinned_serial(), requested);
         if out.reason.is_none() {
             match self.connect(requested).await {
                 Ok(dev) => {
