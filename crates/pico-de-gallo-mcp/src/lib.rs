@@ -29,6 +29,10 @@ use serde::Serialize;
 use tokio::sync::{Mutex, OwnedMutexGuard};
 
 /// Wrap a serializable value as a successful tool result.
+///
+/// Only for tools that answer without opening a device (`list_devices`,
+/// `status`). Device tools must use [`ok_device_json`] so the response names
+/// the board that served it.
 pub(crate) fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::success(vec![ContentBlock::json(value)?]))
 }
@@ -38,7 +42,7 @@ pub(crate) fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorDa
 /// Every device tool returns this shape so an agent can see, on any call,
 /// which board answered — rather than only when it thinks to ask.
 #[derive(Serialize)]
-pub(crate) struct Envelope<'a, T: Serialize> {
+pub(crate) struct Envelope<'a, T> {
     /// Serial of the board that served the call. `null` only when the sole
     /// attached board reports no USB serial number.
     pub(crate) serial_number: Option<&'a str>,
@@ -69,9 +73,67 @@ pub(crate) fn attached_serials() -> Vec<Option<String>> {
 
 /// Substring of the error postcard-rpc's `try_new_raw_nusb` returns when USB
 /// enumeration finds no matching device (postcard-rpc 0.12.1, raw_nusb.rs).
-/// [`GalloMcp::connect`] classifies on it to distinguish "no board attached"
+/// [`open_with_retry`] classifies on it to distinguish "no board attached"
 /// from a transient claim failure.
 const NOT_FOUND: &str = "Failed to find matching nusb device";
+
+/// The error message for a board that could not be opened after enumeration
+/// found it.
+///
+/// Reaching this means the board went away between enumeration and open:
+/// selection already proved something was attached, so "no device attached"
+/// would be wrong in either arm.
+fn vanished_board_msg(serial: Option<&str>) -> String {
+    match serial {
+        Some(sn) => format!(
+            "device {sn} was attached a moment ago but is gone now; \
+             check the USB connection and retry"
+        ),
+        None => "the attached board vanished between enumeration and open; \
+                 check the USB connection and retry"
+            .to_string(),
+    }
+}
+
+/// Open the board `serial` names, retrying a transient interface claim.
+///
+/// `None` opens the sole attached board, which reports no serial number.
+///
+/// The claim can fail transiently — e.g. the previous connection's
+/// asynchronous teardown has not released the exclusive USB claim yet, the
+/// Windows double-claim hazard in AGENTS.md §13.17 — so this retries a few
+/// times with a short backoff before giving up. A [`NOT_FOUND`] failure is
+/// not transient and returns immediately.
+async fn open_with_retry(serial: Option<&str>) -> Result<PicoDeGallo, ErrorData> {
+    /// Total attempts to claim the interface before giving up.
+    const MAX_ATTEMPTS: u32 = 5;
+    /// Backoff between claim attempts (absorbs async release window).
+    const BACKOFF: Duration = Duration::from_millis(100);
+
+    let mut attempt: u32 = 1;
+    loop {
+        let result = match serial {
+            Some(sn) => PicoDeGallo::try_new_with_serial_number(sn),
+            None => PicoDeGallo::try_new(),
+        };
+        match result {
+            Ok(dev) => return Ok(dev),
+            Err(e) if e.contains(NOT_FOUND) => {
+                return Err(ErrorData::internal_error(vanished_board_msg(serial), None));
+            }
+            Err(e) if attempt >= MAX_ATTEMPTS => {
+                return Err(ErrorData::internal_error(
+                    format!("failed to open device after {attempt} attempts: {e}"),
+                    None,
+                ));
+            }
+            Err(_) => {
+                attempt += 1;
+                tokio::time::sleep(BACKOFF).await;
+            }
+        }
+    }
+}
 
 /// A live, validated connection to a Pico de Gallo device.
 ///
@@ -96,6 +158,11 @@ pub(crate) struct Device {
     serial: Option<String>,
     /// Serializes device access across concurrent tool calls; held for the
     /// lifetime of the connection. Released (after `inner`) when this drops.
+    ///
+    /// Must remain the **last** field: fields drop in declaration order, and
+    /// the transport in `inner` has to be torn down before the lock is
+    /// released, or the next `connect` can win the lock while this
+    /// connection still holds the USB claim.
     _claim: OwnedMutexGuard<()>,
 }
 
@@ -179,25 +246,15 @@ impl GalloMcp {
     ///
     /// Serializes device access with the shared lock (rmcp dispatches each
     /// tool call on its own `tokio::spawn` task, so handlers can run
-    /// concurrently), constructs the [`PicoDeGallo`] with the fallible
-    /// `try_new*`, validates schema compatibility, and runs the connect-time
-    /// subscription reset. The returned [`Device`] owns the connection, the
-    /// resolved serial, and the lock.
-    ///
-    /// If the interface claim fails transiently — e.g. the previous
-    /// connection's asynchronous teardown has not released the exclusive USB
-    /// claim yet, the Windows double-claim hazard in AGENTS.md §13.17 —
-    /// retries a few times with a short backoff before giving up.
+    /// concurrently), opens the resolved board with [`open_with_retry`],
+    /// validates schema compatibility, and runs the connect-time subscription
+    /// reset. The returned [`Device`] owns the connection, the resolved
+    /// serial, and the lock.
     pub(crate) async fn connect(&self, requested: Option<&str>) -> Result<Device, ErrorData> {
-        /// Total attempts to claim the interface before giving up.
-        const MAX_ATTEMPTS: u32 = 5;
-        /// Backoff between claim attempts (absorbs async release window).
-        const BACKOFF: Duration = Duration::from_millis(100);
-
         let claim = self.connection.clone().lock_owned().await;
 
-        // Resolve before opening: with no board attached this returns
-        // `NoDevice` without touching USB at all.
+        // Resolve before opening: with no board attached this reports
+        // `NoDevice` without opening a device.
         let serial = select::resolve_target(
             &attached_serials(),
             self.serial_number.as_deref(),
@@ -205,43 +262,7 @@ impl GalloMcp {
         )
         .map_err(select::map_select_err)?;
 
-        let mut attempt: u32 = 1;
-        let inner = loop {
-            let result = match serial.as_deref() {
-                Some(sn) => PicoDeGallo::try_new_with_serial_number(sn),
-                None => PicoDeGallo::try_new(),
-            };
-            match result {
-                Ok(dev) => break dev,
-                Err(e) if e.contains(NOT_FOUND) => {
-                    // Enumeration just saw this board, so it went away
-                    // mid-call. Saying "no device attached" here would be
-                    // misleading.
-                    return Err(ErrorData::internal_error(
-                        match serial.as_deref() {
-                            Some(sn) => format!(
-                                "device {sn} was attached a moment ago but is gone now; \
-                                 check the USB connection and retry"
-                            ),
-                            None => {
-                                "no device attached: connect a Pico de Gallo and retry".to_string()
-                            }
-                        },
-                        None,
-                    ));
-                }
-                Err(e) if attempt >= MAX_ATTEMPTS => {
-                    return Err(ErrorData::internal_error(
-                        format!("failed to open device after {attempt} attempts: {e}"),
-                        None,
-                    ));
-                }
-                Err(_) => {
-                    attempt += 1;
-                    tokio::time::sleep(BACKOFF).await;
-                }
-            }
-        };
+        let inner = open_with_retry(serial.as_deref()).await?;
         let info = inner.validate().await.map_err(error::map_validate_err)?;
         let _ = inner.system_reset_subscriptions().await;
         Ok(Device {
@@ -296,8 +317,29 @@ mod tests {
             serial_number: None,
             result: &"ok",
         };
-        let v = serde_json::to_value(&env).unwrap();
-        assert!(v["serial_number"].is_null());
-        assert_eq!(v["result"], "ok");
+        // Exact serialization: `serde_json`'s `Index` returns `Null` for a
+        // missing key too, so only this proves the field is present. An
+        // agent has to be able to tell a serial-less board from a response
+        // that was never enveloped.
+        assert_eq!(
+            serde_json::to_string(&env).unwrap(),
+            r#"{"serial_number":null,"result":"ok"}"#
+        );
+    }
+
+    #[test]
+    fn vanished_board_msg_names_the_serial_it_looked_for() {
+        let msg = crate::vanished_board_msg(Some("9A54ED7E3A1D9D98"));
+        assert!(msg.contains("9A54ED7E3A1D9D98"), "{msg}");
+        assert!(msg.contains("check the USB connection"), "{msg}");
+    }
+
+    #[test]
+    fn vanished_board_msg_for_an_unnamed_board_does_not_deny_the_board() {
+        // Only reachable when selection resolved a sole attached board, so
+        // claiming nothing is attached would contradict what we just saw.
+        let msg = crate::vanished_board_msg(None);
+        assert!(msg.contains("vanished"), "{msg}");
+        assert!(!msg.contains("no device attached"), "{msg}");
     }
 }
