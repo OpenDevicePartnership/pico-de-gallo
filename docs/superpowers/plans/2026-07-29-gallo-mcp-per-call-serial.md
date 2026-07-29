@@ -48,12 +48,48 @@ Task 1's code review found a real hole the plan missed, so the shipped
 
 Commits: `d37f626c` (Task 1 as planned), `d378cfac` (review fixes).
 
+Task 2's code review found a messaging bug and some structure worth changing, so
+the shipped `lib.rs` also differs from the Task 2 text below:
+
+- `connect` no longer contains the retry loop. It was extracted to a free
+  `async fn open_with_retry(serial: Option<&str>)`, which owns `MAX_ATTEMPTS`
+  and `BACKOFF`. `connect` now reads lock → resolve → open → validate → reset →
+  construct.
+- The not-found message choice was extracted to a pure
+  `fn vanished_board_msg(serial: Option<&str>) -> String`, and both its arms now
+  say the board vanished. The plan's `None` arm said "no device attached",
+  which is **unreachable in that literal meaning**: `serial` is `None` only when
+  `resolve_target` returned `Ok(None)`, which requires exactly one attached
+  board, so reaching that arm always means the board went away between
+  enumeration and open.
+- `Envelope` dropped its redundant `T: Serialize` bound (the derive regenerates
+  it on the impl).
+
+Commits: `992ac875` (Task 2 as planned), `75955228` (review fixes).
+
+### Deferred, deliberately out of scope for this branch
+
+- **`Device::serial()` stores intent, not proof, on the `try_new()` path.** When
+  the sole attached board reports no serial, `connect` opens by VID/PID; a
+  hot-swap inside the resolve→open window could label a different board `null`.
+  The clean fix is for `pico-de-gallo-lib` to expose the serial it actually
+  opened. Narrow (needs a serial-less board *and* a millisecond-window swap).
+- **`pico_de_gallo_lib::list_devices()` swallows `nusb`'s error into an empty
+  `Vec`**, so a driver or permissions failure surfaces as "no device attached",
+  which is unactionable. Pre-existing; fixing it changes a published crate's
+  signature.
+
 ## Task Order and Parallelism
 
-Task 1 → Task 2 → **Tasks 3-6 are independent** and may run in parallel: they
-touch disjoint peripheral files and depend only on Task 2's `connect`
-signature and `ok_device_json`. Task 7 runs after them because it also edits
-`lib.rs`. Then Task 8 → Task 9 → Task 10, in order.
+Task 1 → Task 2 → **Tasks 3-6 are independent**: they touch disjoint peripheral
+files and depend only on Task 2's `connect` signature and `ok_device_json`. Task
+7 runs after them because it also edits `lib.rs`. Then Task 8 → Task 9 → Task
+10, in order.
+
+Independent is not the same as parallelisable here. Tasks 3-6 were executed
+**sequentially**, because every task ends in a commit and a single checkout has
+one git index — concurrent implementers would race on `index.lock` and could
+stage each other's work. Run them in parallel only from separate worktrees.
 
 ## Conventions For Every Task
 
