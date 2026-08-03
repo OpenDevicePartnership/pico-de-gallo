@@ -14,7 +14,8 @@ pub struct AdcReadParams {
     /// ADC channel index (0..=3).
     pub channel: u8,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }

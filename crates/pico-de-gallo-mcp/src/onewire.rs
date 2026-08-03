@@ -14,7 +14,8 @@ pub struct OneWireReadParams {
     /// Number of bytes to read.
     pub len: u16,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -24,7 +25,8 @@ pub struct OneWireWriteParams {
     /// Bytes to write, as a hex string.
     pub data: String,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -37,7 +39,8 @@ pub struct OneWireWritePullupParams {
     #[serde(default = "default_pullup_ms")]
     pub duration_ms: u16,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -54,7 +57,8 @@ pub struct OneWireSearchParams {
     #[serde(default)]
     pub continue_search: bool,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }

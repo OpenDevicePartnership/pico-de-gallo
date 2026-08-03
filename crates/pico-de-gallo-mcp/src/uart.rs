@@ -16,7 +16,8 @@ pub struct UartReadParams {
     /// Read timeout in milliseconds.
     pub timeout_ms: u32,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -26,7 +27,8 @@ pub struct UartWriteParams {
     /// Bytes to write, as a hex string.
     pub data: String,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -36,7 +38,8 @@ pub struct UartSetConfigParams {
     /// Baud rate in bits per second.
     pub baud_rate: u32,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }

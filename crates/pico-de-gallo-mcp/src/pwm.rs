@@ -12,7 +12,8 @@ pub struct PwmChannelParams {
     /// PWM channel.
     pub channel: u8,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -24,7 +25,8 @@ pub struct PwmSetDutyParams {
     /// Raw compare value.
     pub duty: u16,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -39,7 +41,8 @@ pub struct PwmSetConfigParams {
     #[serde(default)]
     pub phase_correct: bool,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }

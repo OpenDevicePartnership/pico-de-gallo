@@ -16,7 +16,8 @@ pub struct I2cReadParams {
     /// Number of bytes to read.
     pub count: u16,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -28,7 +29,8 @@ pub struct I2cWriteParams {
     /// Bytes as a hex string, e.g. "0x00,0x10" or "0010".
     pub data: String,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -42,7 +44,8 @@ pub struct I2cWriteReadParams {
     /// Number of bytes to read back.
     pub count: u16,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -53,7 +56,8 @@ pub struct I2cScanParams {
     #[serde(default)]
     pub include_reserved: bool,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -63,7 +67,8 @@ pub struct I2cSetConfigParams {
     /// Bus frequency: "standard" (100k), "fast" (400k), or "fast-plus" (1M).
     pub frequency: String,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -84,7 +89,8 @@ pub struct I2cBatchParams {
     /// Ordered list of operations.
     pub ops: Vec<I2cBatchOpParam>,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }

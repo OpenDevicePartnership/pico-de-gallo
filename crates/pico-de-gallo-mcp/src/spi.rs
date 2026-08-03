@@ -14,7 +14,8 @@ pub struct SpiReadParams {
     /// Number of bytes to read.
     pub count: u16,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -24,7 +25,8 @@ pub struct SpiWriteParams {
     /// Bytes to write, as a hex string.
     pub data: String,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -34,7 +36,8 @@ pub struct SpiTransferParams {
     /// Bytes to clock out (full-duplex); an equal number is read back.
     pub data: String,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -50,7 +53,8 @@ pub struct SpiSetConfigParams {
     #[serde(default)]
     pub idle_low: bool,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
@@ -75,7 +79,8 @@ pub struct SpiBatchParams {
     /// Ordered list of operations.
     pub ops: Vec<SpiBatchOpParam>,
     /// USB serial number of the board to use. Required when two or more
-    /// boards are attached; optional when exactly one is.
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
     #[serde(default)]
     pub serial_number: Option<String>,
 }
