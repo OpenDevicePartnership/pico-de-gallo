@@ -18,6 +18,7 @@ pub struct SpiReadParams {
     #[serde(default)]
     pub serial_number: Option<String>,
 }
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SpiWriteParams {
     /// Bytes to write, as a hex string.
@@ -27,6 +28,7 @@ pub struct SpiWriteParams {
     #[serde(default)]
     pub serial_number: Option<String>,
 }
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SpiTransferParams {
     /// Bytes to clock out (full-duplex); an equal number is read back.
@@ -36,6 +38,7 @@ pub struct SpiTransferParams {
     #[serde(default)]
     pub serial_number: Option<String>,
 }
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct SpiSetConfigParams {
     /// Clock frequency in Hz.
@@ -92,6 +95,7 @@ impl GalloMcp {
         let data = dev.spi_read(p.count).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &Bytes::from_slice(&data))
     }
+
     /// Write bytes to SPI.
     #[tool(
         description = "Write bytes to SPI",
@@ -106,6 +110,7 @@ impl GalloMcp {
         dev.spi_write(&bytes).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &"ok")
     }
+
     /// Full-duplex SPI transfer.
     #[tool(
         description = "Full-duplex SPI transfer",
@@ -120,6 +125,7 @@ impl GalloMcp {
         let data = dev.spi_transfer(&bytes).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &Bytes::from_slice(&data))
     }
+
     /// Flush the SPI TX buffer.
     #[tool(
         description = "Flush the SPI TX buffer",
@@ -133,6 +139,7 @@ impl GalloMcp {
         dev.spi_flush().await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &"ok")
     }
+
     /// Get the current SPI configuration.
     #[tool(
         description = "Get the current SPI configuration",
@@ -146,6 +153,7 @@ impl GalloMcp {
         let c = dev.spi_get_config().await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &format!("{c:?}"))
     }
+
     /// Set SPI frequency/phase/polarity.
     #[tool(
         description = "Set SPI frequency/phase/polarity",
@@ -219,20 +227,26 @@ impl GalloMcp {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn transfer_params_deserialize() {
-        let p: SpiTransferParams = serde_json::from_str(r#"{"data":"0x01,0x02"}"#).unwrap();
+        let p: SpiTransferParams =
+            serde_json::from_str(r#"{"data":"0x01,0x02","serial_number":"ABC123"}"#).unwrap();
         assert_eq!(p.data, "0x01,0x02");
+        assert_eq!(p.serial_number.as_deref(), Some("ABC123"));
     }
+
     #[test]
     fn batch_params_deserialize() {
         let p: SpiBatchParams = serde_json::from_str(
-            r#"{"cs":0,"ops":[{"op":"write","data":"0x9F"},{"op":"read","count":3},{"op":"delay","ns":1000}]}"#,
+            r#"{"cs":0,"ops":[{"op":"write","data":"0x9F"},{"op":"read","count":3},{"op":"delay","ns":1000}],"serial_number":"ABC123"}"#,
         )
         .unwrap();
         assert_eq!(p.cs, 0);
         assert_eq!(p.ops.len(), 3);
+        assert_eq!(p.serial_number.as_deref(), Some("ABC123"));
     }
+
     #[test]
     fn spi_tools_registered() {
         let names: Vec<String> = crate::GalloMcp::router_for_test()
