@@ -395,8 +395,18 @@ impl ServerHandler for GalloMcp {
     fn get_info(&self) -> ServerInfo {
         ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
             "Bridge to a Pico de Gallo USB device (I2C/SPI/UART/GPIO/PWM/ADC/1-Wire). \
-                 Bytes are hex strings like \"0x48,0x00\". Read tools are safe; tools that \
-                 write or actuate pins are marked destructive and may require approval.",
+             Bytes are hex strings like \"0x48,0x00\". Read tools are safe; tools that \
+             write or actuate pins are marked destructive and may require approval. \
+             Every device tool takes an optional serial_number choosing the board, and \
+             every response echoes the serial of the board that served the call. \
+             serial_number is REQUIRED when two or more boards are attached and the \
+             server is not pinned to one: without it the call fails and lists the \
+             serials you can use. Call list_devices first to see what is attached. \
+             Device state is per board — bus configuration, GPIO direction, PWM enable \
+             and 1-Wire search progress all live on the board you addressed, so a \
+             follow-up call must repeat the serial_number of the call that set it up. \
+             Boards can also differ in capability by hardware revision; call \
+             device_info per board rather than assuming they are interchangeable.",
         )
     }
 }
@@ -526,6 +536,117 @@ mod tests {
             matches!(b.as_mut().poll(&mut cx), Poll::Ready(_)),
             "a caller queued on board A blocked board B: the map lock is held \
              across the per-board await"
+        );
+    }
+
+    /// The exact text the `serial_number` rustdoc compiles to.
+    ///
+    /// Hand-copied into 27 params structs plus `TargetParams`. It becomes the
+    /// JSON Schema `description` an agent reads, so a typo, a reflow, or a
+    /// well-meaning rewording in one copy leaves one tool's schema saying
+    /// something different from every other, with nothing failing.
+    const SERIAL_DESC: &str = "USB serial number of the board to use. \
+        Required when two or more\nboards are attached and the server is not \
+        pinned to one; optional\notherwise.";
+
+    /// Every device tool must accept an optional `serial_number`, described
+    /// identically.
+    ///
+    /// The field was added by hand to 27 params structs plus one shared
+    /// selector. This is what catches the struct that got missed.
+    #[test]
+    fn every_device_tool_accepts_an_optional_serial_number() {
+        for tool in crate::GalloMcp::router_for_test().list_all() {
+            // The only tool that touches no device.
+            if tool.name == "list_devices" {
+                continue;
+            }
+            let schema = tool.input_schema.as_ref();
+            let props = schema
+                .get("properties")
+                .and_then(serde_json::Value::as_object)
+                .unwrap_or_else(|| panic!("{}: input schema has no properties", tool.name));
+            assert!(
+                props.contains_key("serial_number"),
+                "{}: input schema is missing serial_number",
+                tool.name
+            );
+            assert_eq!(
+                props["serial_number"]
+                    .get("description")
+                    .and_then(serde_json::Value::as_str),
+                Some(SERIAL_DESC),
+                "{}: serial_number description has drifted from the canonical text",
+                tool.name
+            );
+            if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
+                assert!(
+                    !required.iter().any(|v| v.as_str() == Some("serial_number")),
+                    "{}: serial_number must stay optional",
+                    tool.name
+                );
+            }
+        }
+    }
+
+    /// Every handler must *use* the selector it declares, and answer through
+    /// the envelope.
+    ///
+    /// Declaring `serial_number` and then calling `connect(None)` is invisible
+    /// to the schema test above: the property is there, the argument is
+    /// dropped. Only handlers taking `TargetParams` alone are compile-guarded,
+    /// because there `p` would be unused and `-D warnings` fires.
+    ///
+    /// The `ok_json` half guards the *output* contract. Today it is protected
+    /// only by `ok_json` not being imported in the peripheral modules, which
+    /// stops a forgotten conversion but not a future handler that imports it
+    /// back. `device.rs` is exempt: `list_devices` and `status` legitimately
+    /// answer without opening a board.
+    ///
+    /// Crude, but it catches the whole class. After Task 7 no legitimate
+    /// `connect(None)` remains, so the invariant is trivially maintainable.
+    #[test]
+    fn every_handler_threads_the_selector_into_connect() {
+        for (name, src) in [
+            ("adc.rs", include_str!("adc.rs")),
+            ("device.rs", include_str!("device.rs")),
+            ("gpio.rs", include_str!("gpio.rs")),
+            ("i2c.rs", include_str!("i2c.rs")),
+            ("onewire.rs", include_str!("onewire.rs")),
+            ("pwm.rs", include_str!("pwm.rs")),
+            ("spi.rs", include_str!("spi.rs")),
+            ("uart.rs", include_str!("uart.rs")),
+        ] {
+            assert!(
+                !src.contains("self.connect(None)"),
+                "{name}: a handler still hard-codes connect(None); \
+                 pass p.serial_number.as_deref() instead"
+            );
+            if name != "device.rs" {
+                assert!(
+                    !src.contains("ok_json("),
+                    "{name}: a handler returns an unenveloped result; \
+                     use ok_device_json(&dev, ..) so the response names the board"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn server_instructions_state_the_disambiguation_rule() {
+        use rmcp::ServerHandler;
+        let info = crate::GalloMcp::new(None).get_info();
+        let instructions = info.instructions.expect("server sets instructions");
+        assert!(instructions.contains("serial_number"), "{instructions}");
+        assert!(
+            instructions.contains("two or more boards"),
+            "{instructions}"
+        );
+        // The per-board-state warning is the only mitigation for
+        // configure-on-A-operate-on-B; losing it must fail loudly.
+        assert!(
+            instructions.contains("Device state is per board"),
+            "{instructions}"
         );
     }
 }
