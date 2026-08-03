@@ -78,6 +78,17 @@ Commits: `992ac875` (Task 2 as planned), `75955228` (review fixes).
   `Vec`**, so a driver or permissions failure surfaces as "no device attached",
   which is unactionable. Pre-existing; fixing it changes a published crate's
   signature.
+- **`uart_read`'s `timeout_ms` description does not say `0` is legal.** The
+  GPIO wait tools document "must be non-zero" and enforce it, because there `0`
+  means an unbounded wait — the device-wedging hazard in AGENTS.md §13.17. For
+  UART reads the firmware treats `0` as a supported non-blocking poll, so the
+  asymmetry is correct behaviour but invisible to an agent reading both
+  schemas. Worth a sentence in Task 10.
+- **`uart_set_config` does not reject `baud_rate == 0` host-side.** The firmware
+  rejects it cleanly, so this costs only a lock acquisition, a USB claim, a
+  `validate()` round trip and a subscription reset to learn. It is the one
+  cheaply-checkable argument in the converted modules that is not checked; the
+  `gallo` CLI behaves the same way. Recorded as a decision, not an oversight.
 
 ## Task Order and Parallelism
 
@@ -116,6 +127,45 @@ cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo
 ```
 
 Expected: no output from `fmt`, no warnings from `clippy`, all tests pass.
+
+### Conversion rules learned in Tasks 2-4
+
+The peripheral conversions are near-identical, and two rules emerged from
+review that Tasks 5-6 should apply mechanically rather than by judgement.
+
+**Swap the `ok_json` import, do not extend it.** Each converted module's import
+becomes:
+
+```rust
+use crate::select::TargetParams;
+use crate::{GalloMcp, ok_device_json};
+```
+
+With `ok_json` out of scope, a call site you forget to convert is a hard
+`E0425`. Keeping both imports silently defeats that guard.
+
+**Declaring the field is not enough — thread it.** A handler that gains
+`serial_number` on its params struct and still calls `connect(None)` compiles,
+passes the registration test, passes the deserialization test, and reproduces
+the exact bug this branch exists to fix: with one board the argument is
+silently dropped, and with two boards the agent is told `serial_number` is
+required in response to a call that supplied it. The compiler only catches this
+where the params struct is `TargetParams` alone, because only there is the
+binding unused. Read every `connect` call site rather than trusting a grep.
+
+**Widen a pre-existing params test only when it covers a struct — or a
+structural placement — that the module's new `serial_number` test does not.**
+Field count is irrelevant. Task 3's SPI widenings were correct because
+`transfer_params_deserialize` and `batch_params_deserialize` cover two structs
+the new test never touches. Task 4's UART widening was wrong because it hit the
+same struct with the same JSON literal as the new test, and in doing so dropped
+the only assertion that the *legacy* payload still deserializes its sibling
+fields. When in doubt, add nothing: the surface-wide guards in Task 8 cover all
+28 structs better than a per-module test can.
+
+**Match the reference spacing.** A blank line between each params struct, each
+handler in the `#[tool_router]` impl, and each test function. `cargo fmt` does
+not enforce this, and Tasks 5-6 copy whichever module the author has open.
 
 ---
 
