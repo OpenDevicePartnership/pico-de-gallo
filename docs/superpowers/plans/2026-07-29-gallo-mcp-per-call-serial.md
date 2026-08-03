@@ -83,6 +83,29 @@ module's one test on a struct behind a **destructive** tool. GPIO's originally
 planned test covered three read-only tools and neither destructive one, in the
 module where actuating the wrong board is the sharpest consequence.
 
+Task 6's code review found three things reaching past the last peripheral:
+
+- **The canonical `serial_number` description was wrong for a pinned server.**
+  It claimed the argument is "required when two or more boards are attached",
+  but with `--serial-number` set, omitting it succeeds regardless of how many
+  boards are present — so the schema demanded the argument in exactly the
+  configuration where it is optional. Corrected in all 27 copies before Task 8
+  freezes the string in a constant.
+- **`error.rs` denied the board on two post-open paths.** `map_pdg_err` and
+  `map_validate_err` are only reachable after `connect` returned `Ok`, yet both
+  said "no device attached" — the same defect `75955228` fixed for the open
+  path, in a file that was never revisited when that lesson was learned. With
+  two boards attached and the addressed one yanked mid-call, the agent was told
+  nothing was attached and would retry rather than re-enumerate.
+- **A ROM search continued on the wrong board returns plausible garbage.**
+  `context.onewire_search` is a per-board cursor built once at boot, and
+  `system_reset_subscriptions` only tears down GPIO subscriptions, so search
+  state straddles both calls and boards. Before per-call selection the pair was
+  accidentally consistent; now it is a one-argument mistake. The
+  `continue_search` schema description now names the board.
+
+Commits: `8d6e87cc` (Task 6 as planned), `953d5e1d`, `52c28a2b`, `193dd819`.
+
 ### Deferred, deliberately out of scope for this branch
 
 - **`Device::serial()` stores intent, not proof, on the `try_new()` path.** When
@@ -105,6 +128,11 @@ module where actuating the wrong board is the sharpest consequence.
   `validate()` round trip and a subscription reset to learn. It is the one
   cheaply-checkable argument in the converted modules that is not checked; the
   `gallo` CLI behaves the same way. Recorded as a decision, not an oversight.
+- **`onewire_search` is annotated `read_only_hint = true`** but issues real bus
+  transactions and advances firmware-resident search state. An approval-gating
+  client will treat it as safe. Pre-existing and unchanged by this branch;
+  changing an annotation changes both the agent-facing surface and client
+  approval behaviour, so it belongs in its own issue.
 
 ## Task Order and Parallelism
 
@@ -1582,7 +1610,6 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/onewire.
     fn write_pullup_params_accept_an_optional_serial_number() {
         let without: OneWireWritePullupParams =
             serde_json::from_str(r#"{"data":"0x44"}"#).unwrap();
-        assert_eq!(without.duration_ms, 750);
         assert_eq!(without.serial_number, None);
 
         let with: OneWireWritePullupParams =
@@ -1591,6 +1618,14 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/onewire.
         assert_eq!(with.serial_number.as_deref(), Some("ABC123"));
     }
 ```
+
+Note what the `without` arm does **not** assert: `duration_ms == 750`. The
+pre-existing `write_pullup_params_default_duration` already owns that, with the
+same struct and the same JSON literal, so repeating it here would make one test
+a strict subset of the other. The `with` arm's `duration_ms` assertion is
+different and does earn its place — it proves that supplying `serial_number`
+does not disturb the sibling field's default, which is the one thing the
+trailing-field placement could plausibly break.
 
 - [ ] **Step 2: Run to verify it fails**
 
@@ -2281,6 +2316,16 @@ at a time". That is now per board. Reword it to say at most one connection
 **per board** exists at a time, and that connections to different boards
 proceed concurrently.
 
+While you are in `connect`, add a short comment above the
+`system_reset_subscriptions()` call recording why it is acceptable. It runs on
+every tool call and its result is discarded; it tears down GPIO subscriptions
+belonging to *other host processes* — a `gallo` CLI session or a user program
+watching a pin on that board loses its subscription the moment an agent touches
+it. That is the documented host protocol (AGENTS.md §13.17, 2026-05-29), not a
+bug, but per-call selection widened the blast radius from "the one board this
+server could reach" to "any attached board, on any call". Say so, so the next
+reader does not file it as a defect.
+
 - [ ] **Step 6: Run to verify they pass**
 
 Run: `cargo test --locked -p gallo-mcp tests::`
@@ -2365,7 +2410,8 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
     /// well-meaning rewording in one copy leaves one tool's schema saying
     /// something different from every other, with nothing failing.
     const SERIAL_DESC: &str = "USB serial number of the board to use. \
-        Required when two or more\nboards are attached; optional when exactly one is.";
+        Required when two or more\nboards are attached and the server is not \
+        pinned to one; optional\notherwise.";
 
     /// Every device tool must accept an optional `serial_number`, described
     /// identically.
@@ -2407,12 +2453,19 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
         }
     }
 
-    /// Every handler must *use* the selector it declares.
+    /// Every handler must *use* the selector it declares, and answer through
+    /// the envelope.
     ///
     /// Declaring `serial_number` and then calling `connect(None)` is invisible
     /// to the schema test above: the property is there, the argument is
     /// dropped. Only handlers taking `TargetParams` alone are compile-guarded,
     /// because there `p` would be unused and `-D warnings` fires.
+    ///
+    /// The `ok_json` half guards the *output* contract. Today it is protected
+    /// only by `ok_json` not being imported in the peripheral modules, which
+    /// stops a forgotten conversion but not a future handler that imports it
+    /// back. `device.rs` is exempt: `list_devices` and `status` legitimately
+    /// answer without opening a board.
     ///
     /// Crude, but it catches the whole class. After Task 7 no legitimate
     /// `connect(None)` remains, so the invariant is trivially maintainable.
@@ -2433,6 +2486,13 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
                 "{name}: a handler still hard-codes connect(None); \
                  pass p.serial_number.as_deref() instead"
             );
+            if name != "device.rs" {
+                assert!(
+                    !src.contains("ok_json("),
+                    "{name}: a handler returns an unenveloped result; \
+                     use ok_device_json(&dev, ..) so the response names the board"
+                );
+            }
         }
     }
 
@@ -2444,6 +2504,12 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
         assert!(instructions.contains("serial_number"), "{instructions}");
         assert!(
             instructions.contains("two or more boards"),
+            "{instructions}"
+        );
+        // The per-board-state warning is the only mitigation for
+        // configure-on-A-operate-on-B; losing it must fail loudly.
+        assert!(
+            instructions.contains("Device state is per board"),
             "{instructions}"
         );
     }
@@ -2480,13 +2546,39 @@ impl ServerHandler for GalloMcp {
              write or actuate pins are marked destructive and may require approval. \
              Every device tool takes an optional serial_number choosing the board, and \
              every response echoes the serial of the board that served the call. \
-             serial_number is REQUIRED when two or more boards are attached: without it \
-             the call fails and lists the serials you can use. Call list_devices first \
-             to see what is attached.",
+             serial_number is REQUIRED when two or more boards are attached and the \
+             server is not pinned to one: without it the call fails and lists the \
+             serials you can use. Call list_devices first to see what is attached. \
+             Device state is per board — bus configuration, GPIO direction, PWM enable \
+             and 1-Wire search progress all live on the board you addressed, so a \
+             follow-up call must repeat the serial_number of the call that set it up. \
+             Boards can also differ in capability by hardware revision; call \
+             device_info per board rather than assuming they are interchangeable.",
         )
     }
 }
 ```
+
+Two clauses there are doing real work and should not be trimmed as verbosity.
+
+**Per-board state.** Six of the seven peripherals have a configure-then-operate
+pair that latches on the device: `i2c_set_config`, `spi_set_config`,
+`uart_set_config`, `gpio_set_config`, `pwm_set_config`/`pwm_enable`, and
+`onewire_search`'s ROM cursor. Before per-call selection these pairings were
+safe by construction, because the server could only ever reach one board. Now
+"configure on A, operate on B" is a one-argument mistake, and the only shipped
+mitigation is that the response echoes a serial the agent has to notice. Stating
+it once in the instructions is a better mitigation than 27 field-level doc
+edits, because it is read before the first call rather than per tool.
+
+**Capability divergence.** `hw-rev1` firmware advertises only
+`I2C | SPI | GPIO | PWM`; UART, ADC and 1-Wire are `hw-rev2` only and return
+`Unsupported` on rev1 (`crates/pico-de-gallo-firmware/src/handlers/info.rs`).
+With a mixed pair attached — an old board and a new one, which is a normal
+bench — 12 of the 42 handlers work on one board and hard-fail on the other, and
+`list_devices` reports nothing about capability. Surfacing capability there
+would mean opening every board, destroying that tool's connectionless property,
+so pointing at `device_info` is the right answer.
 
 - [ ] **Step 4: Run to verify both pass**
 
