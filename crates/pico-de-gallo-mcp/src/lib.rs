@@ -18,6 +18,7 @@ pub mod select;
 pub mod spi;
 pub mod uart;
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -139,8 +140,10 @@ async fn open_with_retry(serial: Option<&str>) -> Result<PicoDeGallo, ErrorData>
 ///
 /// Constructed per tool call by [`GalloMcp::connect`]. Dereferences to the
 /// underlying [`PicoDeGallo`] so tool handlers call device methods directly.
-/// It holds the shared connection lock (`_claim`) for its whole lifetime, so
-/// at most one connection exists at a time (see [`GalloMcp::connect`]).
+/// It holds that board's connection lock (`_claim`) for its whole lifetime,
+/// so at most one connection **per board** exists at a time. Connections to
+/// different boards proceed concurrently: the claim this serialises belongs to
+/// one device (see [`GalloMcp::lock_for`]).
 ///
 /// Dropping the guard drops the transport and then releases the lock. The
 /// transport tears down asynchronously (postcard-rpc owns the USB interface on
@@ -156,13 +159,14 @@ pub(crate) struct Device {
     /// Serial this connection was opened with, as chosen by
     /// [`select::resolve_target`]. `None` only for a sole serial-less board.
     serial: Option<String>,
-    /// Serializes device access across concurrent tool calls; held for the
-    /// lifetime of the connection. Released (after `inner`) when this drops.
+    /// Serializes access to *this board* across concurrent tool calls; held
+    /// for the lifetime of the connection. Released (after `inner`) when this
+    /// drops.
     ///
     /// Must remain the **last** field: fields drop in declaration order, and
     /// the transport in `inner` has to be torn down before the lock is
-    /// released, or the next `connect` can win the lock while this
-    /// connection still holds the USB claim.
+    /// released, or the next `connect` for the same board can win the lock
+    /// while this connection still holds the USB claim.
     _claim: OwnedMutexGuard<()>,
 }
 
@@ -188,17 +192,34 @@ impl Device {
     }
 }
 
-/// The MCP service. Holds only the device selector and a connection lock; the
-/// USB connection is opened per tool call by [`GalloMcp::connect`] and released
-/// when the call completes, so the board is free for other host processes
-/// between calls.
+/// The lock guarding one board's exclusive USB interface claim.
+///
+/// Named so that `GalloMcp::locks`'s map stays under clippy's
+/// `type_complexity` threshold and reads as what it is: a lock per board.
+type BoardLock = Arc<Mutex<()>>;
+
+/// The MCP service. Holds only the device selector and the per-board
+/// connection locks; the USB connection is opened per tool call by
+/// [`GalloMcp::connect`] and released when the call completes, so the board is
+/// free for other host processes between calls.
 #[derive(Clone)]
 pub struct GalloMcp {
     serial_number: Option<String>,
-    /// Serializes device access. rmcp dispatches each tool call on its own
-    /// task, so handlers run concurrently; this lock ensures at most one live
-    /// [`Device`] (USB claim) at a time. Shared across handler clones.
-    connection: Arc<Mutex<()>>,
+    /// Per-board connection locks, keyed on the resolved serial.
+    ///
+    /// What this serialises is the exclusive USB interface claim, which is a
+    /// property of one device: two different boards can be open at once. A
+    /// single server-wide lock would mean a long `gpio_wait_*` on one board
+    /// stalled every call to another, which defeats the point of addressing
+    /// boards per call.
+    ///
+    /// Only serials that [`select::resolve_target`] accepted are ever
+    /// inserted, so the map is bounded by the number of boards actually
+    /// attached — an agent cannot grow it by naming arbitrary serials.
+    ///
+    /// Shared across handler clones: rmcp dispatches each tool call on its own
+    /// task, so handlers run concurrently.
+    locks: Arc<Mutex<HashMap<Option<String>, BoardLock>>>,
     pub(crate) tool_router: ToolRouter<Self>,
 }
 
@@ -209,7 +230,7 @@ impl GalloMcp {
     pub fn new(serial_number: Option<&str>) -> Self {
         Self {
             serial_number: serial_number.map(str::to_string),
-            connection: Arc::new(Mutex::new(())),
+            locks: Arc::new(Mutex::new(HashMap::new())),
             tool_router: Self::device_router()
                 + Self::i2c_router()
                 + Self::spi_router()
@@ -248,6 +269,20 @@ impl GalloMcp {
         self.serial_number.as_deref()
     }
 
+    /// Acquire the connection lock for one board, creating it on first use.
+    ///
+    /// The map lock is released before awaiting the per-board lock — holding
+    /// it across that await would reintroduce the server-wide serialisation
+    /// this exists to remove. The inner block scopes the map guard so it is
+    /// dropped when the block ends, before `lock_owned()` is awaited.
+    pub(crate) async fn lock_for(&self, serial: &Option<String>) -> OwnedMutexGuard<()> {
+        let board = {
+            let mut map = self.locks.lock().await;
+            map.entry(serial.clone()).or_default().clone()
+        };
+        board.lock_owned().await
+    }
+
     /// Open and validate a fresh connection to the target device.
     ///
     /// `requested` is the call's optional `serial_number`. The target is
@@ -255,22 +290,33 @@ impl GalloMcp {
     /// server's `--serial-number` pin, and `requested` — so an ambiguous
     /// choice is refused rather than guessed.
     ///
-    /// Serializes device access with the shared lock (rmcp dispatches each
+    /// Serializes device access with that board's lock (rmcp dispatches each
     /// tool call on its own `tokio::spawn` task, so handlers can run
     /// concurrently), opens the resolved board with [`open_with_retry`],
     /// validates schema compatibility, and runs the connect-time subscription
     /// reset. The returned [`Device`] owns the connection, the resolved
-    /// serial, and the lock.
+    /// serial, and the lock. Calls naming different boards do not block each
+    /// other; see [`GalloMcp::lock_for`].
     pub(crate) async fn connect(&self, requested: Option<&str>) -> Result<Device, ErrorData> {
-        let claim = self.connection.clone().lock_owned().await;
-
-        // Resolve before opening: with no board attached this reports
-        // `NoDevice` without opening a device.
+        // Resolve first: the lock is per board, so we need the target before
+        // we can take the right one. Enumeration takes no USB claim, so
+        // moving it outside the lock is safe. With no board attached this
+        // reports `NoDevice` without opening a device.
         let serial = select::resolve_target(&attached_serials(), self.pinned_serial(), requested)
             .map_err(select::map_select_err)?;
 
+        let claim = self.lock_for(&serial).await;
+
         let inner = open_with_retry(serial.as_deref()).await?;
         let info = inner.validate().await.map_err(error::map_validate_err)?;
+        // Tears down *every* GPIO subscription on this board, including ones
+        // owned by other host processes — a `gallo` CLI session or a user
+        // program watching a pin loses it the moment an agent touches the
+        // board. That is the documented host protocol (AGENTS.md §13.17,
+        // 2026-05-29), not a defect; per-call selection only widened the
+        // blast radius from "the one board this server could reach" to "any
+        // attached board, on any call". The result is discarded because a
+        // board with nothing subscribed is already in the wanted state.
         let _ = inner.system_reset_subscriptions().await;
         Ok(Device {
             inner,
@@ -348,5 +394,39 @@ mod tests {
         let msg = crate::vanished_board_msg(None);
         assert!(msg.contains("vanished"), "{msg}");
         assert!(!msg.contains("no device attached"), "{msg}");
+    }
+
+    #[tokio::test]
+    async fn different_boards_do_not_block_each_other() {
+        use std::time::Duration;
+        let mcp = crate::GalloMcp::new(None);
+        let _a = mcp.lock_for(&Some("BOARD_A".to_string())).await;
+        let b = tokio::time::timeout(
+            Duration::from_millis(250),
+            mcp.lock_for(&Some("BOARD_B".to_string())),
+        )
+        .await;
+        assert!(
+            b.is_ok(),
+            "holding board A's connection lock blocked board B; a long \
+             gpio_wait on one board would stall every call to the other"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_board_stays_serialised() {
+        use std::time::Duration;
+        let mcp = crate::GalloMcp::new(None);
+        let _first = mcp.lock_for(&Some("BOARD_A".to_string())).await;
+        let second = tokio::time::timeout(
+            Duration::from_millis(250),
+            mcp.lock_for(&Some("BOARD_A".to_string())),
+        )
+        .await;
+        assert!(
+            second.is_err(),
+            "two connections to the same board were allowed at once; the \
+             exclusive USB claim would fail on Windows (AGENTS.md §13.17)"
+        );
     }
 }
