@@ -214,8 +214,16 @@ pub struct GalloMcp {
     /// boards per call.
     ///
     /// Only serials that [`select::resolve_target`] accepted are ever
-    /// inserted, so the map is bounded by the number of boards actually
-    /// attached — an agent cannot grow it by naming arbitrary serials.
+    /// inserted, so an agent cannot grow this map by naming arbitrary
+    /// serials: an unattached serial is refused before [`GalloMcp::lock_for`]
+    /// is reached. The bound is therefore the boards this server has *seen* —
+    /// every distinct serial it resolved successfully over the process
+    /// lifetime — not the boards attached right now.
+    ///
+    /// Entries are deliberately never removed. Evicting one correctly would
+    /// mean inspecting `Arc::strong_count` under the map lock to prove no
+    /// caller still holds or is queued on that board's lock, to reclaim
+    /// roughly one `String` and one `Arc` per board ever seen.
     ///
     /// Shared across handler clones: rmcp dispatches each tool call on its own
     /// task, so handlers run concurrently.
@@ -299,9 +307,17 @@ impl GalloMcp {
     /// other; see [`GalloMcp::lock_for`].
     pub(crate) async fn connect(&self, requested: Option<&str>) -> Result<Device, ErrorData> {
         // Resolve first: the lock is per board, so we need the target before
-        // we can take the right one. Enumeration takes no USB claim, so
-        // moving it outside the lock is safe. With no board attached this
-        // reports `NoDevice` without opening a device.
+        // we can take the right one. Enumeration takes no USB claim, so it
+        // does not need the lock. With no board attached this reports
+        // `NoDevice` without opening a device.
+        //
+        // The consequence is that this enumeration result is no longer
+        // bounded by how long the open takes, but by how long another call
+        // holds *this board's* lock — a concurrent `gpio_wait_*` can hold it
+        // for its whole timeout. A board that goes away in that window is
+        // still reported correctly, by `open_with_retry` via
+        // `vanished_board_msg`; only its "a moment ago" wording reads oddly
+        // after a long wait.
         let serial = select::resolve_target(&attached_serials(), self.pinned_serial(), requested)
             .map_err(select::map_select_err)?;
 
@@ -427,6 +443,33 @@ mod tests {
             second.is_err(),
             "two connections to the same board were allowed at once; the \
              exclusive USB claim would fail on Windows (AGENTS.md §13.17)"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_parked_waiter_does_not_block_another_board() {
+        use std::time::Duration;
+        let mcp = crate::GalloMcp::new(None);
+        let _held = mcp.lock_for(&Some("BOARD_A".to_string())).await;
+
+        // A second caller for A parks *inside* lock_for. If the map guard
+        // were held across that await, board B could not be reached.
+        let m2 = mcp.clone();
+        tokio::spawn(async move {
+            let _g = m2.lock_for(&Some("BOARD_A".to_string())).await;
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+
+        let b = tokio::time::timeout(
+            Duration::from_millis(250),
+            mcp.lock_for(&Some("BOARD_B".to_string())),
+        )
+        .await;
+        assert!(
+            b.is_ok(),
+            "a caller queued on board A blocked board B: the map lock is \
+             held across the per-board await, which is the server-wide \
+             serialisation this exists to remove"
         );
     }
 }
