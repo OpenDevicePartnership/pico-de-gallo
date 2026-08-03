@@ -126,12 +126,9 @@ mod tests {
 
     #[test]
     fn read_params_deserialize() {
-        let p: UartReadParams =
-            serde_json::from_str(r#"{"count":4,"timeout_ms":1000,"serial_number":"ABC123"}"#)
-                .unwrap();
+        let p: UartReadParams = serde_json::from_str(r#"{"count":4,"timeout_ms":1000}"#).unwrap();
         assert_eq!(p.count, 4);
         assert_eq!(p.timeout_ms, 1000);
-        assert_eq!(p.serial_number.as_deref(), Some("ABC123"));
     }
 
     #[test]
