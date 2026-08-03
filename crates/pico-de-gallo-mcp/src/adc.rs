@@ -6,12 +6,17 @@ use rmcp::{ErrorData, tool, tool_router};
 
 use crate::encoding::validate_adc_channel;
 use crate::error::{invalid_arg, map_pdg_err};
-use crate::{GalloMcp, ok_json};
+use crate::select::TargetParams;
+use crate::{GalloMcp, ok_device_json};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct AdcReadParams {
     /// ADC channel index (0..=3).
     pub channel: u8,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached; optional when exactly one is.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
 
 #[tool_router(router = adc_router, vis = "pub(crate)")]
@@ -33,30 +38,36 @@ impl GalloMcp {
             2 => AdcChannel::Adc2,
             _ => AdcChannel::Adc3,
         };
-        let dev = self.connect(None).await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         let raw = dev.adc_read(channel).await.map_err(map_pdg_err)?;
-        ok_json(&serde_json::json!({ "raw": raw }))
+        ok_device_json(&dev, &serde_json::json!({ "raw": raw }))
     }
+
     /// Get ADC capabilities.
     #[tool(
         description = "Get ADC capabilities",
         annotations(read_only_hint = true)
     )]
-    async fn adc_get_config(&self) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect(None).await?;
+    async fn adc_get_config(
+        &self,
+        Parameters(p): Parameters<TargetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         let c = dev.adc_get_config().await.map_err(map_pdg_err)?;
-        ok_json(&format!("{c:?}"))
+        ok_device_json(&dev, &format!("{c:?}"))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn read_params_deserialize() {
         let p: AdcReadParams = serde_json::from_str(r#"{"channel":2}"#).unwrap();
         assert_eq!(p.channel, 2);
     }
+
     #[test]
     fn adc_tools_registered() {
         let names: Vec<String> = crate::GalloMcp::router_for_test()
@@ -67,5 +78,15 @@ mod tests {
         for e in ["adc_read", "adc_get_config"] {
             assert!(names.contains(&e.to_string()), "missing {e}");
         }
+    }
+
+    #[test]
+    fn read_params_accept_an_optional_serial_number() {
+        let without: AdcReadParams = serde_json::from_str(r#"{"channel":2}"#).unwrap();
+        assert_eq!(without.serial_number, None);
+
+        let with: AdcReadParams =
+            serde_json::from_str(r#"{"channel":2,"serial_number":"ABC123"}"#).unwrap();
+        assert_eq!(with.serial_number.as_deref(), Some("ABC123"));
     }
 }
