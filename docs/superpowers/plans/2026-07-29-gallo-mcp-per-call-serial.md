@@ -126,6 +126,31 @@ Task 7's text carried two defects the implementer caught or the review did:
 
 Commits: `03f0e83c` (Task 7 as planned), `c990d8ac` (review fix).
 
+Task 7b diverged from its own text in three ways, two of them forced:
+
+- **The plan's literal `locks` field type cannot pass its own verification
+  step.** `Arc<Mutex<HashMap<Option<String>, Arc<Mutex<()>>>>>` scores 300
+  against clippy's 250 `type_complexity` threshold, which `-D warnings`
+  promotes to an error. A private `type BoardLock = Arc<Mutex<()>>;` alias is
+  the minimum fix.
+- **Both prescribed tests pass with the bug present.** Holding the map guard
+  across the per-board await — the exact regression the task exists to prevent
+  — fails neither of them, because neither ever leaves a caller *parked* inside
+  `lock_for`. The bug needs three participants: a holder, a parked waiter on the
+  same board, and a caller for a different board. A third test supplies the
+  missing one, formulated by polling rather than sleeping so it does not depend
+  on the runtime flavour.
+- **The outer map became a `std::sync::Mutex`.** Its critical section is a hash
+  probe and an `Arc` clone with no `.await`, so the invariant that made the
+  scoping load-bearing is now enforced by the compiler: holding that guard
+  across the await makes every rmcp handler future `!Send`, and rmcp requires
+  `Send`, so the build fails. Note this is a hard `rustc` error, **not**
+  `clippy::await_holding_lock` — the `Send` failure aborts before clippy's lint
+  pass runs. Stronger than a lint, because no `#[allow]` can silence a `Send`
+  bound.
+
+Commits: `c1fc2368` (Task 7b as planned), `a1140caa`, `2901c7a8`.
+
 ### Deferred, deliberately out of scope for this branch
 
 - **`Device::serial()` stores intent, not proof, on the `try_new()` path.** When
@@ -164,6 +189,23 @@ Commits: `03f0e83c` (Task 7 as planned), `c990d8ac` (review fix).
   report no serial and therefore cannot be named, where `Ambiguous`'s own
   `Display` does say it. Cosmetic asymmetry between the two places an agent
   learns the same fact.
+- **`status` still blocks when the board it names is busy.** `build_status` is
+  total, but the handler calls `connect`, which queues on that board's lock for
+  the whole of a concurrent `gpio_wait_*`. That sits awkwardly beside the
+  tool's "must stay answerable" premise. Per-board locking already fixed the
+  cross-board case, which was the actual bug, and `list_devices` never connects
+  — so an agent can still orient itself. A non-blocking path needs a
+  `try_lock_owned` sibling to `lock_for` plus a `connect` variant; worth doing,
+  not worth adding this late.
+- **`lib.rs` has a natural seam that is not yet worth cutting.** `NOT_FOUND`,
+  `vanished_board_msg`, `open_with_retry`, `Device`, `BoardLock`, `locks`,
+  `lock_for`, `connect` and `attached_serials` form a coherent
+  connection-and-locking unit, leaving crate docs, the envelope helpers, the
+  `GalloMcp` struct, the router and `ServerHandler` behind. Task 8's guards
+  must live inline because they need `router_for_test`, which is
+  `#[cfg(test)] pub(crate)`, so the file will grow further. Declined here:
+  `select.rs` is ~600 lines and unremarkable, and splitting mid-branch adds
+  review surface for no functional gain.
 
 ## Task Order and Parallelism
 
@@ -3124,6 +3166,9 @@ In `crates/pico-de-gallo-mcp/CHANGELOG.md`, insert immediately after the
 - `list_devices` now returns an object with per-entry `pinned` and
   `default_target` flags plus `serial_number_required` and an explanatory
   `note`.
+- Calls to different boards now run concurrently. The connection lock is keyed
+  on the board, so a long `gpio_wait_*` on one board no longer blocks calls to
+  another; calls to the *same* board still queue.
 
 ### Changed
 
@@ -3136,7 +3181,21 @@ In `crates/pico-de-gallo-mcp/CHANGELOG.md`, insert immediately after the
 - `status` no longer reports `attached: false` when selection fails. It never
   errors and reports `attached`, `serial_number`, `ambiguous`, `available`,
   `pinned`, and a `reason` for an unresolved target.
+
+### Fixed
+
+- Errors raised after a board was successfully opened no longer claim no
+  device is attached, which sent an agent looking for a missing board instead
+  of a board that stopped responding.
 ```
+
+The concurrency entry matters because it is the one user-observable behaviour
+change that is not part of the tool surface, and nothing in the book or README
+describes the concurrency model today — so this is an addition, not a
+correction. Add a short **Concurrency** section to `book/src/crates/mcp.md`
+saying the same thing: calls to different boards run concurrently, calls to the
+same board queue, and a blocking tool such as a GPIO edge wait holds only its
+own board.
 
 - [ ] **Step 7: Record the incident in AGENTS.md §13.17**
 
