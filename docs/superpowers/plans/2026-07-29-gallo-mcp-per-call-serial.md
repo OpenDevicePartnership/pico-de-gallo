@@ -2062,16 +2062,42 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 **Files:**
 - Modify: `crates/pico-de-gallo-mcp/src/lib.rs`
 
-Run **after** Tasks 3-7. The schema test is the safety net for the 28
-hand-edited structs: it is the only check that catches the one that got
-missed, which review reliably does not.
+Run **after** Tasks 3-7. These tests are the safety net for the 28 hand-edited
+structs and 42 hand-edited handlers: they are the only checks that catch the
+one that got missed, which review reliably does not.
 
-- [ ] **Step 1: Write the failing surface test**
+**Why three tests and not one.** The conversion is *two* independent hand edits
+per handler — declare the field on the params struct, and thread
+`p.serial_number.as_deref()` into `connect`. A schema test proves only the
+first. A handler that declares the field and then calls `connect(None)` passes
+the schema test, the per-module registration test, and the per-module
+deserialization test. The compiler catches it only for handlers whose params
+struct is `TargetParams` alone, where `p` would be entirely unused and
+`-D warnings` fires; for handlers with other parameters `p` is still used, so
+nothing complains. That was 5 of 7 in SPI alone.
+
+The failure mode is the one issue #89 exists to eliminate, in a worse form:
+with one board the argument is silently ignored and the envelope still reports
+the right serial, so the response looks correct; with two boards the agent is
+told *"`serial_number` is required"* in response to a call that supplied it,
+and will retry forever.
+
+- [ ] **Step 1: Write the failing surface tests**
 
 Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
 
 ```rust
-    /// Every device tool must accept an optional `serial_number`.
+    /// The exact text the `serial_number` rustdoc compiles to.
+    ///
+    /// Hand-copied into 27 params structs plus `TargetParams`. It becomes the
+    /// JSON Schema `description` an agent reads, so a typo, a reflow, or a
+    /// well-meaning rewording in one copy leaves one tool's schema saying
+    /// something different from every other, with nothing failing.
+    const SERIAL_DESC: &str = "USB serial number of the board to use. \
+        Required when two or more\nboards are attached; optional when exactly one is.";
+
+    /// Every device tool must accept an optional `serial_number`, described
+    /// identically.
     ///
     /// The field was added by hand to 27 params structs plus one shared
     /// selector. This is what catches the struct that got missed.
@@ -2092,6 +2118,14 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
                 "{}: input schema is missing serial_number",
                 tool.name
             );
+            assert_eq!(
+                props["serial_number"]
+                    .get("description")
+                    .and_then(serde_json::Value::as_str),
+                Some(SERIAL_DESC),
+                "{}: serial_number description has drifted from the canonical text",
+                tool.name
+            );
             if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
                 assert!(
                     !required.iter().any(|v| v.as_str() == Some("serial_number")),
@@ -2099,6 +2133,35 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
                     tool.name
                 );
             }
+        }
+    }
+
+    /// Every handler must *use* the selector it declares.
+    ///
+    /// Declaring `serial_number` and then calling `connect(None)` is invisible
+    /// to the schema test above: the property is there, the argument is
+    /// dropped. Only handlers taking `TargetParams` alone are compile-guarded,
+    /// because there `p` would be unused and `-D warnings` fires.
+    ///
+    /// Crude, but it catches the whole class. After Task 7 no legitimate
+    /// `connect(None)` remains, so the invariant is trivially maintainable.
+    #[test]
+    fn every_handler_threads_the_selector_into_connect() {
+        for (name, src) in [
+            ("adc.rs", include_str!("adc.rs")),
+            ("device.rs", include_str!("device.rs")),
+            ("gpio.rs", include_str!("gpio.rs")),
+            ("i2c.rs", include_str!("i2c.rs")),
+            ("onewire.rs", include_str!("onewire.rs")),
+            ("pwm.rs", include_str!("pwm.rs")),
+            ("spi.rs", include_str!("spi.rs")),
+            ("uart.rs", include_str!("uart.rs")),
+        ] {
+            assert!(
+                !src.contains("self.connect(None)"),
+                "{name}: a handler still hard-codes connect(None); \
+                 pass p.serial_number.as_deref() instead"
+            );
         }
     }
 
@@ -2115,13 +2178,22 @@ Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
     }
 ```
 
+`SERIAL_DESC` must match what `schemars` actually emits, including the embedded
+newline where the rustdoc wraps. If the assertion fails on first run, print the
+observed value and use it verbatim rather than reformatting the doc comments —
+the 28 copies are the source of truth, not this constant.
+
 - [ ] **Step 2: Run to verify the instructions test fails**
 
 Run: `cargo test --locked -p gallo-mcp tests::`
-Expected: `every_device_tool_accepts_an_optional_serial_number` **passes**
-(Tasks 3-7 already added every field — if it fails, a struct was missed; fix
-that struct before continuing). `server_instructions_state_the_disambiguation_rule`
-fails because the instructions do not mention `serial_number`.
+
+Expected: `every_device_tool_accepts_an_optional_serial_number` and
+`every_handler_threads_the_selector_into_connect` both **pass** — Tasks 3-7
+already added every field and threaded every handler. If either fails, a struct
+or a handler was missed; fix it before continuing, and note which one, because
+it is evidence about where the conversion is error-prone.
+`server_instructions_state_the_disambiguation_rule` fails because the
+instructions do not mention `serial_number`.
 
 - [ ] **Step 3: State the rule in the server instructions**
 
