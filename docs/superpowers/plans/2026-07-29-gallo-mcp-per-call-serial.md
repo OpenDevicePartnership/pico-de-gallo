@@ -67,6 +67,22 @@ the shipped `lib.rs` also differs from the Task 2 text below:
 
 Commits: `992ac875` (Task 2 as planned), `75955228` (review fixes).
 
+Task 5's code review found a limitation the plan created rather than inherited:
+
+- **The connection mutex was server-wide, not board-wide.** A tool call holding
+  a connection blocked every other call, including ones naming a different
+  board — so a `gpio_wait_*` on board A stalled all traffic to board B, for up
+  to 49.7 days. Invisible while the server could reach only one board;
+  reachable the moment per-call selection landed. Fixed in the new **Task 7b**,
+  which keys the lock on the resolved serial. The claim it guards is per
+  device, so two boards can legitimately be open at once.
+
+Task 5 also settled a test-targeting heuristic now written into Task 6: when a
+module's structs back a mix of read-only and destructive tools, spend the
+module's one test on a struct behind a **destructive** tool. GPIO's originally
+planned test covered three read-only tools and neither destructive one, in the
+module where actuating the wrong board is the sharpest consequence.
+
 ### Deferred, deliberately out of scope for this branch
 
 - **`Device::serial()` stores intent, not proof, on the `try_new()` path.** When
@@ -1545,25 +1561,41 @@ Independent of Tasks 3, 4, 5, 7 — touches only this file.
 
 - [ ] **Step 1: Write the failing parameter test**
 
+Target `OneWireWritePullupParams`, not `OneWireSearchParams`. Task 5's review
+established the heuristic: when a module's structs back a mix of read-only and
+destructive tools, spend the module's one test on a struct behind a
+**destructive** tool, because actuation is where an ambiguous target does real
+damage. `OneWireWritePullupParams` backs `onewire_write_pullup`
+(`destructive_hint = true`) and carries the same structurally novel shape —
+`serial_number` following a `#[serde(default = "default_pullup_ms")]` field —
+that made `GpioSetConfigParams` the right target in Task 5.
+`OneWireSearchParams` backs the read-only `onewire_search` and is already
+covered by `search_params_default_is_new_search`.
+
+Note both arms: absent → `None`, present → `Some`. Task 4's widening lost the
+absent case and had to be reverted; do not repeat it.
+
 Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/onewire.rs`:
 
 ```rust
     #[test]
-    fn search_params_accept_an_optional_serial_number() {
-        let without: OneWireSearchParams = serde_json::from_str("{}").unwrap();
+    fn write_pullup_params_accept_an_optional_serial_number() {
+        let without: OneWireWritePullupParams =
+            serde_json::from_str(r#"{"data":"0x44"}"#).unwrap();
+        assert_eq!(without.duration_ms, 750);
         assert_eq!(without.serial_number, None);
 
-        let with: OneWireSearchParams =
-            serde_json::from_str(r#"{"continue_search":true,"serial_number":"ABC123"}"#).unwrap();
+        let with: OneWireWritePullupParams =
+            serde_json::from_str(r#"{"data":"0x44","serial_number":"ABC123"}"#).unwrap();
+        assert_eq!(with.duration_ms, 750);
         assert_eq!(with.serial_number.as_deref(), Some("ABC123"));
-        assert!(with.continue_search);
     }
 ```
 
 - [ ] **Step 2: Run to verify it fails**
 
-Run: `cargo test --locked -p gallo-mcp onewire::tests::search_params_accept_an_optional_serial_number`
-Expected: compile error — no field `serial_number` on `OneWireSearchParams`.
+Run: `cargo test --locked -p gallo-mcp onewire::tests::write_pullup_params_accept_an_optional_serial_number`
+Expected: compile error — no field `serial_number` on `OneWireWritePullupParams`.
 
 - [ ] **Step 3: Add the field to all four 1-Wire params structs**
 
@@ -2107,6 +2139,195 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 
 ---
 
+### Task 7b: Per-board connection locking
+
+**Files:**
+- Modify: `crates/pico-de-gallo-mcp/src/lib.rs`
+
+Run after Task 7 — both edit `lib.rs` — and before Task 8.
+
+`GalloMcp` holds one `Arc<Mutex<()>>`, and `Device` keeps the `OwnedMutexGuard`
+for its whole lifetime, so exactly one tool call touches USB at a time —
+**server-wide, not board-wide**.
+
+That was harmless while the server could only ever reach one board. It is not
+harmless now that it can reach several. `gpio_wait_for_any_edge_with_timeout`
+holds the guard across the entire wait, and `validate_timeout_ms` rejects only
+zero — `u32::MAX` milliseconds is 49.7 days. For that whole time, every call
+naming a *different* board also blocks, with no error and no diagnostic. Even a
+60-second edge wait on board A makes board B unresponsive for a minute. The
+feature advertises "address any attached board per call" and then serialises
+them behind each other.
+
+The lock exists for two reasons, and both are per-**device**: the exclusive
+WinUSB interface claim (AGENTS.md §13.17) and postcard-rpc's asynchronous
+release window. Two different boards can be claimed simultaneously without
+conflict. So the lock should be keyed on the resolved serial.
+
+- [ ] **Step 1: Write the failing tests**
+
+Append inside the existing `mod tests` in `crates/pico-de-gallo-mcp/src/lib.rs`:
+
+```rust
+    #[tokio::test]
+    async fn different_boards_do_not_block_each_other() {
+        use std::time::Duration;
+        let mcp = crate::GalloMcp::new(None);
+        let _a = mcp.lock_for(&Some("BOARD_A".to_string())).await;
+        let b = tokio::time::timeout(
+            Duration::from_millis(250),
+            mcp.lock_for(&Some("BOARD_B".to_string())),
+        )
+        .await;
+        assert!(
+            b.is_ok(),
+            "holding board A's connection lock blocked board B; a long \
+             gpio_wait on one board would stall every call to the other"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_same_board_stays_serialised() {
+        use std::time::Duration;
+        let mcp = crate::GalloMcp::new(None);
+        let _first = mcp.lock_for(&Some("BOARD_A".to_string())).await;
+        let second = tokio::time::timeout(
+            Duration::from_millis(250),
+            mcp.lock_for(&Some("BOARD_A".to_string())),
+        )
+        .await;
+        assert!(
+            second.is_err(),
+            "two connections to the same board were allowed at once; the \
+             exclusive USB claim would fail on Windows (AGENTS.md §13.17)"
+        );
+    }
+```
+
+- [ ] **Step 2: Run to verify they fail**
+
+Run: `cargo test --locked -p gallo-mcp tests::`
+Expected: compile error — no method `lock_for` on `GalloMcp`.
+
+- [ ] **Step 3: Key the lock on the resolved serial**
+
+In `crates/pico-de-gallo-mcp/src/lib.rs`, add `use std::collections::HashMap;`
+and replace the `connection` field on `GalloMcp`:
+
+```rust
+    /// Per-board connection locks, keyed on the resolved serial.
+    ///
+    /// What this serialises is the exclusive USB interface claim, which is a
+    /// property of one device: two different boards can be open at once. A
+    /// single server-wide lock would mean a long `gpio_wait_*` on one board
+    /// stalled every call to another, which defeats the point of addressing
+    /// boards per call.
+    ///
+    /// Only serials that `resolve_target` accepted are ever inserted, so the
+    /// map is bounded by the number of boards actually attached — an agent
+    /// cannot grow it by naming arbitrary serials.
+    locks: Arc<Mutex<HashMap<Option<String>, Arc<Mutex<()>>>>>,
+```
+
+Update `GalloMcp::new` accordingly (`locks: Arc::new(Mutex::new(HashMap::new()))`).
+
+Add the accessor:
+
+```rust
+    /// Acquire the connection lock for one board, creating it on first use.
+    ///
+    /// The map lock is released before awaiting the per-board lock — holding
+    /// it across that await would reintroduce the server-wide serialisation
+    /// this exists to remove.
+    pub(crate) async fn lock_for(&self, serial: &Option<String>) -> OwnedMutexGuard<()> {
+        let board = {
+            let mut map = self.locks.lock().await;
+            map.entry(serial.clone()).or_default().clone()
+        };
+        board.lock_owned().await
+    }
+```
+
+- [ ] **Step 4: Resolve before locking in `connect`**
+
+The lock is now keyed on the resolved serial, so resolution has to happen
+first. Reorder `connect`'s opening so `resolve_target` runs before
+`lock_for`:
+
+```rust
+        // Resolve first: the lock is per board, so we need the target before
+        // we can take the right one. Enumeration takes no USB claim, so
+        // moving it outside the lock is safe.
+        let serial = select::resolve_target(
+            &attached_serials(),
+            self.pinned_serial(),
+            requested,
+        )
+        .map_err(select::map_select_err)?;
+
+        let claim = self.lock_for(&serial).await;
+```
+
+Everything after — `open_with_retry`, `validate()`, `system_reset_subscriptions()`,
+constructing `Device` — is unchanged.
+
+This slightly widens the window between enumeration and open, but that path is
+already handled: `vanished_board_msg` reports a board that went away mid-call.
+
+- [ ] **Step 5: Correct the `Device` doc**
+
+`Device`'s doc says it holds the shared lock "so at most one connection exists
+at a time". That is now per board. Reword it to say at most one connection
+**per board** exists at a time, and that connections to different boards
+proceed concurrently.
+
+- [ ] **Step 6: Run to verify they pass**
+
+Run: `cargo test --locked -p gallo-mcp tests::`
+Expected: both new tests pass. `the_same_board_stays_serialised` takes ~250 ms
+by design — it proves the lock still blocks by letting the timeout expire.
+
+- [ ] **Step 7: Full verification and commit**
+
+Run from `crates/pico-de-gallo-mcp`:
+`cargo fmt --check && cargo clippy --all-targets --locked -- -D warnings && cargo test --locked`
+Expected: clean.
+
+```bash
+git add crates/pico-de-gallo-mcp/src/lib.rs
+```
+
+Commit message:
+
+```text
+fix(mcp): Lock connections per board, not per server
+
+One server-wide mutex meant a tool call holding a connection blocked
+every other call, including calls naming a different board. That was
+invisible while the server could only ever reach one board. Now that it
+can reach several, gpio_wait_for_any_edge_with_timeout holds the lock
+for its whole wait — and validate_timeout_ms rejects only zero, so that
+wait can be 49.7 days. Every call to the other board would block, with
+no error and no diagnostic.
+
+The lock guards the exclusive WinUSB interface claim and postcard-rpc's
+asynchronous release window. Both are properties of one device, so two
+boards can be claimed at once and the lock belongs on the board, not on
+the server. Only serials resolve_target accepted are inserted, so the
+map is bounded by the boards actually attached.
+
+Resolution now runs before the lock is taken, because the key is the
+resolved serial. Enumeration takes no USB claim, and a board vanishing
+in the slightly wider window is already reported.
+
+Refs: #89
+
+Assisted-by: GitHub Copilot:claude-opus-5
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+```
+
+---
+
 ### Task 8: Surface-wide guard and server instructions
 
 **Files:**
@@ -2474,13 +2695,33 @@ mod hardware {
             "configuration written to A leaked onto B"
         );
     }
+
+    #[tokio::test]
+    #[ignore = "requires two attached boards; see module docs"]
+    async fn a_busy_board_does_not_block_the_other() {
+        use std::time::Duration;
+        let (a, b) = serials();
+        let mcp = GalloMcp::new(None);
+
+        // Hold a live connection to A for the whole test.
+        let _held = mcp.connect(Some(&a)).await.expect("connect to A");
+
+        // B must still be reachable. Before per-board locking this timed out:
+        // one server-wide mutex meant any open connection blocked every other
+        // call, so a long gpio_wait on A stalled all traffic to B.
+        let opened = tokio::time::timeout(Duration::from_secs(5), mcp.connect(Some(&b)))
+            .await
+            .expect("connecting to B timed out while A was held");
+        let dev_b = opened.expect("connect to B");
+        assert_eq!(dev_b.serial(), Some(b.as_str()));
+    }
 }
 ```
 
 - [ ] **Step 2: Verify they compile and are skipped by default**
 
-Run from `crates/pico-de-gallo-mcp`: `cargo test --locked`
-Expected: all existing tests pass; the six hardware tests report `ignored`.
+Run: `cargo test --locked` from `crates/pico-de-gallo-mcp`
+Expected: all existing tests pass; the seven hardware tests report `ignored`.
 
 - [ ] **Step 3: Run them against the two boards**
 
@@ -2499,7 +2740,7 @@ $env:GALLO_MCP_TEST_SERIAL_A="<serial-A>"; $env:GALLO_MCP_TEST_SERIAL_B="<serial
 cargo test -p gallo-mcp --locked -- --ignored --test-threads=1
 ```
 
-Expected: 6 passed. Obtain the serials with `gallo list`.
+Expected: 7 passed. Obtain the serials with `gallo list`.
 
 - [ ] **Step 4: Run the three replug cases by hand and record the output**
 
