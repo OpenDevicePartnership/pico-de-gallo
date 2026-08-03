@@ -37,8 +37,11 @@ use tokio::sync::{Mutex, OwnedMutexGuard};
 
 /// Wrap a serializable value as a successful tool result.
 ///
-/// Only for tools that answer without opening a device (`list_devices`,
-/// `status`). Device tools must use [`ok_device_json`] so the response names
+/// Only for the two `device.rs` tools that must not be enveloped, for two
+/// different reasons: `list_devices` opens no board at all, and `status` does
+/// connect but answers with a `StatusResult` that already carries its own
+/// top-level `serial_number`, so enveloping it would nest a serial under a
+/// serial. Every other tool must use [`ok_device_json`] so the response names
 /// the board that served it.
 pub(crate) fn ok_json<T: Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
     Ok(CallToolResult::success(vec![ContentBlock::json(value)?]))
@@ -270,20 +273,17 @@ impl GalloMcp {
         }
     }
 
-    /// Build the merged tool router without constructing a device.
+    /// The tool router the server actually serves, without constructing a
+    /// device. `new` opens no USB connection, so this is the production
+    /// surface rather than a copy of it that can drift from it.
     ///
-    /// Test-only: lets registration tests assert the tool surface without
-    /// touching USB hardware.
+    /// Duplicating the router sum here would let a new peripheral module be
+    /// added to this copy — which is what makes a per-module registration
+    /// test go green — and forgotten in [`GalloMcp::new`], leaving the
+    /// surface-wide guards asserting over tools the server never serves.
     #[cfg(test)]
     pub(crate) fn router_for_test() -> ToolRouter<Self> {
-        Self::device_router()
-            + Self::i2c_router()
-            + Self::spi_router()
-            + Self::uart_router()
-            + Self::gpio_router()
-            + Self::pwm_router()
-            + Self::adc_router()
-            + Self::onewire_router()
+        Self::new(None).tool_router
     }
 
     /// The server's `--serial-number` pin, if any.
@@ -346,6 +346,14 @@ impl GalloMcp {
     /// reset. The returned [`Device`] owns the connection, the resolved
     /// serial, and the lock. Calls naming different boards do not block each
     /// other; see [`GalloMcp::lock_for`].
+    ///
+    /// **Not reentrant.** A [`Device`] holds its board's lock for its whole
+    /// lifetime, and [`GalloMcp::lock_for`] awaits `lock_owned()` with no
+    /// timeout, so a handler that still holds a live `Device` and calls this
+    /// again for the same board deadlocks permanently — tokio mutexes are not
+    /// reentrant and rmcp imposes no per-call timeout, so that board stays
+    /// unusable for the rest of the process. Every handler must call this at
+    /// most once; drop the first `Device` before opening another.
     pub(crate) async fn connect(&self, requested: Option<&str>) -> Result<Device, ErrorData> {
         // Resolve first: the lock is per board, so we need the target before
         // we can take the right one. Enumeration takes no USB claim, so it
@@ -565,10 +573,21 @@ mod tests {
             let props = schema
                 .get("properties")
                 .and_then(serde_json::Value::as_object)
-                .unwrap_or_else(|| panic!("{}: input schema has no properties", tool.name));
+                .unwrap_or_else(|| {
+                    panic!(
+                        "{}: input schema has no properties, so it takes no \
+                         serial_number. If this tool opens a board it needs \
+                         one; if it touches no device, add it beside \
+                         list_devices in the skip above.",
+                        tool.name
+                    )
+                });
             assert!(
                 props.contains_key("serial_number"),
-                "{}: input schema is missing serial_number",
+                "{}: input schema is missing serial_number, so an agent cannot \
+                 choose the board. Add the field to its params struct; if this \
+                 tool touches no device, add it beside list_devices in the \
+                 skip above.",
                 tool.name
             );
             assert_eq!(
@@ -576,21 +595,27 @@ mod tests {
                     .get("description")
                     .and_then(serde_json::Value::as_str),
                 Some(SERIAL_DESC),
-                "{}: serial_number description has drifted from the canonical text",
+                "{}: serial_number description has drifted from the canonical \
+                 text. The 28 rustdoc copies are the source of truth — fix the \
+                 copy on this tool's params struct, not SERIAL_DESC, unless \
+                 you are deliberately rewording all 28.",
                 tool.name
             );
             if let Some(required) = schema.get("required").and_then(serde_json::Value::as_array) {
                 assert!(
                     !required.iter().any(|v| v.as_str() == Some("serial_number")),
-                    "{}: serial_number must stay optional",
+                    "{}: serial_number must stay optional. A pinned server, or \
+                     one with a single board attached, resolves the target \
+                     without it, and requiring it there would break every bare \
+                     call.",
                     tool.name
                 );
             }
         }
     }
 
-    /// Every handler must *use* the selector it declares, and answer through
-    /// the envelope.
+    /// Every tool-bearing module is scanned, uses the selector it declares,
+    /// and answers through the envelope.
     ///
     /// Declaring `serial_number` and then calling `connect(None)` is invisible
     /// to the schema test above: the property is there, the argument is
@@ -600,15 +625,22 @@ mod tests {
     /// The `ok_json` half guards the *output* contract. Today it is protected
     /// only by `ok_json` not being imported in the peripheral modules, which
     /// stops a forgotten conversion but not a future handler that imports it
-    /// back. `device.rs` is exempt: `list_devices` and `status` legitimately
-    /// answer without opening a board.
+    /// back. `device.rs` is exempt for two different reasons: `list_devices`
+    /// opens no board at all, and `status` does connect but answers with a
+    /// `StatusResult` that already carries its own top-level `serial_number`,
+    /// so enveloping it would nest a serial under a serial.
+    ///
+    /// That exemption is file-granular, which leaves one hole: a future
+    /// `device.rs` tool that opens a board and returns a bare `ok_json` would
+    /// pass. Asserting a call count instead would trade the hole for a magic
+    /// number whose failure message is worse than the hole.
     ///
     /// Crude, but it catches the whole class. After Task 7 no legitimate
     /// `connect(None)` remains, so the invariant is trivially maintainable.
     /// The module list is hand-maintained; a tripwire at the end of the test
     /// fails if a tool-bearing module is missing from it.
     #[test]
-    fn every_handler_threads_the_selector_into_connect() {
+    fn every_tool_module_is_scanned_and_conformant() {
         // Hand-maintained, because `include_str!` needs literal paths. The
         // tripwire below is what keeps it honest.
         let modules = [
@@ -649,11 +681,23 @@ mod tests {
         //
         // The needle is split so this file cannot match itself: `lib.rs`
         // registers no tools, and spelling the attribute out here would make
-        // it look as though it did.
+        // it look as though it did. Exempting this file by name was the
+        // obvious alternative and is worse — it would be a permanent hole, so
+        // a tool that did land here would go unguarded forever.
         let needle = concat!("#[", "tool(");
         let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         for entry in std::fs::read_dir(&src_dir).expect("read src/") {
             let path = entry.expect("dir entry").path();
+            // Before the extension filter, which silently skips directories:
+            // a directory has no extension, so `is_none_or` would `continue`
+            // past it and every tool underneath would go unguarded.
+            assert!(
+                !path.is_dir(),
+                "src/{} is a subdirectory; this scan only walks the top level, \
+                 so any tools under it would go unguarded — flatten it, or make \
+                 this walk recursive",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            );
             if path.extension().is_none_or(|e| e != "rs") {
                 continue;
             }
@@ -679,22 +723,34 @@ mod tests {
         use rmcp::ServerHandler;
         let info = crate::GalloMcp::new(None).get_info();
         let instructions = info.instructions.expect("server sets instructions");
-        assert!(instructions.contains("serial_number"), "{instructions}");
+        assert!(
+            instructions.contains("serial_number"),
+            "server instructions no longer name \"serial_number\"; an agent \
+             emits minimal argument sets, so it has to read the argument's \
+             name before its first call rather than in the error after it. \
+             If the reword is deliberate, update this assertion too.\n\
+             {instructions}"
+        );
         assert!(
             instructions.contains("two or more boards"),
-            "{instructions}"
+            "server instructions no longer state the \"two or more boards\" \
+             rule; that is the whole disambiguation contract, and without it \
+             an agent learns it only by failing a call. If the reword is \
+             deliberate, update this assertion too.\n{instructions}"
         );
-        // The per-board-state warning is the only mitigation for
-        // configure-on-A-operate-on-B; losing it must fail loudly.
         assert!(
             instructions.contains("Device state is per board"),
-            "{instructions}"
+            "server instructions no longer say \"Device state is per board\"; \
+             that warning is the only mitigation for configure-on-A-operate-on-B. \
+             If the reword is deliberate, update this assertion too.\n{instructions}"
         );
-        // 12 of 42 handlers hard-fail on a hw-rev1 board and list_devices
-        // says nothing about capability, so losing this must fail loudly too.
         assert!(
             instructions.contains("differ in capability"),
-            "{instructions}"
+            "server instructions no longer say boards \"differ in capability\"; \
+             12 of 42 handlers hard-fail on a hw-rev1 board and list_devices \
+             reports nothing about capability, so this is the only pointer at \
+             device_info. If the reword is deliberate, update this assertion \
+             too.\n{instructions}"
         );
     }
 }
