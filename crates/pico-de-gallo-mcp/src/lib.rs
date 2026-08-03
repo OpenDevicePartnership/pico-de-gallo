@@ -237,6 +237,17 @@ impl GalloMcp {
             + Self::onewire_router()
     }
 
+    /// The server's `--serial-number` pin, if any.
+    ///
+    /// A pinned server cannot address any other board; that is the only
+    /// guarantee enforced by construction rather than by agent diligence.
+    ///
+    /// Named `pinned_serial` rather than `pin` because in this repository
+    /// `pin` means a GPIO pin.
+    pub(crate) fn pinned_serial(&self) -> Option<&str> {
+        self.serial_number.as_deref()
+    }
+
     /// Open and validate a fresh connection to the target device.
     ///
     /// `requested` is the call's optional `serial_number`. The target is
@@ -255,12 +266,8 @@ impl GalloMcp {
 
         // Resolve before opening: with no board attached this reports
         // `NoDevice` without opening a device.
-        let serial = select::resolve_target(
-            &attached_serials(),
-            self.serial_number.as_deref(),
-            requested,
-        )
-        .map_err(select::map_select_err)?;
+        let serial = select::resolve_target(&attached_serials(), self.pinned_serial(), requested)
+            .map_err(select::map_select_err)?;
 
         let inner = open_with_retry(serial.as_deref()).await?;
         let info = inner.validate().await.map_err(error::map_validate_err)?;
