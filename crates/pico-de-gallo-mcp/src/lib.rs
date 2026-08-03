@@ -605,9 +605,13 @@ mod tests {
     ///
     /// Crude, but it catches the whole class. After Task 7 no legitimate
     /// `connect(None)` remains, so the invariant is trivially maintainable.
+    /// The module list is hand-maintained; a tripwire at the end of the test
+    /// fails if a tool-bearing module is missing from it.
     #[test]
     fn every_handler_threads_the_selector_into_connect() {
-        for (name, src) in [
+        // Hand-maintained, because `include_str!` needs literal paths. The
+        // tripwire below is what keeps it honest.
+        let modules = [
             ("adc.rs", include_str!("adc.rs")),
             ("device.rs", include_str!("device.rs")),
             ("gpio.rs", include_str!("gpio.rs")),
@@ -616,7 +620,10 @@ mod tests {
             ("pwm.rs", include_str!("pwm.rs")),
             ("spi.rs", include_str!("spi.rs")),
             ("uart.rs", include_str!("uart.rs")),
-        ] {
+        ];
+        let scanned = modules.map(|(name, _)| name);
+
+        for (name, src) in modules {
             assert!(
                 !src.contains("self.connect(None)"),
                 "{name}: a handler still hard-codes connect(None); \
@@ -629,6 +636,41 @@ mod tests {
                      use ok_device_json(&dev, ..) so the response names the board"
                 );
             }
+        }
+
+        // The list above is hand-maintained, while the schema guard iterates
+        // the live router and extends itself. A new tool-bearing module would
+        // therefore be covered by the schema test and silently missed by this
+        // one — which is the half that catches the split defect. Fail loudly
+        // instead.
+        //
+        // `CARGO_MANIFEST_DIR` is absolute and baked in at compile time, so
+        // this does not depend on the working directory the test runs from.
+        //
+        // The needle is split so this file cannot match itself: `lib.rs`
+        // registers no tools, and spelling the attribute out here would make
+        // it look as though it did.
+        let needle = concat!("#[", "tool(");
+        let src_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        for entry in std::fs::read_dir(&src_dir).expect("read src/") {
+            let path = entry.expect("dir entry").path();
+            if path.extension().is_none_or(|e| e != "rs") {
+                continue;
+            }
+            let body = std::fs::read_to_string(&path).expect("read module");
+            if !body.contains(needle) {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .expect("file name")
+                .to_string_lossy()
+                .into_owned();
+            assert!(
+                scanned.contains(&name.as_str()),
+                "{name} declares tools but is not in this test's scan list; \
+                 add it, or its handlers go unguarded"
+            );
         }
     }
 
@@ -646,6 +688,12 @@ mod tests {
         // configure-on-A-operate-on-B; losing it must fail loudly.
         assert!(
             instructions.contains("Device state is per board"),
+            "{instructions}"
+        );
+        // 12 of 42 handlers hard-fail on a hw-rev1 board and list_devices
+        // says nothing about capability, so losing this must fail loudly too.
+        assert!(
+            instructions.contains("differ in capability"),
             "{instructions}"
         );
     }
