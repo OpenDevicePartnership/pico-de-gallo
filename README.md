@@ -6,6 +6,7 @@
 [![crates.io](https://img.shields.io/crates/v/pico-de-gallo-hal?label=pico-de-gallo-hal)](https://crates.io/crates/pico-de-gallo-hal)
 [![crates.io](https://img.shields.io/crates/v/pico-de-gallo-ffi?label=pico-de-gallo-ffi)](https://crates.io/crates/pico-de-gallo-ffi)
 [![crates.io](https://img.shields.io/crates/v/gallo?label=gallo)](https://crates.io/crates/gallo)
+[![crates.io](https://img.shields.io/crates/v/gallo-mcp?label=gallo-mcp)](https://crates.io/crates/gallo-mcp)
 
 # Pico de Gallo
 
