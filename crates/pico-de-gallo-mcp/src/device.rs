@@ -120,10 +120,15 @@ fn build_status(
     requested: Option<&str>,
 ) -> StatusResult {
     let resolved = resolve_target(&available, pinned_serial, requested);
+    // Deliberately resolved without `requested`: this field answers "would a
+    // call that omits serial_number be ambiguous?", which is a property of
+    // the bench, not of this call. Computing it from `resolved` would report
+    // false whenever the caller happened to name a board.
+    let bare = resolve_target(&available, pinned_serial, None);
     StatusResult {
         attached: !available.is_empty(),
         serial_number: None,
-        ambiguous: matches!(resolved, Err(SelectError::Ambiguous { .. })),
+        ambiguous: matches!(bare, Err(SelectError::Ambiguous { .. })),
         pinned: pinned_serial.map(str::to_string),
         reason: resolved.err().map(|e| e.to_string()),
         available,
@@ -338,5 +343,17 @@ mod tests {
         let out = build_status(vec![Some(A.to_string())], None, None);
         assert!(out.reason.is_none());
         assert!(!out.ambiguous);
+    }
+
+    #[test]
+    fn status_still_reports_ambiguity_when_the_caller_named_a_board() {
+        let available = vec![Some(A.to_string()), Some(B.to_string())];
+        let out = build_status(available, None, Some(A));
+        // The call resolved, so there is nothing to explain about it...
+        assert_eq!(out.serial_number, None); // filled in by the handler, not the builder
+        assert!(out.reason.is_none());
+        // ...but a bare call would still be ambiguous, and an agent asking
+        // "is A up?" must not conclude it can drop the argument next time.
+        assert!(out.ambiguous);
     }
 }
