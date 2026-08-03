@@ -151,6 +151,35 @@ Task 7b diverged from its own text in three ways, two of them forced:
 
 Commits: `c1fc2368` (Task 7b as planned), `a1140caa`, `2901c7a8`.
 
+Task 8's guards **both passed on first run** — no conversion defect existed
+anywhere in Tasks 1-7b's 28 structs and 42 handlers. Mutation controls proved
+the guards are not merely satisfied but load-bearing: a handler that keeps its
+`serial_number` field and calls `connect(None)` compiles clean with zero
+warnings, passes the schema test and both per-module tests, and is caught only
+by the source scan.
+
+Three corrections to the task text:
+
+- **`router_for_test()` duplicated the production router sum**, so the guard
+  could have asserted over a surface the server does not serve — add a module
+  to the test router and forget `GalloMcp::new`, and everything passes while
+  the tools do not exist at runtime. It now derives from `Self::new(None)`.
+- **The `device.rs` exemption was justified on a false claim.** `status` *does*
+  open a board. The real reason it may use `ok_json` is that `StatusResult`
+  already carries its own top-level `serial_number`, so enveloping it would
+  nest a serial under a serial. The same wrong claim was in `ok_json`'s own
+  rustdoc.
+- **The `#[tool(` needle must be split with `concat!`.** Written literally it
+  makes `lib.rs` match its own tripwire. Exempting `lib.rs` by name was
+  rejected: it would be a permanent hole, since a tool landing there would then
+  go unguarded.
+
+The test was also renamed to `every_tool_module_is_scanned_and_conformant`,
+because it asserts the envelope and runs the module tripwire as well as
+checking the selector.
+
+Commits: `3b830cc2` (Task 8 as planned), `5dee91bc`, `615be576`.
+
 ### Deferred, deliberately out of scope for this branch
 
 - **`Device::serial()` stores intent, not proof, on the `try_new()` path.** When
