@@ -9,7 +9,8 @@ At a glance:
 
 - the device handle is opaque: C code only sees `const PicoDeGallo *`,
 - the handle is safe to share across threads (`Send + Sync` on the Rust side),
-- each FFI call drives the async Rust client with its own `block_on`,
+- all FFI calls drive the async Rust client on a shared multi-threaded Tokio
+  runtime (required by the `postcard-rpc` nusb transport),
 - the crate builds as a `cdylib`:
   - Linux: `libpico_de_gallo_ffi.so`
   - macOS: `libpico_de_gallo_ffi.dylib`

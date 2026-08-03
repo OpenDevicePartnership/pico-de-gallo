@@ -5,13 +5,29 @@ All notable changes to `pico-de-gallo-ffi` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.1] — 2026-08-03
 
 ### Changed
 
-- Made it so the C FFI API is ran on a Tokio runtime. This prevents
-  `postcard-rpc`'s nusb transport from panicking when it spawns background
-  tasks during device initialization.
+- The C FFI API now runs on a shared multi-threaded Tokio runtime
+  instead of a per-call `futures::executor::block_on`. This prevents
+  `postcard-rpc`'s nusb transport from panicking when it spawns
+  background tasks during device initialization, and keeps those
+  background tasks between individual FFI calls. The C ABI is
+  unchanged — the exported functions, `#[repr(C)]` struct layouts, and
+  `Status` code values in `pico_de_gallo.h` are the same (only a
+  documentation-comment example in the generated header was
+  reformatted).
+- Bumped the `pico-de-gallo-lib` dependency to 0.7.1 for its new
+  fallible `try_new` / `try_new_with_serial_number` constructors.
+
+### Fixed
+
+- `gallo_init_strict()` and `gallo_init_strict_with_serial_number()`
+  now return `NULL` (with a diagnostic on stderr) when no matching
+  device is reachable or the USB interface cannot be claimed, instead
+  of panicking. They are now built on `pico-de-gallo-lib`'s fallible
+  `try_new` constructors rather than the panicking `new()`.
 
 ## [0.7.0] — 2026-06-22
 
