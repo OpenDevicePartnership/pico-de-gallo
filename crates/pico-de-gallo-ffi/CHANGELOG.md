@@ -5,6 +5,14 @@ All notable changes to `pico-de-gallo-ffi` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Made it so the C FFI API is ran on a Tokio runtime. This prevents
+  `postcard-rpc`'s nusb transport from panicking when it spawns background
+  tasks during device initialization.
+
 ## [0.7.0] — 2026-06-22
 
 ### Added (2026-06-04 — Category A hotfix host-only PR)
