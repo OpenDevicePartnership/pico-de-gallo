@@ -144,6 +144,11 @@ mod tests {
 
     #[test]
     fn set_config_params_deserialize() {
+        let legacy: PwmSetConfigParams =
+            serde_json::from_str(r#"{"channel":0,"frequency":1000,"phase_correct":false}"#)
+                .unwrap();
+        assert_eq!(legacy.serial_number, None);
+
         let p: PwmSetConfigParams = serde_json::from_str(
             r#"{"channel":0,"frequency":1000,"phase_correct":false,"serial_number":"ABC123"}"#,
         )

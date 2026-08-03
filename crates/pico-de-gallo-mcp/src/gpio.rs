@@ -74,12 +74,11 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<GpioGetParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        use pico_de_gallo_lib::GpioState;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         let state = dev.gpio_get(p.pin).await.map_err(map_pdg_err)?;
-        ok_device_json(
-            &dev,
-            &serde_json::json!({ "high": matches!(state, pico_de_gallo_lib::GpioState::High) }),
-        )
+        let high = state == GpioState::High;
+        ok_device_json(&dev, &serde_json::json!({ "high": high }))
     }
 
     /// Set a GPIO pin level.
@@ -213,13 +212,14 @@ mod tests {
     }
 
     #[test]
-    fn wait_params_accept_an_optional_serial_number() {
-        let without: GpioWaitParams =
-            serde_json::from_str(r#"{"pin":5,"timeout_ms":1000}"#).unwrap();
+    fn set_config_params_accept_an_optional_serial_number() {
+        let without: GpioSetConfigParams =
+            serde_json::from_str(r#"{"pin":5,"direction":"output"}"#).unwrap();
+        assert_eq!(without.pull, "none");
         assert_eq!(without.serial_number, None);
 
-        let with: GpioWaitParams =
-            serde_json::from_str(r#"{"pin":5,"timeout_ms":1000,"serial_number":"ABC123"}"#)
+        let with: GpioSetConfigParams =
+            serde_json::from_str(r#"{"pin":5,"direction":"output","serial_number":"ABC123"}"#)
                 .unwrap();
         assert_eq!(with.serial_number.as_deref(), Some("ABC123"));
     }
