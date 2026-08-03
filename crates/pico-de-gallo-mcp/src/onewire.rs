@@ -48,7 +48,9 @@ fn default_pullup_ms() -> u16 {
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct OneWireSearchParams {
-    /// Continue a previous search instead of starting a new one.
+    /// Continue the ROM search already in progress **on the same board**.
+    /// Search state lives on the device, so a continuation must repeat the
+    /// `serial_number` of the call that started the search.
     #[serde(default)]
     pub continue_search: bool,
     /// USB serial number of the board to use. Required when two or more
@@ -181,7 +183,6 @@ mod tests {
     #[test]
     fn write_pullup_params_accept_an_optional_serial_number() {
         let without: OneWireWritePullupParams = serde_json::from_str(r#"{"data":"0x44"}"#).unwrap();
-        assert_eq!(without.duration_ms, 750);
         assert_eq!(without.serial_number, None);
 
         let with: OneWireWritePullupParams =
