@@ -26,22 +26,44 @@
 //! # Thread Safety
 //!
 //! The context pointer is safe to share across threads — the inner type is
-//! `Send + Sync` (enforced by a compile-time assertion). Each function call
-//! creates its own async executor via [`futures::executor::block_on`], so
-//! concurrent calls from multiple threads are safe.
+//! `Send + Sync` (enforced by a compile-time assertion). Every call is driven
+//! on a shared multi-threaded Tokio runtime (required by the postcard-rpc nusb
+//! transport), so concurrent calls from multiple threads are safe.
 //!
 //! # Status Codes
 //!
 //! All functions return a [`Status`] code. [`Status::Ok`] (0) indicates success;
 //! negative values indicate errors. See [`Status`] for the full list.
 
-use futures::executor::block_on;
 use pico_de_gallo_lib::{
     self as lib, AdcChannel, AdcError, GpioError, I2cBatchError, I2cBatchOp, I2cError,
     OneWireError, PicoDeGalloError, PwmError, SpiBatchError, SpiBatchOp, SpiError, UartError,
 };
 use std::ffi::CStr;
+use std::future::Future;
 use std::os::raw::c_char;
+use std::sync::OnceLock;
+use tokio::runtime::Runtime;
+
+/// Shared multi-threaded Tokio runtime for FFI calls.
+///
+/// The postcard-rpc nusb transport spawns background tasks via `tokio::spawn`,
+/// so the FFI stuff must run inside a Tokio runtime context. This also keeps those
+/// background tasks driven between individual FFI calls.
+fn runtime() -> &'static Runtime {
+    static RUNTIME: OnceLock<Runtime> = OnceLock::new();
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build Tokio runtime")
+    })
+}
+
+/// Drive an async library call to completion on the shared runtime.
+fn block_on<F: Future>(fut: F) -> F::Output {
+    runtime().block_on(fut)
+}
 
 /// Opaque handle to a Pico de Gallo device context.
 ///
@@ -304,9 +326,12 @@ fn onewire_error_to_status(e: PicoDeGalloError<OneWireError>) -> Status {
 /// device.
 #[unsafe(no_mangle)]
 pub extern "C" fn gallo_init() -> *const PicoDeGallo {
-    let gallo = Box::new(PicoDeGallo(lib::PicoDeGallo::new()));
+    let inner = {
+        let _guard = runtime().enter();
+        lib::PicoDeGallo::new()
+    };
 
-    Box::into_raw(gallo) as *const PicoDeGallo
+    Box::into_raw(Box::new(PicoDeGallo(inner))) as *const PicoDeGallo
 }
 
 /// gallo_init_with_serial_number - Initialize the library context for
@@ -337,11 +362,12 @@ pub unsafe extern "C" fn gallo_init_with_serial_number(
         return std::ptr::null();
     }
 
-    let gallo = Box::new(PicoDeGallo(lib::PicoDeGallo::new_with_serial_number(
-        serial_number.unwrap(),
-    )));
+    let inner = {
+        let _guard = runtime().enter();
+        lib::PicoDeGallo::new_with_serial_number(serial_number.unwrap())
+    };
 
-    Box::into_raw(gallo) as *const PicoDeGallo
+    Box::into_raw(Box::new(PicoDeGallo(inner))) as *const PicoDeGallo
 }
 
 /// gallo_init_strict - Like `gallo_init` but validates the connected
@@ -361,7 +387,17 @@ pub unsafe extern "C" fn gallo_init_with_serial_number(
 /// when no longer needed.
 #[unsafe(no_mangle)]
 pub extern "C" fn gallo_init_strict() -> *const PicoDeGallo {
-    let inner = lib::PicoDeGallo::new();
+    let inner = {
+        let _guard = runtime().enter();
+        lib::PicoDeGallo::try_new()
+    };
+    let inner = match inner {
+        Ok(inner) => inner,
+        Err(e) => {
+            eprintln!("gallo_init_strict: device not reachable: {e}");
+            return std::ptr::null();
+        }
+    };
     match block_on(inner.validate()) {
         Ok(_info) => Box::into_raw(Box::new(PicoDeGallo(inner))) as *const PicoDeGallo,
         Err(e) => {
@@ -398,7 +434,17 @@ pub unsafe extern "C" fn gallo_init_strict_with_serial_number(
         eprintln!("Invalid UTF-8 string");
         return std::ptr::null();
     }
-    let inner = lib::PicoDeGallo::new_with_serial_number(serial_number.unwrap());
+    let inner = {
+        let _guard = runtime().enter();
+        lib::PicoDeGallo::try_new_with_serial_number(serial_number.unwrap())
+    };
+    let inner = match inner {
+        Ok(inner) => inner,
+        Err(e) => {
+            eprintln!("gallo_init_strict_with_serial_number: device not reachable: {e}");
+            return std::ptr::null();
+        }
+    };
     match block_on(inner.validate()) {
         Ok(_info) => Box::into_raw(Box::new(PicoDeGallo(inner))) as *const PicoDeGallo,
         Err(e) => {
@@ -2782,7 +2828,9 @@ pub const GALLO_CAP_ONEWIRE: u64 = 1 << 6;
 /// Test individual capabilities with bitwise AND:
 ///
 /// ```c
-/// if (info.capabilities & GALLO_CAP_I2C) { /* I2C supported */ }
+/// if (info.capabilities & GALLO_CAP_I2C) {
+///     // I2C supported
+/// }
 /// ```
 #[repr(C)]
 #[derive(Debug)]
