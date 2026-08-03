@@ -20,6 +20,12 @@ pub mod uart;
 
 use std::collections::HashMap;
 use std::sync::Arc;
+// The outer map is guarded by a *std* mutex, not a tokio one, so that holding
+// its guard across an await fails to compile: the guard is `!Send`, so it
+// would make rmcp's handler futures `!Send`. See [`GalloMcp::lock_for`].
+// `BoardLock` stays a tokio mutex — that one is held across an await by
+// design.
+use std::sync::Mutex as MapLock;
 use std::time::Duration;
 
 use pico_de_gallo_lib::{DeviceInfo, PicoDeGallo};
@@ -194,8 +200,14 @@ impl Device {
 
 /// The lock guarding one board's exclusive USB interface claim.
 ///
-/// Named so that `GalloMcp::locks`'s map stays under clippy's
-/// `type_complexity` threshold and reads as what it is: a lock per board.
+/// An `Arc` because [`GalloMcp::lock_for`] has to clone this *out* of the map
+/// and await it after the map's own guard is released; a bare `Mutex` in the
+/// map could only be awaited while still borrowing the map. It stays a
+/// `tokio::sync::Mutex` because it is deliberately held across awaits — for
+/// the whole lifetime of a [`Device`], including a `gpio_wait_*`.
+///
+/// Also keeps `GalloMcp::locks`'s map under clippy's `type_complexity`
+/// threshold, and reads as what it is: a lock per board.
 type BoardLock = Arc<Mutex<()>>;
 
 /// The MCP service. Holds only the device selector and the per-board
@@ -213,6 +225,14 @@ pub struct GalloMcp {
     /// stalled every call to another, which defeats the point of addressing
     /// boards per call.
     ///
+    /// [`open_with_retry`]'s 5 × 100 ms retry is not a substitute for this
+    /// lock and deleting the lock in favour of it would be a regression: the
+    /// retry absorbs the *asynchronous release window* of a connection that
+    /// has already been dropped, which is milliseconds. Waiting for a call
+    /// that still holds the board is unbounded — every `gpio_wait_*` exceeds
+    /// 500 ms by construction — so without the lock those calls would fail
+    /// with "failed to open device after 5 attempts" instead of queueing.
+    ///
     /// Only serials that [`select::resolve_target`] accepted are ever
     /// inserted, so an agent cannot grow this map by naming arbitrary
     /// serials: an unattached serial is refused before [`GalloMcp::lock_for`]
@@ -227,7 +247,7 @@ pub struct GalloMcp {
     ///
     /// Shared across handler clones: rmcp dispatches each tool call on its own
     /// task, so handlers run concurrently.
-    locks: Arc<Mutex<HashMap<Option<String>, BoardLock>>>,
+    locks: Arc<MapLock<HashMap<Option<String>, BoardLock>>>,
     pub(crate) tool_router: ToolRouter<Self>,
 }
 
@@ -238,7 +258,7 @@ impl GalloMcp {
     pub fn new(serial_number: Option<&str>) -> Self {
         Self {
             serial_number: serial_number.map(str::to_string),
-            locks: Arc::new(Mutex::new(HashMap::new())),
+            locks: Arc::new(MapLock::new(HashMap::new())),
             tool_router: Self::device_router()
                 + Self::i2c_router()
                 + Self::spi_router()
@@ -279,15 +299,36 @@ impl GalloMcp {
 
     /// Acquire the connection lock for one board, creating it on first use.
     ///
-    /// The map lock is released before awaiting the per-board lock — holding
-    /// it across that await would reintroduce the server-wide serialisation
-    /// this exists to remove. The inner block scopes the map guard so it is
-    /// dropped when the block ends, before `lock_owned()` is awaited.
-    pub(crate) async fn lock_for(&self, serial: &Option<String>) -> OwnedMutexGuard<()> {
+    /// `serial` must be a [`select::resolve_target`] result. That is the sole
+    /// reason [`GalloMcp::locks`] is bounded — a caller that passes an
+    /// unvalidated, agent-supplied serial would let the map grow without
+    /// limit.
+    ///
+    /// The map guard is a `std::sync::MutexGuard` (see [`MapLock`]) precisely
+    /// so that holding it across the per-board await — which would restore
+    /// the server-wide serialisation this exists to remove — cannot compile.
+    /// That guard is `!Send`, so holding it would make every handler future
+    /// `!Send`, and rmcp spawns those; the build fails pointing at the guard
+    /// binding. This is enforcement, not lint advice: it holds under plain
+    /// `cargo build`, with no `#[allow]` available. (`clippy::await_holding_lock`
+    /// covers the same ground, but the `Send` error aborts the build before
+    /// clippy's lint pass ever runs.)
+    ///
+    /// Contrast [`Device`]'s "`_claim` must be the last field" invariant,
+    /// which has no cheap compiler enforcement and is therefore only a
+    /// comment. That is exactly why this one, which does, uses it.
+    pub(crate) async fn lock_for(&self, serial: Option<&str>) -> OwnedMutexGuard<()> {
         let board = {
-            let mut map = self.locks.lock().await;
-            map.entry(serial.clone()).or_default().clone()
+            let mut map = self
+                .locks
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            map.entry(serial.map(str::to_string)).or_default().clone()
         };
+        tracing::debug!(
+            serial_number = serial.unwrap_or("<none>"),
+            "awaiting board connection lock"
+        );
         board.lock_owned().await
     }
 
@@ -321,7 +362,7 @@ impl GalloMcp {
         let serial = select::resolve_target(&attached_serials(), self.pinned_serial(), requested)
             .map_err(select::map_select_err)?;
 
-        let claim = self.lock_for(&serial).await;
+        let claim = self.lock_for(serial.as_deref()).await;
 
         let inner = open_with_retry(serial.as_deref()).await?;
         let info = inner.validate().await.map_err(error::map_validate_err)?;
@@ -331,8 +372,14 @@ impl GalloMcp {
         // board. That is the documented host protocol (AGENTS.md §13.17,
         // 2026-05-29), not a defect; per-call selection only widened the
         // blast radius from "the one board this server could reach" to "any
-        // attached board, on any call". The result is discarded because a
-        // board with nothing subscribed is already in the wanted state.
+        // attached board, on any call".
+        //
+        // The discarded value is `Result<u8, _>`: the count of subscriptions
+        // torn down, which nothing needs, and a transport error, which is
+        // deliberately swallowed. `validate()` has just succeeded on this
+        // transport, so a fault here is both unlikely and not worth failing a
+        // call over — a genuinely dead transport resurfaces immediately, as
+        // an error on the operation the agent actually asked for.
         let _ = inner.system_reset_subscriptions().await;
         Ok(Device {
             inner,
@@ -416,12 +463,9 @@ mod tests {
     async fn different_boards_do_not_block_each_other() {
         use std::time::Duration;
         let mcp = crate::GalloMcp::new(None);
-        let _a = mcp.lock_for(&Some("BOARD_A".to_string())).await;
-        let b = tokio::time::timeout(
-            Duration::from_millis(250),
-            mcp.lock_for(&Some("BOARD_B".to_string())),
-        )
-        .await;
+        let _a = mcp.lock_for(Some("BOARD_A")).await;
+        let b =
+            tokio::time::timeout(Duration::from_millis(250), mcp.lock_for(Some("BOARD_B"))).await;
         assert!(
             b.is_ok(),
             "holding board A's connection lock blocked board B; a long \
@@ -433,43 +477,55 @@ mod tests {
     async fn the_same_board_stays_serialised() {
         use std::time::Duration;
         let mcp = crate::GalloMcp::new(None);
-        let _first = mcp.lock_for(&Some("BOARD_A".to_string())).await;
-        let second = tokio::time::timeout(
-            Duration::from_millis(250),
-            mcp.lock_for(&Some("BOARD_A".to_string())),
-        )
-        .await;
+        let first = mcp.lock_for(Some("BOARD_A")).await;
+        let second =
+            tokio::time::timeout(Duration::from_millis(250), mcp.lock_for(Some("BOARD_A"))).await;
         assert!(
             second.is_err(),
             "two connections to the same board were allowed at once; the \
              exclusive USB claim would fail on Windows (AGENTS.md §13.17)"
         );
+
+        // The other half of the property, and the one production depends on:
+        // releasing the guard has to admit the next caller. A finished
+        // `gpio_wait_*` that left the board locked would block every later
+        // call to it for the rest of the process.
+        drop(first);
+        let third =
+            tokio::time::timeout(Duration::from_millis(250), mcp.lock_for(Some("BOARD_A"))).await;
+        assert!(
+            third.is_ok(),
+            "the board was still locked after its guard dropped; every later \
+             call naming it would block until the server restarted"
+        );
     }
 
     #[tokio::test]
     async fn a_parked_waiter_does_not_block_another_board() {
-        use std::time::Duration;
+        use std::future::Future;
+        use std::pin::pin;
+        use std::task::{Context, Poll, Waker};
+
         let mcp = crate::GalloMcp::new(None);
-        let _held = mcp.lock_for(&Some("BOARD_A".to_string())).await;
+        let _held = mcp.lock_for(Some("BOARD_A")).await;
 
-        // A second caller for A parks *inside* lock_for. If the map guard
-        // were held across that await, board B could not be reached.
-        let m2 = mcp.clone();
-        tokio::spawn(async move {
-            let _g = m2.lock_for(&Some("BOARD_A".to_string())).await;
-        });
-        tokio::time::sleep(Duration::from_millis(50)).await;
+        let mut cx = Context::from_waker(Waker::noop());
 
-        let b = tokio::time::timeout(
-            Duration::from_millis(250),
-            mcp.lock_for(&Some("BOARD_B".to_string())),
-        )
-        .await;
+        // A second A-waiter, driven to its park point *inside* lock_for and
+        // kept alive. No spawn and no clock: the poll returning Pending is
+        // the happens-before a sleep could only approximate, so this holds on
+        // any runtime flavour — including the multi_thread one a later test
+        // in this file may well want.
+        let mut parked = pin!(mcp.lock_for(Some("BOARD_A")));
+        assert!(matches!(parked.as_mut().poll(&mut cx), Poll::Pending));
+
+        // If the map guard were held across the per-board await, this could
+        // not be Ready — that is the server-wide serialisation this removes.
+        let mut b = pin!(mcp.lock_for(Some("BOARD_B")));
         assert!(
-            b.is_ok(),
-            "a caller queued on board A blocked board B: the map lock is \
-             held across the per-board await, which is the server-wide \
-             serialisation this exists to remove"
+            matches!(b.as_mut().poll(&mut cx), Poll::Ready(_)),
+            "a caller queued on board A blocked board B: the map lock is held \
+             across the per-board await"
         );
     }
 }
