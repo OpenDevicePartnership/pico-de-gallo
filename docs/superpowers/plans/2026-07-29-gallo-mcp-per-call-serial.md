@@ -106,6 +106,26 @@ Task 6's code review found three things reaching past the last peripheral:
 
 Commits: `8d6e87cc` (Task 6 as planned), `953d5e1d`, `52c28a2b`, `193dd819`.
 
+Task 7's text carried two defects the implementer caught or the review did:
+
+- **Step 4's `PingParams` doc block still had the old, wrong `serial_number`
+  wording**, corrected everywhere else by `193dd819`. Following it literally
+  would have introduced a 28th variant and broken Task 8's byte-identity
+  assertion. The implementer used the corrected text; the plan text above is
+  stale on that one line.
+- **`StatusResult.ambiguous`'s doc and its computation disagreed.** The doc
+  describes a property of the bench ("two or more boards attached and the
+  server unpinned"); the code computed it from a resolution that included the
+  call's own `serial_number`, so `status(serial_number: "A")` with two boards
+  reported `ambiguous: false`. An agent asking "is A up?" would conclude a bare
+  call was safe next; it is not. Fixed by resolving a second time without
+  `requested` — the bench-level meaning is the useful one for a diagnostic
+  tool.
+- The plan's prescribed commit subject was 63 characters, over AGENTS.md §10's
+  50-char cap.
+
+Commits: `03f0e83c` (Task 7 as planned), `c990d8ac` (review fix).
+
 ### Deferred, deliberately out of scope for this branch
 
 - **`Device::serial()` stores intent, not proof, on the `try_new()` path.** When
@@ -133,6 +153,17 @@ Commits: `8d6e87cc` (Task 6 as planned), `953d5e1d`, `52c28a2b`, `193dd819`.
   client will treat it as safe. Pre-existing and unchanged by this branch;
   changing an annotation changes both the agent-facing surface and client
   approval behaviour, so it belongs in its own issue.
+- **`list_devices`'s note can advise an action that then fails.** With two
+  boards reporting the same serial and no pin, `resolve_target` returns
+  `Ambiguous`, so the note says "pass serial_number on every device tool call"
+  — and passing it returns `Duplicate`. One wasted round trip, in a
+  configuration that needs two boards whose OTP chip-ID read failed. Fixing it
+  properly means changing `SelectError::Ambiguous`'s message, which is asserted
+  by tests and quoted in issue #89.
+- **The note formats the total board count** without saying how many of them
+  report no serial and therefore cannot be named, where `Ambiguous`'s own
+  `Display` does say it. Cosmetic asymmetry between the two places an agent
+  learns the same fact.
 
 ## Task Order and Parallelism
 
