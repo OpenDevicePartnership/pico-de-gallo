@@ -38,13 +38,16 @@ pretend it unlocks browser support on its own.
 **In scope.** Emit a WebUSB BOS platform capability and a landing-page
 URL descriptor from `pico-de-gallo-firmware`.
 
+Also in scope, as a **separate second commit**: cutting firmware
+release `0.10.1`. See §9.
+
 **Out of scope**, deferred to a separate spec:
 
 - Making `pico-de-gallo-internal`, `pico-de-gallo-lib`, and
   `pico-de-gallo-hal` build for `wasm32-unknown-unknown`.
 - Migrating to nusb 0.2.6 (see §3.2).
-- Any `[package].version` bump. Per AGENTS.md §4 rule 12, releases are
-  a separate deliberate commit.
+- Any version change to crates other than the firmware. Nothing else
+  changes, and the firmware has no dependents.
 - Any new firmware feature flag. WebUSB is unconditional.
 
 ## 3. Background research
@@ -327,9 +330,23 @@ getting-started page.
 
 No `book/src/SUMMARY.md` change: both pages already exist.
 
-## 9. Commit and PR conventions
+Known cosmetic drift, deliberately **not** changed:
+`book/src/crates/mcp.md:204,210` shows `"firmware_version": "0.10.0"` in
+captured sample MCP output. It is illustrative transcript text, not an
+API claim, so it is left alone.
 
-Per AGENTS.md §10, a Conventional Commit with a crate scope:
+## 9. Commit structure
+
+Two commits, per AGENTS.md §4 rule 9 (each commit builds cleanly on its
+own) and §4 rule 12 (a release is a deliberate step, separate from the
+feature that motivates it).
+
+### Commit 1 — the feature
+
+Contents: the `main.rs` change (§4), both book pages (§8), and a new
+`## [Unreleased]` section in
+`crates/pico-de-gallo-firmware/CHANGELOG.md` with an `### Added` entry
+referencing #87.
 
 ```text
 feat(firmware): Add WebUSB BOS platform capability
@@ -338,5 +355,72 @@ Assisted-by: OpenCode:claude-opus-5
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
 ```
 
-No `Signed-off-by:` — DCO is for humans only (§4 rule 7). Open as a
-draft PR, let CI go green, and reference "Closes #87".
+### Commit 2 — the release
+
+Contents:
+
+1. `crates/pico-de-gallo-firmware/Cargo.toml` — `[package].version`
+   `0.10.0` → `0.10.1`.
+2. `crates/pico-de-gallo-firmware/CHANGELOG.md` — rename the
+   `## [Unreleased]` heading from commit 1 to `## [0.10.1] — 2026-08-04`.
+3. `crates/pico-de-gallo-firmware/Cargo.lock` — regenerate. The lock
+   records the firmware's own version at line 1018, so a stale lock
+   fails CI's `lockfile` job (AGENTS.md §7.1, §13.3):
+   ```bash
+   cd crates/pico-de-gallo-firmware
+   # Refresh the lock's own-version entry, then prove it is in sync.
+   cargo check --target thumbv8m.main-none-eabihf
+   cargo check --locked --target thumbv8m.main-none-eabihf
+   ```
+   The exact refresh invocation should be confirmed during
+   implementation; if the first `cargo check` does not rewrite the
+   lock, fall back to the §7.1 ritual
+   (`rm -f Cargo.lock && cargo generate-lockfile`). The second command
+   is the actual gate — it must pass, and it is what CI runs.
+
+```text
+chore(release): Bump pico-de-gallo-firmware to 0.10.1
+
+Assisted-by: OpenCode:claude-opus-5
+Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>
+```
+
+### What the release commit does *not* need
+
+- **No host `Cargo.lock` change.** The firmware is an excluded
+  workspace (root `Cargo.toml:12`) and is absent from the host lock —
+  verified.
+- **No cross-crate dep-spec edits.** AGENTS.md §4 rule 12 requires
+  bumping dependents' `version = "..."` specs, but the firmware has no
+  dependents. Its own `pico-de-gallo-internal = { version = "0.6.0" }`
+  spec is untouched because `internal` is not being released.
+- **No schema-version change.** `SCHEMA_VERSION_*` derives from
+  `pico-de-gallo-internal`'s version via `internal/build.rs:9-17`, not
+  the firmware's. Host `validate()` is unaffected.
+
+### Versioning rationale
+
+`0.10.1` (patch) rather than `0.11.0`, even though this is a `feat`:
+AGENTS.md §6.5 ties minor bumps to wire-protocol changes, and there is
+none here. Chosen by the maintainer.
+
+## 10. PR and post-merge
+
+Open as a **draft** PR referencing "Closes #87". Wait for all checks
+green — especially `lockfile`, `deny`, `actionlint`, and `nostd` — before
+requesting review (§11). Do not squash-merge (§4 rule 9).
+
+No `Signed-off-by:` on either commit — DCO is for humans only
+(§4 rule 7).
+
+After merge, tag the release commit and push:
+
+```bash
+git tag firmware-v0.10.1 <merge-sha>
+git push upstream firmware-v0.10.1
+```
+
+That fires `release-firmware.yml`, which builds the `.uf2` and `.elf`
+artifacts. Note the tag prefix is `firmware-v*`, not `fw-v*`
+(AGENTS.md §12). Tag-triggered workflows use the workflow YAML as it
+existed at the tagged commit (§13.13).
