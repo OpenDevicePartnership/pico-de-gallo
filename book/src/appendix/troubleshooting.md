@@ -13,9 +13,10 @@
 3. **Linux**: install the udev rule from
    [USB & OS Notes](../getting-started/usb.md). Without it,
    `nusb` can''t claim the interface as a regular user.
-4. **Windows**: install the WinUSB driver via Zadig. The default
-   Windows USB driver does not expose vendor-specific endpoints
-   to user space.
+4. **Windows**: install the WinUSB driver via Zadig, selecting
+   **interface 0**. The default Windows USB driver does not expose
+   vendor-specific endpoints to user space, and Pico de Gallo's
+   second interface exists only for WebUSB descriptors.
 5. Check `dmesg` (Linux), Device Manager (Windows), or
    `system_profiler SPUSBDataType` (macOS) for VID `045E` and
    PID `067D`.
