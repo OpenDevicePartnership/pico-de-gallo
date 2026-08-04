@@ -73,6 +73,7 @@ use embassy_sync::blocking_mutex::raw::ThreadModeRawMutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Timer};
+use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
 use embassy_usb::{Config, UsbDevice};
 use pico_de_gallo_internal::{
     AdcGetConfiguration, AdcRead, ENDPOINT_LIST, GetDeviceInfo, GpioEdge, GpioEvent, GpioEventTopic, GpioGet, GpioPut,
@@ -90,7 +91,7 @@ use postcard_rpc::{
     server::{
         Dispatch, Sender, Server,
         impls::embassy_usb_v0_5::{
-            PacketBuffers,
+            PacketBuffers, USB_FS_MAX_PACKET_SIZE,
             dispatch_impl::{WireRxBuf, WireRxImpl, WireSpawnImpl, WireStorage, WireTxImpl},
         },
     },
@@ -125,6 +126,29 @@ include!(concat!(env!("OUT_DIR"), "/version.rs"));
 pub(crate) const HW_VERSION: u8 = 1;
 #[cfg(feature = "hw-rev2")]
 pub(crate) const HW_VERSION: u8 = 2;
+
+/// WebUSB landing page advertised in the URL descriptor.
+///
+/// Chrome surfaces this as a notification when the device is plugged in.
+/// [`Url::new`] strips the scheme prefix and asserts that the remainder is at
+/// most 252 bytes.
+const WEBUSB_LANDING_URL: &str = "https://balbi.sh/pico-de-gallo/";
+
+/// `Url::new` asserts the post-scheme-strip length fits the URL descriptor. Catch
+/// an over-long URL at build time rather than as a boot panic: a panic in `main()`
+/// happens before `watchdog_feeder_task` is ever polled, so the watchdog would
+/// never arm and the device would hang dead.
+const _: () = assert!(WEBUSB_LANDING_URL.len() <= 252);
+
+/// `bRequest` value for WebUSB vendor control transfers.
+///
+/// Deliberately not `0`: postcard-rpc registers the Microsoft OS 2.0
+/// descriptor at vendor code `0` (`init_without_build` calls
+/// `msos_descriptor(WIN8_1, 0)`). embassy-usb 0.5.1 only intercepts that
+/// request when `bRequest == 0 && wIndex == 7`, so `0` would not actually
+/// collide with WebUSB's `GET_URL` (`wIndex == 2`) today, but keeping the two
+/// vendor codes distinct avoids depending on that `wIndex` disambiguation.
+const WEBUSB_VENDOR_CODE: u8 = 0x01;
 
 /// USB driver type for the RP2350.
 type AppDriver = Driver<'static, embassy_rp::peripherals::USB>;
@@ -446,12 +470,37 @@ async fn main(spawner: Spawner) {
     #[cfg(not(feature = "hw-rev2"))]
     let context = Context::new(i2c, spi, gpios, pwm_slices, pwm_configs);
 
-    let (device, tx_impl, rx_impl) = STORAGE.init(
-        driver,
-        config,
-        pbufs.tx_buf.as_mut_slice(),
-        postcard_rpc::server::impls::embassy_usb_v0_5::USB_FS_MAX_PACKET_SIZE,
-    );
+    let (mut builder, tx_impl, rx_impl) =
+        STORAGE.init_without_build(driver, config, pbufs.tx_buf.as_mut_slice(), USB_FS_MAX_PACKET_SIZE);
+
+    // Advertise WebUSB so browsers can discover the device and surface the
+    // landing page.
+    //
+    // This MUST run after init_without_build(): postcard-rpc's bulk interface
+    // has to stay interface 0, because every host transport selects the FIRST
+    // class-0xFF interface — postcard-rpc 0.12.1
+    // `host_client::raw_nusb::try_new_raw_nusb` (first 0xFF on Linux/macOS,
+    // hardcoded interface 0 on Windows) and `host_client::webusb::from_device`
+    // (first 0xFF, then requires IN+OUT endpoints). WebUsb::configure() appends
+    // a second class-0xFF interface with an identical class/subclass/protocol
+    // triple and no endpoints, so ordering is the only thing distinguishing
+    // them; if it ran first, the browser would fail with "Failed to find usable
+    // interface" and Linux/macOS would silently claim the wrong one.
+    //
+    // Descriptor budgets (BOS, config) are set by the AppStorage type alias
+    // above; overflowing either is a "Descriptor buffer full" panic.
+    static WEBUSB_STATE: StaticCell<WebUsbState<'static>> = StaticCell::new();
+    static WEBUSB_CONFIG: StaticCell<WebUsbConfig<'static>> = StaticCell::new();
+    let webusb_config = WEBUSB_CONFIG.init(WebUsbConfig {
+        // Inert: WebUsb::configure() creates no endpoints, and embassy-usb
+        // 0.5.1 never reads this field. It has no Default, so it must be set.
+        max_packet_size: USB_FS_MAX_PACKET_SIZE as u16,
+        landing_url: Some(Url::new(WEBUSB_LANDING_URL)),
+        vendor_code: WEBUSB_VENDOR_CODE,
+    });
+    WebUsb::configure(&mut builder, WEBUSB_STATE.init(WebUsbState::new()), webusb_config);
+
+    let device = builder.build();
     let dispatcher = PicoDeGallo::new(context, spawner.into());
     let vkk = dispatcher.min_key_len();
 
