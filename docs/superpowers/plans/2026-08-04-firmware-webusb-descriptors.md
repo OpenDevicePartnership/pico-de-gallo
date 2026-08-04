@@ -68,20 +68,31 @@ Run from `crates/pico-de-gallo-firmware/`:
 ```bash
 cargo build --release --locked --target thumbv8m.main-none-eabihf
 ELF=target/thumbv8m.main-none-eabihf/release/pico-de-gallo-firmware
-echo "URL  matches: $(strings $ELF | grep -c 'balbi.sh/pico-de-gallo')"
-echo "UUID matches: $(xxd -p $ELF | tr -d '\n' | grep -o '38b60834a909a0478bfda0768815b665' | wc -l)"
+echo "URL:    $(strings $ELF | grep -c 'balbi.sh/pico-de-gallo')"
+echo "vtable: $(strings $ELF | grep -c 'web_usb::Control as embassy_usb::Handler>::{vtable}')"
 ```
 
-Expected (RED — this is the pre-change baseline, already verified):
+Expected (RED — verified against the pre-change tree):
 
 ```text
-URL  matches: 0
-UUID matches: 0
+URL:    0
+vtable: 0
 ```
 
-The UUID pattern is the WebUSB `PlatformCapabilityUUID`
-`3408b638-09a9-47a0-8bfd-a0768815b665` in the little-endian byte order
-embassy-usb writes it (`embassy-usb-0.5.1/src/class/web_usb.rs:152-154`).
+The two signals are complementary. The URL string proves the landing-page
+descriptor data is linked in. The `Handler` vtable symbol proves
+`WebUsb::configure()` actually reached `builder.handler(control)` — that
+symbol cannot exist unless the WebUSB control handler was registered.
+`[profile.release]` sets `debug = 2`, so the debuginfo these symbols live
+in is always present in this project's builds.
+
+> **Do not** try to detect the WebUSB platform UUID
+> (`3408b638-09a9-47a0-8bfd-a0768815b665`) by grepping for its bytes. It
+> is never contiguous in the binary. Two of the 21 array elements
+> (`config.vendor_code` and `landing_url.is_some()`) are runtime values,
+> so LLVM cannot place the array in `.rodata` and builds it on the stack
+> with immediate stores instead. Verified: even a 4-byte subsequence
+> returns 0 matches on an optimized build.
 
 - [ ] **Step 2: Add the import**
 
@@ -125,9 +136,12 @@ const WEBUSB_LANDING_URL: &str = "https://balbi.sh/pico-de-gallo/";
 
 /// `bRequest` value for WebUSB vendor control transfers.
 ///
-/// Must not be `0`. postcard-rpc registers the Microsoft OS 2.0 descriptor at
-/// vendor code `0`, and embassy-usb answers that request before dispatching to
-/// user handlers, so a `0` here would shadow the WebUSB `GET_URL` handler.
+/// Deliberately not `0`: postcard-rpc registers the Microsoft OS 2.0
+/// descriptor at vendor code `0` (`init_without_build` calls
+/// `msos_descriptor(WIN8_1, 0)`). embassy-usb 0.5.1 only intercepts that
+/// request when `bRequest == 0 && wIndex == 7`, so `0` would not actually
+/// collide with WebUSB's `GET_URL` (`wIndex == 2`) today, but keeping the two
+/// vendor codes distinct avoids depending on that `wIndex` disambiguation.
 const WEBUSB_VENDOR_CODE: u8 = 0x01;
 ```
 
@@ -195,20 +209,19 @@ Expected: only `src/main.rs` modified. Accept whatever import ordering
 ```bash
 cargo build --release --locked --target thumbv8m.main-none-eabihf
 ELF=target/thumbv8m.main-none-eabihf/release/pico-de-gallo-firmware
-echo "URL  matches: $(strings $ELF | grep -c 'balbi.sh/pico-de-gallo')"
-echo "UUID matches: $(xxd -p $ELF | tr -d '\n' | grep -o '38b60834a909a0478bfda0768815b665' | wc -l)"
+echo "URL:    $(strings $ELF | grep -c 'balbi.sh/pico-de-gallo')"
+echo "vtable: $(strings $ELF | grep -c 'web_usb::Control as embassy_usb::Handler>::{vtable}')"
 ```
 
 Expected (GREEN):
 
 ```text
-URL  matches: 1
-UUID matches: 1
+URL:    1
+vtable: 1
 ```
 
-If either is still `0`, the descriptor is not being emitted — do not
-proceed. If a count is greater than 1, that is also fine (the linker may
-retain more than one copy); the assertion is "at least one".
+Both must be at least `1`. If either is still `0`, the descriptor is not
+being emitted — do not proceed.
 
 - [ ] **Step 8: Lint, both hardware revisions**
 
@@ -373,10 +386,12 @@ vendor-specific control transfers on the device:
 | Microsoft OS 2.0 | `0x00` (set by postcard-rpc) |
 | WebUSB | `0x01` (`WEBUSB_VENDOR_CODE` in `main.rs`) |
 
-These must differ. embassy-usb answers any vendor/device request
-matching the MS OS 2.0 vendor code *before* dispatching to registered
-handlers, so giving WebUSB `0x00` would shadow its `GET_URL` handler
-and the landing page would never be served.
+They are kept distinct deliberately, though not out of strict necessity.
+embassy-usb answers a vendor request as an MS OS 2.0 descriptor request
+only when the `bRequest` matches **and** `wIndex` is `7`; WebUSB's
+`GET_URL` uses `wIndex` `2`, so the two would not actually collide even
+if they shared a code. Using separate codes avoids relying on that
+disambiguation.
 ```
 
 - [ ] **Step 2: Verify the book builds**
@@ -497,10 +512,11 @@ ordering is therefore load-bearing: postcard-rpc's bulk interface must
 stay interface 0 because every host transport selects the first
 class-0xFF interface it finds.
 
-The WebUSB vendor code is 0x01 rather than 0x00 because postcard-rpc
-registers the Microsoft OS 2.0 descriptor at vendor code 0, and
-embassy-usb answers that request before dispatching to registered
-handlers.
+The WebUSB vendor code is 0x01 rather than 0x00, which postcard-rpc uses
+for the Microsoft OS 2.0 descriptor. The two would not actually collide
+-- embassy-usb only treats a vendor request as an MS OS 2.0 request when
+wIndex is 7, and WebUSB's GET_URL uses wIndex 2 -- but keeping them
+distinct avoids depending on that disambiguation.
 
 No wire-protocol impact: SCHEMA_VERSION_* derives from
 pico-de-gallo-internal's version, which is unchanged.

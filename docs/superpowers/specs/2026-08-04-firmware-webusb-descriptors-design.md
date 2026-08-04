@@ -121,14 +121,24 @@ Two things it does **not** do:
   `MAX_HANDLER_COUNT` both default to `4` (embassy-usb `build.rs:9-10`).
   This change takes interfaces 1 → 2 and handlers 1 → 2.
 
-### 3.5 The vendor-code constraint
+### 3.5 The vendor codes
 
-embassy-usb intercepts vendor/device control requests matching the MS OS
-descriptor's vendor code *before* dispatching to user handlers
-(`embassy-usb-0.5.1/src/lib.rs:677-683`). postcard-rpc registers that
-descriptor with vendor code `0` (`embassy_usb_v0_5.rs:216`). The WebUSB
-vendor code must therefore be non-zero, or the WebUSB `GET_URL` handler
-would never be reached.
+Both platform capabilities reserve a `bRequest` value for vendor-specific
+control transfers. postcard-rpc registers the MS OS 2.0 descriptor with
+vendor code `0` (`embassy_usb_v0_5.rs:216`); this design uses `0x01` for
+WebUSB.
+
+**Correction.** An earlier revision of this spec claimed a `0` WebUSB
+vendor code would shadow the `GET_URL` handler. That is **wrong**, and it
+was caught during implementation. embassy-usb intercepts a vendor/device
+request only when *both* `bRequest == msos_vendor_code` **and**
+`wIndex == 7` (`embassy-usb-0.5.1/src/lib.rs:677-683`). WebUSB's `GET_URL`
+uses `wIndex == 2` (`web_usb.rs:16`), so it would fall through to the
+registered handler even if both descriptors shared vendor code `0`.
+
+`0x01` is therefore a defensive choice rather than a correctness
+requirement: it avoids depending on that `wIndex` disambiguation, which
+nothing in either crate's API guarantees will remain stable.
 
 ## 4. Design
 
@@ -190,11 +200,20 @@ contract, and these values never appear on the wire.
 
 ```rust
 /// WebUSB landing page advertised in the URL descriptor.
+///
+/// Chrome surfaces this as a notification when the device is plugged in.
+/// [`Url::new`] strips the scheme prefix and asserts that the remainder is at
+/// most 252 bytes.
 const WEBUSB_LANDING_URL: &str = "https://balbi.sh/pico-de-gallo/";
 
-/// bRequest for WebUSB vendor control transfers. Must not be 0: postcard-rpc
-/// registers the MS OS 2.0 descriptor at vendor code 0, and embassy-usb
-/// intercepts that before user handlers (embassy-usb-0.5.1 src/lib.rs:677).
+/// `bRequest` value for WebUSB vendor control transfers.
+///
+/// Deliberately not `0`: postcard-rpc registers the Microsoft OS 2.0
+/// descriptor at vendor code `0` (`init_without_build` calls
+/// `msos_descriptor(WIN8_1, 0)`). embassy-usb 0.5.1 only intercepts that
+/// request when `bRequest == 0 && wIndex == 7`, so `0` would not actually
+/// collide with WebUSB's `GET_URL` (`wIndex == 2`) today, but keeping the two
+/// vendor codes distinct avoids depending on that `wIndex` disambiguation.
 const WEBUSB_VENDOR_CODE: u8 = 0x01;
 ```
 
