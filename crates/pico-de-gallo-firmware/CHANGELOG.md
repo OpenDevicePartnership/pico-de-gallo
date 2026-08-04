@@ -5,6 +5,29 @@ All notable changes to `pico-de-gallo-firmware` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- WebUSB platform capability in the BOS descriptor, plus a
+  landing-page URL descriptor pointing at
+  <https://balbi.sh/pico-de-gallo/>. Browsers now surface a
+  notification when the device is plugged in and can discover it as a
+  WebUSB-aware device. Closes #87.
+
+  The USB device is now built through postcard-rpc's
+  `WireStorage::init_without_build()` so that
+  `embassy_usb::class::web_usb::WebUsb::configure()` can append the
+  capability before `Builder::build()`. This adds a second,
+  endpoint-less vendor-class interface; postcard-rpc's bulk interface
+  remains interface 0, which all host transports depend on. No new
+  dependencies and no wire-protocol change.
+
+  Windows users on the manual Zadig fallback path must bind WinUSB to
+  **interface 0** — the device now presents two interfaces with an
+  identical `(0xFF, 0x00, 0x00)` triple, and interface 1 has no
+  endpoints. See the Windows section of the book's USB & OS Notes.
+
 ## [0.10.0] — 2026-06-22
 
 ### Added (2026-06-03 — Category A hotfix)

@@ -47,6 +47,14 @@ override, or driver-signing policy on a corporate machine), use
 [Zadig](https://zadig.akeo.ie/) to manually install the WinUSB
 driver against the Pico de Gallo interface.
 
+> [!IMPORTANT]
+>
+> Zadig lists **two** Pico de Gallo interfaces, because the device
+> exposes a second vendor-class interface to carry its WebUSB
+> descriptor. Bind WinUSB to **interface 0** — the one with the bulk
+> endpoints. Interface 1 has no endpoints, and binding it leaves
+> `gallo` unable to reach the device.
+
 ## macOS
 
 No extra setup. macOS picks the device up automatically.
@@ -55,6 +63,49 @@ If `gallo list` returns nothing, check System Information →
 USB and confirm the device enumerates. If it shows up there but
 `gallo` can't find it, you might have a code-signing issue with a
 locally-built `gallo` binary — try the pre-built release artifact.
+
+## Browsers (WebUSB)
+
+The firmware advertises a WebUSB platform capability in its BOS
+descriptor, along with a landing-page URL. Chrome and Edge use this to
+show a notification pointing at
+<https://balbi.sh/pico-de-gallo/> when you plug the device in.
+
+Two browser requirements are worth knowing up front, because neither is
+something the firmware can influence:
+
+- **Secure context.** `navigator.usb` only exists on pages served over
+  HTTPS, or on `localhost`.
+- **User gesture.** `navigator.usb.requestDevice()` must be called from
+  a click or keypress handler. There is no way to connect
+  automatically on page load; the user picks the device from a browser
+  dialog every time a new origin asks.
+
+```js
+const device = await navigator.usb.requestDevice({
+  filters: [{ vendorId: 0x045e, productId: 0x067d }],
+});
+await device.open();
+// The OS does not always configure the device during enumeration.
+if (device.configuration === null) await device.selectConfiguration(1);
+await device.claimInterface(0);
+```
+
+Interface `0` is the vendor-specific interface carrying the two bulk
+endpoints that the RPC protocol uses. The device also exposes a second,
+endpoint-less vendor interface that exists only to carry the WebUSB
+capability descriptor — do not claim it.
+
+> [!NOTE]
+>
+> These descriptors are a convenience, not a gate. WebUSB can talk to
+> any vendor-class device, so a browser could already reach Pico de
+> Gallo without them. What they add is the landing-page notification
+> and explicit signalling that the device is WebUSB-aware.
+
+The same OS-level permissions still apply: a Linux udev rule is
+required (see above), and on Windows the device must be bound to
+WinUSB, which the Microsoft OS 2.0 descriptor handles automatically.
 
 ## Troubleshooting
 

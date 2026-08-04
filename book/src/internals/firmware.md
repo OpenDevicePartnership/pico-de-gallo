@@ -41,6 +41,71 @@ and reset the device.
 reset the chip while you single-step. The watchdog is the same on both
 `hw-rev1` and `hw-rev2` (no rev-specific code).
 
+## USB descriptors
+
+The device enumerates as VID `045e` / PID `067d` with
+`bDeviceClass = 0xFF` (vendor-specific), so no OS class driver claims
+it. `embassy_usb::Config` defaults `bcdUSB` to `0x0210`, which is what
+makes hosts request the BOS descriptor at all.
+
+### Interfaces
+
+| # | Class | Endpoints | Purpose |
+|---|-------|-----------|---------|
+| 0 | `0xFF` | bulk IN + bulk OUT | The postcard-rpc transport |
+| 1 | `0xFF` | none | Carries the WebUSB capability only |
+
+Interface 0 **must** stay first. The two interfaces share an identical
+class/subclass/protocol triple, so ordering is the only thing that
+distinguishes them. On Linux and macOS the host claims the first
+class-`0xFF` interface it finds; on Windows it claims interface 0
+outright, because interfaces cannot be enumerated through WinUSB.
+Interface 1 exists because
+`WebUsb::configure()` cannot append a capability to an existing
+interface — `bos_capability()` is only reachable through an
+`InterfaceAltBuilder`, and embassy-usb exposes no public
+`Builder::bos_writer()`.
+
+### BOS capabilities
+
+| Capability | Bytes | Written by |
+|---|---:|---|
+| BOS header | 5 | embassy-usb, automatically |
+| `USB_2_0_EXTENSION` | 7 | embassy-usb, automatically |
+| `PLATFORM` — Microsoft OS 2.0 | 28 | postcard-rpc |
+| `PLATFORM` — WebUSB | 24 | firmware, via `WebUsb::configure()` |
+
+Listed by size, not by wire order: the WebUSB capability is appended
+during builder setup, while the Microsoft OS 2.0 one is written later,
+inside `Builder::build()`.
+
+Those sizes are as of embassy-usb 0.5.1 and postcard-rpc 0.12.1. That
+is 64 bytes of the 256-byte BOS buffer sized by the `WireStorage` type
+alias in `main.rs`. Overflowing that buffer, or the configuration
+descriptor buffer, is a `"Descriptor buffer full"` panic raised at the
+point the descriptor is written.
+
+The MS OS 2.0 capability is what makes Windows bind WinUSB without an
+INF file. The WebUSB capability advertises the landing page described
+in [USB & OS Notes](../getting-started/usb.md).
+
+### Vendor codes
+
+Both platform capabilities reserve a `bRequest` value for
+vendor-specific control transfers on the device:
+
+| Descriptor | Vendor code |
+|---|---|
+| Microsoft OS 2.0 | `0x00` (set by postcard-rpc) |
+| WebUSB | `0x01` (`WEBUSB_VENDOR_CODE` in `main.rs`) |
+
+They are kept distinct deliberately, though not out of strict necessity.
+embassy-usb answers a vendor request as an MS OS 2.0 descriptor request
+only when the `bRequest` matches **and** `wIndex` is `7`; WebUSB's
+`GET_URL` uses `wIndex` `2`, so the two would not actually collide even
+if they shared a code. Using separate codes avoids relying on that
+disambiguation.
+
 ## `no_std` and logging
 
 This crate is `no_std`. Logging uses `defmt` over RTT.
