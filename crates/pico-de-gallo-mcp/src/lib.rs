@@ -754,3 +754,200 @@ mod tests {
         );
     }
 }
+
+/// Two-board hardware tests.
+///
+/// Ignored by default and never run in CI: they need two Pico de Gallo boards
+/// attached with **distinguishable I2C buses** (e.g. one bare, one with a
+/// sensor), and their serials in the environment.
+///
+/// ```console
+/// $ GALLO_MCP_TEST_SERIAL_A=9A54ED7E3A1D9D98 \
+///   GALLO_MCP_TEST_SERIAL_B=5256657D8A5D7F03 \
+///   cargo test -p gallo-mcp --locked -- --ignored --test-threads=1
+/// ```
+///
+/// The distinguishable-buses requirement is load-bearing, not a convenience.
+/// `each_serial_reaches_its_own_board` is the one test here that can catch
+/// selection returning the *same* board twice, and it does so by asserting the
+/// two scans differ. Wire both boards identically and the two scans match
+/// whether selection works or not, so the assertion stops discriminating: it
+/// fails on a correct server exactly as it does on a broken one.
+///
+/// `--test-threads=1` is required: each test builds its own [`GalloMcp`], so
+/// each has its own connection mutex and concurrent tests would race for the
+/// exclusive USB claim.
+#[cfg(test)]
+mod hardware {
+    use crate::{Device, GalloMcp};
+    use rmcp::ErrorData;
+
+    /// The two board serials, or a loud failure if they are not configured.
+    fn serials() -> (String, String) {
+        let a = std::env::var("GALLO_MCP_TEST_SERIAL_A")
+            .expect("set GALLO_MCP_TEST_SERIAL_A to the first board's serial");
+        let b = std::env::var("GALLO_MCP_TEST_SERIAL_B")
+            .expect("set GALLO_MCP_TEST_SERIAL_B to the second board's serial");
+        assert_ne!(a, b, "the two serials must differ");
+        (a, b)
+    }
+
+    /// The error from a [`GalloMcp::connect`] that must be refused.
+    ///
+    /// `Result::expect_err` cannot be used here: it needs `T: Debug`, and
+    /// [`Device`] is not. It cannot cheaply become one either — deriving
+    /// `Debug` on it requires `Debug` on [`PicoDeGallo`], which the published
+    /// `pico-de-gallo-lib` does not implement — so adding a production impl to
+    /// satisfy three test call sites is the wrong trade.
+    ///
+    /// It also reports better than `expect_err` would: a selection bug that
+    /// connects when it should refuse gets its wrongly-chosen board named in
+    /// the panic, which is the fact worth knowing.
+    ///
+    /// [`PicoDeGallo`]: pico_de_gallo_lib::PicoDeGallo
+    fn refusal(result: Result<Device, ErrorData>, why: &str) -> ErrorData {
+        match result {
+            Ok(dev) => panic!("{why}; connected to {:?} instead", dev.serial()),
+            Err(e) => e,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires two attached boards; see module docs"]
+    async fn a_bare_call_is_refused_and_lists_both_serials() {
+        let (a, b) = serials();
+        let err = refusal(
+            GalloMcp::new(None).connect(None).await,
+            "two boards attached: a bare connect must be refused",
+        );
+        assert!(err.message.contains("serial_number"), "{}", err.message);
+        assert!(err.message.contains(&a), "{}", err.message);
+        assert!(err.message.contains(&b), "{}", err.message);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires two attached boards; see module docs"]
+    async fn each_serial_reaches_its_own_board() {
+        let (a, b) = serials();
+        let mcp = GalloMcp::new(None);
+
+        let scan_a = {
+            let dev = mcp.connect(Some(&a)).await.expect("connect to A");
+            assert_eq!(dev.serial(), Some(a.as_str()));
+            dev.i2c_scan(false).await.expect("scan A")
+        };
+        let scan_b = {
+            let dev = mcp.connect(Some(&b)).await.expect("connect to B");
+            assert_eq!(dev.serial(), Some(b.as_str()));
+            dev.i2c_scan(false).await.expect("scan B")
+        };
+
+        // The whole point of the change: the same call with different serials
+        // must reach different silicon, not merely echo different strings.
+        assert_ne!(
+            scan_a, scan_b,
+            "both serials returned identical bus contents — either the boards \
+             are wired the same or selection is not reaching them"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires two attached boards; see module docs"]
+    async fn an_unknown_serial_is_refused_with_the_alternatives() {
+        let (a, b) = serials();
+        let err = refusal(
+            GalloMcp::new(None).connect(Some("BOGUSSERIAL")).await,
+            "an unattached serial must be refused",
+        );
+        assert!(err.message.contains("BOGUSSERIAL"), "{}", err.message);
+        assert!(err.message.contains(&a), "{}", err.message);
+        assert!(err.message.contains(&b), "{}", err.message);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires two attached boards; see module docs"]
+    async fn a_pinned_server_serves_its_own_board_two_ways() {
+        let (a, _b) = serials();
+        let mcp = GalloMcp::new(Some(&a));
+
+        let bare = mcp.connect(None).await.expect("pinned bare connect");
+        assert_eq!(bare.serial(), Some(a.as_str()));
+        drop(bare);
+
+        let explicit = mcp
+            .connect(Some(&a))
+            .await
+            .expect("pinned explicit connect");
+        assert_eq!(explicit.serial(), Some(a.as_str()));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires two attached boards; see module docs"]
+    async fn a_pinned_server_cannot_be_talked_onto_the_other_board() {
+        let (a, b) = serials();
+        let err = refusal(
+            GalloMcp::new(Some(&a)).connect(Some(&b)).await,
+            "a pinned server must refuse another board",
+        );
+        assert!(err.message.contains("--serial-number"), "{}", err.message);
+        assert!(err.message.contains(&a), "{}", err.message);
+        assert!(err.message.contains(&b), "{}", err.message);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires two attached boards; see module docs"]
+    async fn configuration_set_on_one_board_does_not_leak_to_the_other() {
+        use pico_de_gallo_lib::I2cFrequency;
+        let (a, b) = serials();
+        let mcp = GalloMcp::new(None);
+
+        {
+            let dev = mcp.connect(Some(&b)).await.expect("connect to B");
+            dev.i2c_set_config(I2cFrequency::Standard)
+                .await
+                .expect("set B to standard");
+        }
+        {
+            let dev = mcp.connect(Some(&a)).await.expect("connect to A");
+            dev.i2c_set_config(I2cFrequency::Fast)
+                .await
+                .expect("set A to fast");
+        }
+
+        let (freq_a, freq_b) = {
+            let dev = mcp.connect(Some(&a)).await.expect("reconnect to A");
+            let fa = format!("{:?}", dev.i2c_get_config().await.expect("read A config"));
+            drop(dev);
+            let dev = mcp.connect(Some(&b)).await.expect("reconnect to B");
+            let fb = format!("{:?}", dev.i2c_get_config().await.expect("read B config"));
+            (fa, fb)
+        };
+
+        assert_eq!(freq_a, format!("{:?}", I2cFrequency::Fast));
+        assert_eq!(
+            freq_b,
+            format!("{:?}", I2cFrequency::Standard),
+            "configuration written to A leaked onto B"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires two attached boards; see module docs"]
+    async fn a_busy_board_does_not_block_the_other() {
+        use std::time::Duration;
+        let (a, b) = serials();
+        let mcp = GalloMcp::new(None);
+
+        // Hold a live connection to A for the whole test.
+        let _held = mcp.connect(Some(&a)).await.expect("connect to A");
+
+        // B must still be reachable. Before per-board locking this timed out:
+        // one server-wide mutex meant any open connection blocked every other
+        // call, so a long gpio_wait on A stalled all traffic to B.
+        let opened = tokio::time::timeout(Duration::from_secs(5), mcp.connect(Some(&b)))
+            .await
+            .expect("connecting to B timed out while A was held");
+        let dev_b = opened.expect("connect to B");
+        assert_eq!(dev_b.serial(), Some(b.as_str()));
+    }
+}
