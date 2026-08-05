@@ -759,12 +759,23 @@ mod tests {
 ///
 /// Ignored by default and never run in CI: they need two Pico de Gallo boards
 /// attached with **distinguishable I2C buses** (e.g. one bare, one with a
-/// sensor), and their serials in the environment.
+/// sensor), and their serials in the environment. `gallo list` prints the
+/// serials. Which board is A and which is B does not matter — no test assumes
+/// the sensor is on either.
 ///
 /// ```console
-/// $ GALLO_MCP_TEST_SERIAL_A=9A54ED7E3A1D9D98 \
-///   GALLO_MCP_TEST_SERIAL_B=5256657D8A5D7F03 \
+/// $ GALLO_MCP_TEST_SERIAL_A=5256657D8A5D7F03 \
+///   GALLO_MCP_TEST_SERIAL_B=568E9AAEC72B0D49 \
 ///   cargo test -p gallo-mcp --locked -- --ignored --test-threads=1
+/// ```
+///
+/// PowerShell needs the separate form — a `VAR=value cmd` prefix sets nothing
+/// there, it is parsed as an argument:
+///
+/// ```console
+/// PS> $env:GALLO_MCP_TEST_SERIAL_A="5256657D8A5D7F03"
+/// PS> $env:GALLO_MCP_TEST_SERIAL_B="568E9AAEC72B0D49"
+/// PS> cargo test -p gallo-mcp --locked -- --ignored --test-threads=1
 /// ```
 ///
 /// The distinguishable-buses requirement is load-bearing, not a convenience.
@@ -774,21 +785,80 @@ mod tests {
 /// whether selection works or not, so the assertion stops discriminating: it
 /// fails on a correct server exactly as it does on a broken one.
 ///
-/// `--test-threads=1` is required: each test builds its own [`GalloMcp`], so
-/// each has its own connection mutex and concurrent tests would race for the
-/// exclusive USB claim.
+/// **No other host process may hold either board.** A `gallo` CLI session or a
+/// second `gallo-mcp` takes the same exclusive USB claim, and the suite fails
+/// with "failed to open device after 5 attempts". Note also that
+/// [`GalloMcp::connect`] tears down *every* GPIO subscription on whichever
+/// board it touches, including subscriptions owned by other processes
+/// (AGENTS.md §13.17, 2026-05-29) — so running this suite silently breaks an
+/// unrelated pin watch.
+///
+/// `--test-threads=1` is still the documented invocation, but it is now
+/// belt-and-braces rather than load-bearing: `BENCH` serialises the suite
+/// whether or not the flag is passed.
 #[cfg(test)]
 mod hardware {
     use crate::{Device, GalloMcp};
     use rmcp::ErrorData;
 
-    /// The two board serials, or a loud failure if they are not configured.
+    /// Serialises the whole suite over the bench.
+    ///
+    /// `--test-threads=1` is the documented invocation, but forgetting it must
+    /// not produce a red that reads like a driver fault. Each test builds its
+    /// own [`GalloMcp`], hence its own lock map, so nothing else serialises
+    /// the exclusive USB claim: `a_busy_board_does_not_block_the_other` holds
+    /// board A open by design, and a concurrent test would burn
+    /// [`open_with_retry`]'s whole 5 × 100 ms budget against a claim that is
+    /// not coming back, then fail with "Access is denied" — the symptom of
+    /// AGENTS.md §13.17's 2026-07-20 row, which was a genuine double-claim
+    /// bug and would be misread as one again.
+    ///
+    /// A tokio mutex rather than a `std` one because it is held across the
+    /// whole of each async test body. It is shared across runtimes — each
+    /// `#[tokio::test]` builds its own current-thread runtime — which is
+    /// supported: the mutex holds no runtime handle, and a waiter is woken
+    /// through a plain [`Waker`], which is runtime-agnostic.
+    ///
+    /// Unlike `std::sync::Mutex`, this one does not poison, so a panicking
+    /// test releases the bench to the next one instead of failing the rest of
+    /// the suite for a reason unrelated to what it is testing.
+    ///
+    /// [`open_with_retry`]: crate::open_with_retry
+    /// [`Waker`]: std::task::Waker
+    static BENCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// The two board serials, or a loud failure if the bench is not set up.
+    ///
+    /// Checks the boards are actually attached, not merely that two different
+    /// strings were supplied. Without that, a stale or mistyped serial fails
+    /// later inside a *product* assertion — and
+    /// `a_pinned_server_serves_its_own_board_two_ways` does something worse
+    /// than fail: with B absent its premise evaporates silently, because
+    /// `resolve_target` returns A as the *sole* attached board rather than as
+    /// the pinned one, so the test passes having proven nothing about
+    /// pinning.
     fn serials() -> (String, String) {
         let a = std::env::var("GALLO_MCP_TEST_SERIAL_A")
             .expect("set GALLO_MCP_TEST_SERIAL_A to the first board's serial");
         let b = std::env::var("GALLO_MCP_TEST_SERIAL_B")
             .expect("set GALLO_MCP_TEST_SERIAL_B to the second board's serial");
         assert_ne!(a, b, "the two serials must differ");
+
+        // Separate a misconfigured bench from a selection defect *before* any
+        // test can blame the latter for the former. Past this line, every
+        // failure is about the server, not about what is plugged in.
+        let attached: Vec<String> = crate::attached_serials().into_iter().flatten().collect();
+        for (var, want) in [
+            ("GALLO_MCP_TEST_SERIAL_A", &a),
+            ("GALLO_MCP_TEST_SERIAL_B", &b),
+        ] {
+            assert!(
+                attached.iter().any(|s| s == want),
+                "{var}={want} is not attached; attached serials are {attached:?}. \
+                 Fix the environment, not the server (`gallo list`)."
+            );
+        }
+
         (a, b)
     }
 
@@ -820,30 +890,58 @@ mod hardware {
     #[tokio::test]
     #[ignore = "requires two attached boards; see module docs"]
     async fn a_bare_call_is_refused_and_lists_both_serials() {
+        let _bench = BENCH.lock().await;
         let (a, b) = serials();
         let err = refusal(
             GalloMcp::new(None).connect(None).await,
             "two boards attached: a bare connect must be refused",
         );
-        assert!(err.message.contains("serial_number"), "{}", err.message);
-        assert!(err.message.contains(&a), "{}", err.message);
-        assert!(err.message.contains(&b), "{}", err.message);
+        assert!(
+            err.message.contains("serial_number"),
+            "the refusal does not name the argument that fixes it: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&a),
+            "serial A ({a}) missing from: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&b),
+            "serial B ({b}) missing from: {}",
+            err.message
+        );
     }
 
     #[tokio::test]
     #[ignore = "requires two attached boards; see module docs"]
     async fn each_serial_reaches_its_own_board() {
+        use pico_de_gallo_lib::I2cFrequency;
+        let _bench = BENCH.lock().await;
         let (a, b) = serials();
         let mcp = GalloMcp::new(None);
 
         let scan_a = {
             let dev = mcp.connect(Some(&a)).await.expect("connect to A");
             assert_eq!(dev.serial(), Some(a.as_str()));
+            // Normalise the bus before scanning. `i2c_frequency` is
+            // boot-lifetime firmware state, so an aborted earlier run — or a
+            // `gallo` session — can leave a board at 400 kHz, where a marginal
+            // bus drops the sensor and this test goes red blaming selection,
+            // one run removed from the cause. Standard is the power-on
+            // default, so this restores rather than imposes, and it rides the
+            // connection the test already holds: no extra connect.
+            dev.i2c_set_config(I2cFrequency::Standard)
+                .await
+                .expect("normalise A");
             dev.i2c_scan(false).await.expect("scan A")
         };
         let scan_b = {
             let dev = mcp.connect(Some(&b)).await.expect("connect to B");
             assert_eq!(dev.serial(), Some(b.as_str()));
+            dev.i2c_set_config(I2cFrequency::Standard)
+                .await
+                .expect("normalise B");
             dev.i2c_scan(false).await.expect("scan B")
         };
 
@@ -859,19 +957,29 @@ mod hardware {
     #[tokio::test]
     #[ignore = "requires two attached boards; see module docs"]
     async fn an_unknown_serial_is_refused_with_the_alternatives() {
+        let _bench = BENCH.lock().await;
         let (a, b) = serials();
         let err = refusal(
             GalloMcp::new(None).connect(Some("BOGUSSERIAL")).await,
             "an unattached serial must be refused",
         );
         assert!(err.message.contains("BOGUSSERIAL"), "{}", err.message);
-        assert!(err.message.contains(&a), "{}", err.message);
-        assert!(err.message.contains(&b), "{}", err.message);
+        assert!(
+            err.message.contains(&a),
+            "serial A ({a}) missing from: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&b),
+            "serial B ({b}) missing from: {}",
+            err.message
+        );
     }
 
     #[tokio::test]
     #[ignore = "requires two attached boards; see module docs"]
     async fn a_pinned_server_serves_its_own_board_two_ways() {
+        let _bench = BENCH.lock().await;
         let (a, _b) = serials();
         let mcp = GalloMcp::new(Some(&a));
 
@@ -889,20 +997,34 @@ mod hardware {
     #[tokio::test]
     #[ignore = "requires two attached boards; see module docs"]
     async fn a_pinned_server_cannot_be_talked_onto_the_other_board() {
+        let _bench = BENCH.lock().await;
         let (a, b) = serials();
         let err = refusal(
             GalloMcp::new(Some(&a)).connect(Some(&b)).await,
             "a pinned server must refuse another board",
         );
-        assert!(err.message.contains("--serial-number"), "{}", err.message);
-        assert!(err.message.contains(&a), "{}", err.message);
-        assert!(err.message.contains(&b), "{}", err.message);
+        assert!(
+            err.message.contains("--serial-number"),
+            "the refusal does not name the flag that pinned the server: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&a),
+            "pinned serial A ({a}) missing from: {}",
+            err.message
+        );
+        assert!(
+            err.message.contains(&b),
+            "refused serial B ({b}) missing from: {}",
+            err.message
+        );
     }
 
     #[tokio::test]
     #[ignore = "requires two attached boards; see module docs"]
     async fn configuration_set_on_one_board_does_not_leak_to_the_other() {
         use pico_de_gallo_lib::I2cFrequency;
+        let _bench = BENCH.lock().await;
         let (a, b) = serials();
         let mcp = GalloMcp::new(None);
 
@@ -943,19 +1065,25 @@ mod hardware {
         // Put both boards back. `i2c_frequency` lives in the firmware's
         // boot-lifetime `Context` and no host path resets it — the
         // connect-time `system_reset_subscriptions` walks GPIO slots only — so
-        // without this, A stays at 400 kHz for whatever runs next. libtest's
-        // order is collection order, not a guarantee, and on a marginal bus
-        // 400 kHz can drop a sensor from `i2c_scan`, which would fail
-        // `each_serial_reaches_its_own_board` on a correct server with a
-        // message blaming selection. `Standard` is the firmware's own power-on
+        // without this, A stays at 400 kHz for whatever runs next.
+        //
+        // "Next" is not hypothetical: libtest sorts filtered tests by name, so
+        // this test runs 6th and `each_serial_reaches_its_own_board` runs 7th.
+        // The hazard is adjacent and certain, not distant and improbable. On a
+        // marginal bus 400 kHz drops the sensor from `i2c_scan`, which would
+        // fail the one load-bearing test on a correct server with a message
+        // blaming selection. `Standard` is the firmware's own power-on
         // default, so this restores the bench rather than imposing a choice.
         //
         // Separate scopes because a board's connection lock is not reentrant:
         // each guard must drop before the next `connect`.
         //
-        // Skipped if an assertion above fails. That run already has an
-        // explicit failure naming the leak, so the misreading this guards
-        // against is not the one a reader would reach for.
+        // Skipped when an assertion above fails, and firmware state outlives
+        // the process — so this alone would still leave a failed run's 400 kHz
+        // in place for the *next* invocation. That is why test 7 normalises
+        // its own buses instead of trusting this; this block is the
+        // belt-and-braces half, keeping the bench clean for a `gallo` session
+        // or anything else that follows.
         {
             let dev = mcp.connect(Some(&a)).await.expect("reconnect to A");
             dev.i2c_set_config(I2cFrequency::Standard)
@@ -974,6 +1102,7 @@ mod hardware {
     #[ignore = "requires two attached boards; see module docs"]
     async fn a_busy_board_does_not_block_the_other() {
         use std::time::Duration;
+        let _bench = BENCH.lock().await;
         let (a, b) = serials();
         let mcp = GalloMcp::new(None);
 
