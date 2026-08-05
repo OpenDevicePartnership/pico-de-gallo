@@ -124,16 +124,15 @@ always sets one from the chip ID, but the type permits `None`.
 async fn connect(&self, requested: Option<&str>) -> Result<Device, ErrorData>
 ```
 
-1. Take the existing connection mutex (unchanged; rmcp dispatches tool calls
-   concurrently).
-2. Enumerate via `pico_de_gallo_lib::list_devices()`.
-3. `resolve_target(&attached, self.serial_number.as_deref(), requested)`.
-4. Open **by serial** (`try_new_with_serial_number`), keeping today's bounded
+1. `resolve_target(&attached, self.serial_number.as_deref(), requested)` over
+   `pico_de_gallo_lib::list_devices()`.
+2. Take that board's connection lock.
+3. Open **by serial** (`try_new_with_serial_number`), keeping today's bounded
    claim-retry loop for the Windows async-release window (AGENTS.md §13.17).
    `try_new()` is used only for the `Ok(None)` degenerate case.
-5. `validate()`, `system_reset_subscriptions()`.
-6. Store the resolved serial on the `Device` guard so the envelope helper can read
-   it.
+4. `validate()`, `system_reset_subscriptions()`.
+5. Store the resolved serial on the `Device` guard so the envelope helper can
+   read it.
 
 Enumeration runs on **every** call, including the pinned case, so a missing pinned
 board yields `PinnedNotFound` naming the pin rather than a bare enumeration
@@ -146,6 +145,19 @@ Two consequences:
 - **`NOT_FOUND` after a successful resolve now means the board was unplugged
   mid-call**, not "no device attached". That path gets its own message; reusing
   today's text would be misleading.
+
+> **Amended during implementation (Task 7b).** The numbered steps above were
+> originally "Take the existing connection mutex (unchanged; rmcp dispatches
+> tool calls concurrently)" followed by enumerate and resolve. The server-wide
+> mutex was replaced with a map of per-board locks, which inverts the first two
+> steps: the lock is keyed on the board, so the target has to be resolved
+> before the right lock can be taken. Enumeration takes no USB claim, so it
+> needs no lock. The steps above have been rewritten to the shipped order. The
+> gain is that a call now waits only on the board it addressed — a long
+> `gpio_wait_*` no longer stalls calls to a different board, which was the
+> point of addressing boards per call. The cost is that the enumeration result
+> is no longer bounded by how long an open takes but by how long another call
+> holds that board's lock.
 
 ## Response envelope
 
@@ -382,6 +394,15 @@ drives the new code directly.
 **Out of scope, noted:** AGENTS.md §2's repo layout still lists six host crates and
 omits `pico-de-gallo-mcp` entirely — pre-existing drift from PR #86, not caused by
 this work.
+
+> **Amended during implementation (Task 10).** This was fixed on the branch
+> after all. The documentation pass found that AGENTS.md's whole release path
+> predated the crate, not just §2's layout tree, and that leaving it would have
+> a maintainer publish `gallo-mcp` against a stale `pico-de-gallo-lib` at the
+> next wire-protocol release. §2, §5.1, §10, §13.17 and §15.1 were corrected
+> first, then the release path itself — §4 rule 12, §5.4, §5.5, §6.5 and §12 —
+> and finally `.github/RELEASE.md`, which §12 designates as the full release
+> checklist and which repeated every one of the same omissions.
 
 ## Scope and release
 

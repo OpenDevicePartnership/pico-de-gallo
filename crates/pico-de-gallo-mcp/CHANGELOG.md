@@ -32,6 +32,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `--serial-number` now pins the server: a tool call naming a different board
   is refused, and `serial_number` stays optional however many boards are
   attached.
+- Two or more attached boards reporting the *same* serial number are now
+  refused rather than resolved to whichever enumerated first — naming that
+  serial no longer identifies a board. This affects one bench configuration:
+  the firmware falls back to an all-zero serial when the OTP chip-ID read
+  fails, so two such boards collide, and `--serial-number` does not rescue it
+  because the pinned path refuses too. Detach all but one.
+- Opening a board still resets **every** GPIO subscription on it, including
+  ones owned by other host processes. Per-call selection widens which board
+  that reaches: previously only the board the server was bound to, now any
+  attached board named by any call — including from the `readOnlyHint` tools
+  (`status`, `device_info`, `version`, `ping`, `i2c_scan`). `list_devices`
+  opens no board and is unaffected.
 - `status` no longer reports `attached: false` when selection fails. It never
   errors, and gained `serial_number`, `ambiguous`, `available`, `pinned`, and a
   `reason` for an unresolved target, alongside the existing `firmware_version`,

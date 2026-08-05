@@ -346,6 +346,34 @@ accordingly.**
 > confirmation. If the board is wired to anything you care about, run the
 > server behind a client that honors `destructiveHint`.
 
+### Every call resets that board's GPIO subscriptions
+
+Opening a board tears down **every** GPIO edge subscription on it,
+including ones owned by other host processes. A `gallo` CLI session or a
+user program watching a pin loses that watch the moment a tool call
+touches the same board.
+
+That is the documented host protocol rather than a bug — it is how a
+host recovers pins stranded by a previous host that died mid-watch — but
+two things about it are easy to miss:
+
+- **`readOnlyHint` does not cover it.** `status`, `device_info`,
+  `version`, `ping`, and `i2c_scan` are annotated read-only and appear
+  in the read-only rows of the catalog below, yet each opens a board and
+  so each resets its subscriptions. A client gating on `destructiveHint`
+  will not prompt for any of them.
+- **Per-call selection widened the blast radius.** It used to reach only
+  the single board the server was bound to. Now any call can name any
+  attached board, so on a multi-board bench a call carrying
+  `serial_number` for board B disturbs board B — even if every previous
+  call in the session went to board A.
+
+`list_devices` is the one exception: it opens no board, so it disturbs
+nothing.
+
+If a long-lived watch matters, pin the server with `-s` to keep it away
+from the board running the watch.
+
 ## Validation
 
 The server was validated on real hardware: a Pico de Gallo (serial

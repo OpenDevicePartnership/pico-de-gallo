@@ -17,14 +17,14 @@ publish workflows then take over.
 Tag-triggered workflows fire on pushed tags — these are unchanged and
 remain the publish mechanism:
 
-| Workflow                  | Tag trigger                                                            | Produces                                    |
-|---------------------------|-----------------------------------------------------------------------|---------------------------------------------|
-| `release-crates.yml`      | `internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`      | `cargo publish` to crates.io                |
-| `release-application.yml` | `application-v*`                                                       | `gallo` binaries (Linux/Windows/macOS)      |
-| `release-ffi.yml`         | `ffi-v*`                                                               | `.so` / `.dll` / `.dylib` + C header        |
-| `release-firmware.yml`    | `firmware-v*` (and PRs, build-only)                                    | `.uf2` + `.elf`                             |
-| `release-pyco.yml`        | `pyco-v*`                                                              | Python wheels (attached to GitHub Release)  |
-| `release-hardware.yml`    | `hardware-v*`                                                          | KiCad gerbers, schematic PDF                |
+| Workflow                  | Tag trigger                                                                 | Produces                                   |
+|---------------------------|-----------------------------------------------------------------------------|--------------------------------------------|
+| `release-crates.yml`      | `internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`, `mcp-v*` | `cargo publish` to crates.io               |
+| `release-application.yml` | `application-v*`                                                            | `gallo` binaries (Linux/Windows/macOS)     |
+| `release-ffi.yml`         | `ffi-v*`                                                                    | `.so` / `.dll` / `.dylib` + C header       |
+| `release-firmware.yml`    | `firmware-v*` (and PRs, build-only)                                         | `.uf2` + `.elf`                            |
+| `release-pyco.yml`        | `pyco-v*`                                                                   | Python wheels (attached to GitHub Release) |
+| `release-hardware.yml`    | `hardware-v*`                                                               | KiCad gerbers, schematic PDF               |
 
 You create the tag; the workflow does the rest. **Creating and
 pushing the tag is now a manual step** (release-please used to create
@@ -45,6 +45,7 @@ file to keep in sync anymore. Edit the version directly.
 | `pico-de-gallo-hal`      | `hal-v*`         | crates.io           |
 | `pico-de-gallo-ffi`      | `ffi-v*`         | crates.io           |
 | `gallo` (CLI)            | `application-v*` | crates.io + binaries|
+| `gallo-mcp` (MCP server) | `mcp-v*`         | crates.io           |
 | `pyco-de-gallo`          | `pyco-v*`        | PyPI (wheels)       |
 | `pico-de-gallo-firmware` | `firmware-v*`    | `.uf2` / `.elf`     |
 | KiCad gerbers            | `hardware-v*`    | gerbers / PDF       |
@@ -52,6 +53,7 @@ file to keep in sync anymore. Edit the version directly.
 Common typos that break a release: `lib-v*` (it's `library-v*`),
 `app-v*` (it's `application-v*`), `fw-v*` (it's `firmware-v*`). The
 tag prefix is `library`/`application`, not the crate directory name.
+`gallo-mcp` lives in `crates/pico-de-gallo-mcp/` but tags as `mcp-v*`.
 
 ## Cross-crate dependency graph
 
@@ -63,13 +65,14 @@ rewriting them anymore):
 internal ──► lib ──► hal
                  ├─► ffi
                  ├─► application (gallo)
+                 ├─► mcp (gallo-mcp)
                  └─► pyco
 internal ──► firmware        (separate workspace)
 ```
 
 crates.io publish order is therefore: `internal → lib → {hal, ffi,
-application}`. `pyco` publishes to PyPI (not crates.io); `firmware`
-produces artifacts only.
+application, mcp}`. `pyco` publishes to PyPI (not crates.io);
+`firmware` produces artifacts only.
 
 ## Wire-protocol lockstep invariant
 
@@ -82,7 +85,7 @@ protocol changes (see AGENTS.md §6):
   change),
 - bump **every other released component in the same release** so the
   firmware encodes the new schema version and every host surface sees
-  the new types: `lib`, `hal`, `ffi`, `application`, `pyco`,
+  the new types: `lib`, `hal`, `ffi`, `application`, `mcp`, `pyco`,
   `firmware`.
 
 Nothing enforces this for you now — it is on the maintainer. A
@@ -105,7 +108,7 @@ component. Adjust the crate set for a non-wire, single-crate release.
    `version = "..."` in its `pico-de-gallo-* = { version = "...",
    path = "..." }` lines to match the new versions. Dependents:
    - `lib` → `internal`
-   - `hal`, `ffi`, `application`, `pyco` → `lib`
+   - `hal`, `ffi`, `application`, `mcp`, `pyco` → `lib`
    - `firmware` → `internal` (separate workspace — do not forget it)
 
 4. **Update `CHANGELOG.md`** by hand, following
@@ -152,6 +155,7 @@ component. Adjust the crate set for a non-wire, single-crate release.
    git tag hal-v0.7.0
    git tag ffi-v0.8.0
    git tag application-v0.8.0
+   git tag mcp-v0.2.0
    git tag pyco-v0.5.0
    git tag firmware-v0.11.0
    git push upstream --tags
@@ -174,8 +178,8 @@ component. Adjust the crate set for a non-wire, single-crate release.
   commit, delete and re-create the tag, and verify with
   `git show <tag>:.github/workflows/release-crates.yml`.
 - **`CARGO_REGISTRY_TOKEN`** must have `publish-update` scope for the
-  five published crate names (internal, lib, hal, ffi, gallo). The
-  crates already exist; `publish-new` is not needed.
+  six published crate names (internal, lib, hal, ffi, gallo,
+  gallo-mcp). The crates already exist; `publish-new` is not needed.
 - **Don't forget the firmware.** It is a separate workspace with its
   own `Cargo.lock`; its `pico-de-gallo-internal` dep spec and lock
   entry must be bumped in the same release or CI's `lockfile` job
