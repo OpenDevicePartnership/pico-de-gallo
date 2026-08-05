@@ -152,7 +152,7 @@ editing on Windows with CRLF.
     *are* deliberately cutting a release, a version bump is never
     isolated: in the **same commit** you must also (a) bump the
     matching `version = "..."` dep specs in every dependent crate
-    (`lib`→`internal`; `hal`/`ffi`/`application`/`pyco`→`lib`;
+    (`lib`→`internal`; `hal`/`ffi`/`application`/`mcp`/`pyco`→`lib`;
     `firmware`→`internal`), (b) hand-write the `CHANGELOG.md`
     entry, (c) regenerate **both** `Cargo.lock`s, and (d) after merge,
     push the per-component tags that fire the publish workflows.
@@ -239,12 +239,15 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 | `release-firmware.yml`    | `firmware-v*` tags **and PRs**     | Builds `.uf2` and `.elf`. PR runs are **build-only** (skip-upload) so tooling breakage is caught at PR time |
 | `release-hardware.yml`    | `hardware-v*` tags                 | KiCad ERC/DRC, gerbers, schematic PDF                                                                       |
 | `release-pyco.yml`        | `pyco-v*` tags                     | Builds Python wheels (CPython 3.8–3.14, Linux/Win/macOS), attaches to GitHub Release                        |
-| `release-crates.yml`      | `internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*` tags | Publishes the matching crate to crates.io                                       |
+| `release-crates.yml`      | `internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`, `mcp-v*` tags | Publishes the matching crate to crates.io                     |
 
 ### 5.5 Test baseline
 
-About **300 unit tests + 3 doctests** across the host workspace,
-concentrated in `pico-de-gallo-internal` and `pico-de-gallo-lib`.
+About **432 unit tests + 7 doctests** across the host workspace,
+concentrated in `pico-de-gallo-internal` (149), `pico-de-gallo-mcp`
+(98), and `pico-de-gallo-ffi` (84). Seven of the `pico-de-gallo-mcp`
+tests are `#[ignore]`d because they need two boards attached; run
+them with `cargo test -p gallo-mcp -- --ignored`.
 `pyco-de-gallo` currently has no Rust-side tests. If you add code,
 add tests next to it; round-trip serialization tests are the norm
 for wire types.
@@ -361,14 +364,14 @@ A wire-protocol change requires bumping in the **same release cycle**:
 1. `pico-de-gallo-internal` (with `feat!` / `BREAKING CHANGE:`),
 2. `pico-de-gallo-firmware` (encodes the new schema version),
 3. `pico-de-gallo-lib`, `pico-de-gallo-hal`, `pico-de-gallo-ffi`,
-   `pico-de-gallo-app`, `pyco-de-gallo` (so every host surface sees
-   the new types).
+   `pico-de-gallo-app`, `pico-de-gallo-mcp`, `pyco-de-gallo` (so every
+   host surface sees the new types).
 
 **Version bumps are manual.** There is no release automation
 (release-please was removed — see §12 and `.github/RELEASE.md`). When
 the wire protocol changes, a maintainer cuts a release that, in one
-commit, bumps `[package].version` on **all seven** released crates
-(internal, library, hal, ffi, application, pyco, firmware) to the
+commit, bumps `[package].version` on **all eight** released crates
+(internal, library, hal, ffi, application, mcp, pyco, firmware) to the
 same new version (pre-1.0: a minor bump for any wire change), because
 they are wire-coupled and must never drift in version space.
 
@@ -378,7 +381,7 @@ That single release commit must also:
   them for you now. Each dependent's `pico-de-gallo-X = { version =
   "Y.Z", path = "..." }` spec must point at the new version:
   - `lib` → `internal`
-  - `hal`, `ffi`, `application`, `pyco` → `lib`
+  - `hal`, `ffi`, `application`, `mcp`, `pyco` → `lib`
   - `firmware` → `internal` (separate workspace — easy to forget)
 - **Hand-write the `CHANGELOG.md`** entries (Keep a Changelog).
 - **Regenerate both `Cargo.lock`s** (`cargo update --workspace` at
@@ -389,7 +392,7 @@ That single release commit must also:
 
 After the release commit merges, push the per-component tags
 (`internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`,
-`pyco-v*`, `firmware-v*`) to fire the publish workflows. See §12 and
+`mcp-v*`, `pyco-v*`, `firmware-v*`) to fire the publish workflows. See §12 and
 `.github/RELEASE.md` for the full checklist.
 
 Nothing enforces wire coupling for you: bumping the version numbers
@@ -576,7 +579,7 @@ tags. The full checklist lives in
 
 1. Bump `[package].version` in each crate being released, and the
    matching `version = "..."` dep specs in every dependent
-   (`lib`→`internal`; `hal`/`ffi`/`application`/`pyco`→`lib`;
+   (`lib`→`internal`; `hal`/`ffi`/`application`/`mcp`/`pyco`→`lib`;
    `firmware`→`internal`).
 2. Hand-write the `CHANGELOG.md` entries (Keep a Changelog).
 3. Regenerate both `Cargo.lock`s and verify `cargo check --locked`
@@ -596,6 +599,7 @@ tags. The full checklist lives in
 | `pico-de-gallo-hal`      | `hal-v*`         | crates.io            |
 | `pico-de-gallo-ffi`      | `ffi-v*`         | crates.io            |
 | `gallo` (CLI)            | `application-v*` | crates.io + binaries |
+| `gallo-mcp` (MCP server) | `mcp-v*`         | crates.io            |
 | `pyco-de-gallo`          | `pyco-v*`        | PyPI (wheels)        |
 | `pico-de-gallo-firmware` | `firmware-v*`    | `.uf2` / `.elf`      |
 | KiCad gerbers            | `hardware-v*`    | gerbers / PDF        |

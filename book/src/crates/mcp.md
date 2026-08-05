@@ -64,6 +64,12 @@ response but two. `list_devices` opens no board at all, and `status`
 reports its serial as a top-level field of its own result rather than
 nesting a serial under a serial.
 
+The envelope's `serial_number` is `null` in exactly one case: the sole
+attached board reports no USB serial number. The field is always
+present, so `null` there means "a board that has no serial answered" —
+never "this response was not enveloped". `status`'s `available` list
+carries `null` entries for the same reason.
+
 How the target is chosen:
 
 | Boards attached | `serial_number` | Result |
@@ -72,7 +78,7 @@ How the target is chosen:
 | 1 | omitted | that board |
 | 1 | given | that board, if it matches |
 | ≥2 | omitted | **error**, listing the available serials |
-| ≥2 | given | the named board |
+| ≥2 | given | the named board, if exactly one matches |
 
 With one board attached nothing changes — omit `serial_number` and it
 just works. With two or more, omitting it is an error rather than a
@@ -86,6 +92,18 @@ Available: 5256657D8A5D7F03, 568E9AAEC72B0D49
 That is deliberate. Guessing turns a recoverable mistake into a
 confident wrong answer with no signal that anything went wrong; the
 error names the serials, so the next call succeeds.
+
+Two boards can also report the *same* serial, which is refused for the
+same reason — naming it no longer identifies a board:
+
+```text
+2 attached Pico de Gallo devices report serial number '0000000000000000'; they cannot be told apart. Detach all but one and retry.
+```
+
+That is reachable rather than hypothetical. The firmware derives the USB
+serial from the RP2350 chip ID and falls back to all-zeros when the OTP
+read fails, which its own comment notes happens on some dev boards, so
+two such boards collide. No argument fixes it; detach one.
 
 A server started with `-s` is **pinned**, and the two `≥2` rows above no
 longer apply: `serial_number` is optional again however many boards are
@@ -138,9 +156,12 @@ ambiguous:
 }
 ```
 
-`ambiguous` answers "would a call that omits `serial_number` fail?", so
-it stays true even when this particular `status` call named a board.
-`reason` is present only when no board was reached.
+`ambiguous` answers "would a call that omits `serial_number` be
+*ambiguous*?" — not "would it fail?". A bare call also fails with no
+board attached, and when the server is pinned to a board that is not
+attached; `ambiguous` is `false` in both. It stays true even when this
+particular `status` call named a board. `reason` is present only when
+no board was reached.
 
 ## Concurrency
 
@@ -209,7 +230,7 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 | Tool | Description |
 |---|---|
 | `list_devices` | List connected Pico de Gallo boards |
-| `status` | Report attach state and firmware/schema version |
+| `status` | Which board is reachable, why not when none is, plus firmware/schema version |
 | `device_info` | Firmware version, schema version, capabilities |
 | `version` | Firmware version |
 | `ping` | Echo a value (liveness check) |
@@ -299,6 +320,13 @@ and event streaming is out of scope for v1.
 legal and means a non-blocking poll that returns whatever is already
 buffered. The asymmetry is deliberate — for an edge wait, `0` would mean
 an unbounded wait.
+
+`uart_read` is also one of the twelve tools that hard-fail on a
+`hw-rev1` board: that revision supports only I<sup>2</sup>C, SPI, GPIO,
+and PWM, so every `uart_*`, `adc_*`, and `onewire_*` call returns
+`Unsupported` there. Two boards on one bench can be different
+revisions, so call `device_info` per board rather than assuming they
+are interchangeable.
 
 ## Security
 
