@@ -24,6 +24,64 @@
 | `crates/pico-de-gallo-mcp/src/{i2c,spi,uart,gpio,pwm,adc,onewire}.rs` | `serial_number` on each params struct; thread into `connect`; return through the envelope. |
 | `crates/pico-de-gallo-mcp/README.md`, `book/src/crates/mcp.md`, `crates/pico-de-gallo-mcp/CHANGELOG.md`, `AGENTS.md` | Documentation parity (AGENTS.md §15.1). |
 
+## Hardware Verification Record
+
+Run 2026-07-29 on Windows against two boards: `5256657D8A5D7F03` (I2C device at
+`0x48`, firmware 0.10.1, schema 0.6, hw rev 2) and `568E9AAEC72B0D49` (bare
+bus). Distinguishable buses, so the load-bearing test can discriminate.
+
+**Automated:** all seven `#[ignore]`d tests pass from a cold build
+(`cargo clean -p gallo-mcp` first), alongside 91 unit tests.
+
+**Mutation control.** Reintroducing issue #89's "first match" behaviour —
+replacing the resolved serial with `attached_serials().into_iter().flatten().next()`
+— fails **3 of the 7**: `each_serial_reaches_its_own_board`,
+`configuration_set_on_one_board_does_not_leak_to_the_other`, and
+`a_busy_board_does_not_block_the_other`. The suite genuinely detects the bug it
+was written for, rather than passing vacuously.
+
+Worth recording: the mutation was caught by the `dev.serial()` assertion the
+reviews had written off as tautological. It is tautological against a
+*selection* regression, because `Device.serial` is assigned from
+`resolve_target`'s output — but a change that bypasses resolution entirely, as
+the original bug did, makes it bite.
+
+**Negative control.** Pointing `GALLO_MCP_TEST_SERIAL_B` at an unattached serial
+fails the bench check, not a product assertion: *"GALLO_MCP_TEST_SERIAL_B=… is
+not attached; attached serials are […]. Fix the environment, not the server
+(`gallo list`)."*
+
+**End-to-end through the real binary.** The seven tests call `connect` directly,
+so the MCP tool handlers were separately exercised by driving
+`target/debug/gallo-mcp.exe` over stdio with JSON-RPC. This is issue #89's exact
+scenario, now correct:
+
+| Boards | Pin | Call | Result |
+|---|---|---|---|
+| 2 | — | `i2c_scan` | **refused**, both serials listed |
+| 2 | — | `i2c_scan(A)` | `{"serial_number":"5256657D8A5D7F03","result":{"addresses":["0x48"],…}}` |
+| 2 | — | `i2c_scan(B)` | `{"serial_number":"568E9AAEC72B0D49","result":{"addresses":[],…}}` |
+| 2 | — | `status` | `ambiguous:true`, both in `available`, `reason` set |
+| 2 | A | `i2c_scan` / `i2c_scan(A)` | both use A |
+| 2 | A | `i2c_scan(B)` | **refused**: cannot address another board |
+| 1 | — | `i2c_scan` | succeeds bare — single-board path frictionless |
+| 1 | absent board | `i2c_scan` | **refused**, naming the pin and what is available |
+| 0 | — | any | *"No Pico de Gallo device attached: connect one and retry."* |
+| 0 | — | `list_devices` | `{"devices":[],…}` — the server still runs with no board |
+
+The pinned-but-absent case empirically justifies the top-level `pinned` field:
+no *entry* can carry the per-entry flag when the pinned board is not attached,
+yet the response still reports `"pinned":"568E9AAEC72B0D49"`.
+
+**Cross-check.** `i2c_write_read` through MCP returned `0x0B,0x8E`; `gallo i2c
+write-read -a 0x48 -b 0x00 -c 2` returned `0b 8e`. Byte-identical, preserving
+the property the book's validation section asserts.
+
+**Still unverified after all of this:** that every one of the 42 handlers passes
+its *own* `serial_number` rather than some other non-`None` value. A handler
+passing `self.pinned_serial()` would compile, pass the schema guard, pass the
+source scan, and pass all seven hardware tests. Only review covers that.
+
 ## Amendments During Execution
 
 Task 1's code review found a real hole the plan missed, so the shipped
