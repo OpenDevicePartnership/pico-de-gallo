@@ -18,7 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   while others are. A mistyped pin previously started a healthy-looking server
   that then failed every device call for the whole session. It stays a warning,
   not a startup error: running with no board attached and plugging one in
-  mid-session is supported. Requires `RUST_LOG` to be set (e.g. `RUST_LOG=warn`).
+  mid-session is supported. Emitted by default on stderr, so it reaches
+  operators whose MCP client sets no `RUST_LOG`; `RUST_LOG` still overrides
+  verbosity when set.
 
 ### Changed
 

@@ -39,8 +39,7 @@ interactively.
   serial is refused. This is the way to scope an agent session to a
   single board. If the pinned serial is not among the attached boards at
   startup, the server logs a warning naming the serials it did find, and
-  starts anyway — see below. Set `RUST_LOG=warn` to see it; logging is
-  off by default.
+  starts anyway — see below.
 - **Per-call connection:** the server holds no persistent USB claim. Each
   tool call opens the board, runs, and releases it when the call completes,
   so the device is free for the `gallo` CLI or other host processes between
@@ -64,6 +63,13 @@ no board is attached at all — that last case is indistinguishable from
 board *is* attached and the pin does not match it, which in practice
 means a typo. Without it a mistyped pin starts a server that looks
 healthy and then fails every device call for the rest of the session.
+
+This warning is on **by default** — it has to be, because MCP clients
+launch the server with whatever environment they have and rarely set
+`RUST_LOG`. Logs go to stderr, so they never disturb the JSON-RPC stream
+on stdout. `RUST_LOG` still controls verbosity when you set it, and
+overrides the default entirely: `RUST_LOG=error` silences the warning,
+`RUST_LOG=gallo_mcp=debug` adds the per-call board-lock tracing.
 
 ## Choosing a board
 
