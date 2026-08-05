@@ -804,7 +804,12 @@ mod hardware {
     /// connects when it should refuse gets its wrongly-chosen board named in
     /// the panic, which is the fact worth knowing.
     ///
+    /// `#[track_caller]` for parity with the `expect_err` it stands in for:
+    /// without it the panic points at this helper rather than the test that
+    /// failed.
+    ///
     /// [`PicoDeGallo`]: pico_de_gallo_lib::PicoDeGallo
+    #[track_caller]
     fn refusal(result: Result<Device, ErrorData>, why: &str) -> ErrorData {
         match result {
             Ok(dev) => panic!("{why}; connected to {:?} instead", dev.serial()),
@@ -923,12 +928,46 @@ mod hardware {
             (fa, fb)
         };
 
-        assert_eq!(freq_a, format!("{:?}", I2cFrequency::Fast));
+        assert_eq!(
+            freq_a,
+            format!("{:?}", I2cFrequency::Fast),
+            "the write to A never took effect, so the leak check on B below \
+             would pass whether or not configuration leaks"
+        );
         assert_eq!(
             freq_b,
             format!("{:?}", I2cFrequency::Standard),
             "configuration written to A leaked onto B"
         );
+
+        // Put both boards back. `i2c_frequency` lives in the firmware's
+        // boot-lifetime `Context` and no host path resets it — the
+        // connect-time `system_reset_subscriptions` walks GPIO slots only — so
+        // without this, A stays at 400 kHz for whatever runs next. libtest's
+        // order is collection order, not a guarantee, and on a marginal bus
+        // 400 kHz can drop a sensor from `i2c_scan`, which would fail
+        // `each_serial_reaches_its_own_board` on a correct server with a
+        // message blaming selection. `Standard` is the firmware's own power-on
+        // default, so this restores the bench rather than imposing a choice.
+        //
+        // Separate scopes because a board's connection lock is not reentrant:
+        // each guard must drop before the next `connect`.
+        //
+        // Skipped if an assertion above fails. That run already has an
+        // explicit failure naming the leak, so the misreading this guards
+        // against is not the one a reader would reach for.
+        {
+            let dev = mcp.connect(Some(&a)).await.expect("reconnect to A");
+            dev.i2c_set_config(I2cFrequency::Standard)
+                .await
+                .expect("restore A to standard");
+        }
+        {
+            let dev = mcp.connect(Some(&b)).await.expect("reconnect to B");
+            dev.i2c_set_config(I2cFrequency::Standard)
+                .await
+                .expect("restore B to standard");
+        }
     }
 
     #[tokio::test]
