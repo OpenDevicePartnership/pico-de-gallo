@@ -46,7 +46,7 @@ the project — see §6.
 ├── book/                            # mdBook → opendevicepartnership.github.io/pico-de-gallo/
 ├── hardware/                        # KiCad landing-board PCB
 ├── case/                            # FreeCAD enclosure
-├── Cargo.toml                       # HOST workspace (6 members)
+├── Cargo.toml                       # HOST workspace (7 members)
 ├── Cargo.lock                       # COMMITTED — keep it in sync
 └── crates/
     ├── pico-de-gallo-internal/      # Wire protocol types (postcard-rpc)
@@ -54,13 +54,14 @@ the project — see §6.
     ├── pico-de-gallo-hal/           # embedded-hal trait impls
     ├── pico-de-gallo-ffi/           # C FFI (cdylib + cbindgen → pico_de_gallo.h)
     ├── pico-de-gallo-app/           # CLI — binary name is `gallo`
+    ├── pico-de-gallo-mcp/           # MCP server — binary name is `gallo-mcp`
     ├── pyco-de-gallo/               # Python bindings (PyO3 + maturin)
     └── pico-de-gallo-firmware/      # SEPARATE workspace, no_std, RP2350
         └── Cargo.lock               # ALSO committed — separate from host lock
 ```
 
 There are **two** Cargo workspaces. The host workspace manifest
-lives at the repository root (`./Cargo.toml`) and includes the six
+lives at the repository root (`./Cargo.toml`) and includes the seven
 host crates under `crates/`. The firmware workspace is deliberately
 separate because it targets `thumbv8m.main-none-eabihf` and pulls
 in no_std-only deps — its own `Cargo.toml` is at
@@ -170,7 +171,7 @@ something fails reproduce it per crate.
 
 ### 5.1 Host crates
 
-The host matrix is `pico-de-gallo-{app,internal,ffi,hal,lib}` and
+The host matrix is `pico-de-gallo-{app,internal,ffi,hal,lib,mcp}` and
 `pyco-de-gallo`.
 
 ```bash
@@ -522,8 +523,8 @@ with a crate scope. Format:
 - **type:** `feat`, `fix`, `chore`, `docs`, `refactor`, `perf`,
   `test`, `build`, `ci`, `revert`. Use `!` (or `BREAKING CHANGE:`
   footer) for breaking changes.
-- **scope:** `internal`, `lib`, `hal`, `ffi`, `application`, `pyco`,
-  `firmware`, or `repo`. Multiple scopes are comma-separated:
+- **scope:** `internal`, `lib`, `hal`, `ffi`, `application`, `mcp`,
+  `pyco`, `firmware`, or `repo`. Multiple scopes are comma-separated:
   `feat(internal,firmware): ...`.
 - **subject:** ≤50 chars, capitalized, imperative mood, no trailing
   period.
@@ -742,6 +743,7 @@ next agent doesn't repeat it.
 | 2026-06-11 | Plan-Z infra-only PR scoped to add `linked-versions` plugin alone. | release-please's `linked-versions` plugin only coordinates version *numbers*; it does not rewrite cross-crate `version = "..."` dep specs. After internal 0.5.0 → 0.6.0, every dependent's `pico-de-gallo-internal = { version = "0.5.0", path = "..." }` spec would be stale: local `cargo build` fails between release-please merges, and `lib 0.6.0` published to crates.io would resolve `internal ^0.5.0` (silent wire mismatch). | Hoisted host workspace manifest from `crates/Cargo.toml` to repo-root `Cargo.toml` (chore(repo)! commit) so release-please's `cargo-workspace` plugin can find it. Added `cargo-workspace` plugin with `"merge": false` alongside `linked-versions`. Combined plugins now auto-bump every host-side dep spec; firmware is excluded from the host workspace, so its `pico-de-gallo-internal` dep spec is manually edited and its `Cargo.lock` is refreshed per release PR (documented in AGENTS.md §6.5 and RELEASE-PLEASE.md "Firmware dep-spec edit"). |
 | 2026-07-20 | `gallo` CLI opened a throwaway USB connection for the up-front `validate()` added 2026-06-04 (Category A #4), then opened a *second* connection for the actual subcommand (`spi write-read` opened a third). | On Windows every validated subcommand (`i2c scan`, `i2c get-config`, `adc info`, …) panicked at `postcard-rpc raw_nusb.rs:330` with `Failed claiming interface: … Access is denied` (`ACCESS_DENIED`). WinUSB grants exclusive access to one session per interface, and the first connection's background `nusb` worker had not released the handle before the second `claim_interface`. `version`/`list` (single/zero connections) always worked, so it looked like a driver/permissions problem; Linux/macOS release the interface synchronously on drop, so CI (Linux-only) never caught it. | Refactored `Cli::run` (approach A) to open exactly one `PicoDeGallo` per invocation, validate on it, and thread `&pg` into every device handler. `list` returns before connecting; `version` shares the one connection but skips validation. Verified on hardware (Windows, usbipd/VBoxUSBMon present): `i2c scan`/`i2c get-config`/`adc info` now succeed. Also corrected the book USB PID (`ffff`/`B33C` → `067d`) in `getting-started/usb.md` + `appendix/troubleshooting.md`. Host-only (`gallo`/application); no wire-protocol or CLI-surface change. |
 | 2026-07-23 | release-please retired (issue #83) after the recurring pain in the 2026-05-29 / 2026-06-11 rows (version↔manifest drift silently disabling releases, seven-PR fan-out, plugin collisions). | Not a regression — a deliberate policy change. Removed `.github/workflows/release-please.yml`, `.github/release-please-config.json`, `.github/.release-please-manifest.json`, and `.github/RELEASE-PLEASE.md`. | Releases are now **manual** (§12, `.github/RELEASE.md`): a maintainer hand-bumps every released crate's `[package].version` **and** the cross-crate `version = "..."` dep specs, hand-writes `CHANGELOG.md`, regenerates both `Cargo.lock`s, commits `chore(release): …`, merges, then pushes per-component tags (`internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`, `pyco-v*`, `firmware-v*`) that fire the unchanged `release-*.yml` publish workflows. §4 rule #12 flipped from "never hand-edit versions" to "hand-edit them, but only as a complete release commit". The old release-please rows above are kept as history; they describe tooling that no longer exists. |
+| 2026-07-29 | Two boards attached; `gallo-mcp` running unpinned, so `connect()` fell back to `PicoDeGallo::try_new()` ("first match"). | An agent asked to find which board carried a temperature sensor saw `list_devices` report **both** serials, `i2c_scan` report an **empty** bus, and `device_info`/`status` give no indication of which board answered. The only conclusion the evidence supported — "neither board has a sensor" — was wrong: the server was bound to the empty board and the sensor board was unreachable. Two independently configured server instances returned byte-identical `device_info`, so nothing revealed they had both grabbed the same board. Caught only because an unrelated `gallo` CLI result contradicted the MCP scan. Worse than one bad read: `i2c_set_config`→`i2c_write`, `gpio_set_config`→`gpio_put`, and `onewire_search`→`onewire_search(continue)` are stateful across calls, so an ambiguous target can drive the wrong pins on the wrong board. | Added a pure `select::resolve_target` deciding the target from the attached serials, the `--serial-number` pin, and a new per-call `serial_number` argument on every device tool. Fallback is now conditional: kept at N==1 (frictionless single-board path), an **error** at N>=2 that names the available serials so the agent self-corrects. Every device response is wrapped as `{serial_number, result}`, making the binding observable on every call (`list_devices` and `status` excepted — one opens no board, the other already carries its own serial). `--serial-number` became a hard pin that refuses any other board. `status` never errors and reports ambiguity explicitly instead of `attached:false`. The connection lock was re-keyed from the server to the board, so a `gpio_wait_*` on one board no longer stalls calls to another. Verified on two boards, including a mutation control that reintroducing "first match" fails 3 of the 7 hardware tests. Host-only, `gallo-mcp` only; no wire-protocol or firmware change. Issue #89. |
 
 ---
 
@@ -810,6 +812,7 @@ update at least the chapter(s) on the right:
 | `pico-de-gallo-ffi/src/lib.rs` — `Status` enum              | `book/src/appendix/status-codes.md`                                      |
 | `pico-de-gallo-ffi/src/lib.rs` — `gallo_*` functions        | `book/src/crates/ffi.md`                                                 |
 | `pico-de-gallo-app/src/...` — CLI subcommands/flags         | `book/src/crates/app.md`, the relevant `book/src/interfaces/*` chapter   |
+| `pico-de-gallo-mcp/src/...` — MCP tools / tool arguments    | `book/src/crates/mcp.md`, `crates/pico-de-gallo-mcp/README.md`           |
 | `pico-de-gallo-lib/src/lib.rs` — public methods             | `book/src/crates/lib.md`                                                 |
 | `pico-de-gallo-hal/src/...` — trait impls                   | `book/src/crates/hal.md`, `book/src/driver/*`, `docs/ai-agents/pico-de-gallo-hal-examples.md` |
 | `pyco-de-gallo/src/...` — Python surface                    | `book/src/crates/python.md`                                              |

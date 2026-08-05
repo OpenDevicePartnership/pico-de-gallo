@@ -34,8 +34,10 @@ $ gallo-mcp [--serial-number <SN>]
 so it is meant to be launched by an MCP client rather than run
 interactively.
 
-- `-s, --serial-number <SN>` selects a specific board by USB serial when
-  more than one is attached.
+- `-s, --serial-number <SN>` **pins** the server to one board. A pinned
+  server cannot address any other board: a tool call naming a different
+  serial is refused. This is the way to scope an agent session to a
+  single board.
 - **Per-call connection:** the server holds no persistent USB claim. Each
   tool call opens the board, runs, and releases it when the call completes,
   so the device is free for the `gallo` CLI or other host processes between
@@ -43,6 +45,114 @@ interactively.
   fixed per-call connection cost. The server starts even with no board
   attached and tools begin working as soon as a Pico de Gallo is present;
   you can plug the board in mid-session.
+
+## Choosing a board
+
+Every tool except `list_devices` takes an optional `serial_number`, and
+every response that came from a board names the board it came from:
+
+```json
+// i2c_scan {"serial_number":"5256657D8A5D7F03"}
+{
+  "serial_number": "5256657D8A5D7F03",
+  "result": { "addresses": ["0x48"], "raw": [72] }
+}
+```
+
+That `{ "serial_number", "result" }` envelope wraps every device tool
+response but two. `list_devices` opens no board at all, and `status`
+reports its serial as a top-level field of its own result rather than
+nesting a serial under a serial.
+
+How the target is chosen:
+
+| Boards attached | `serial_number` | Result |
+|---|---|---|
+| 0 | — | error: no device attached |
+| 1 | omitted | that board |
+| 1 | given | that board, if it matches |
+| ≥2 | omitted | **error**, listing the available serials |
+| ≥2 | given | the named board |
+
+With one board attached nothing changes — omit `serial_number` and it
+just works. With two or more, omitting it is an error rather than a
+guess:
+
+```text
+Multiple Pico de Gallo devices attached; `serial_number` is required.
+Available: 5256657D8A5D7F03, 568E9AAEC72B0D49
+```
+
+That is deliberate. Guessing turns a recoverable mistake into a
+confident wrong answer with no signal that anything went wrong; the
+error names the serials, so the next call succeeds.
+
+A server started with `-s` is **pinned**, and the two `≥2` rows above no
+longer apply: `serial_number` is optional again however many boards are
+attached. An omitted argument uses the pinned board, a matching one is
+accepted, and a different one is refused:
+
+```text
+This server is pinned to serial number '5256657D8A5D7F03' (--serial-number); it cannot address '568E9AAEC72B0D49'. Omit serial_number, or pass '5256657D8A5D7F03'.
+```
+
+Device state is **per board** — bus configuration, GPIO direction, PWM
+enable, and 1-Wire search progress all live on the board you addressed —
+so a follow-up call must repeat the `serial_number` of the call that set
+it up.
+
+`list_devices` tells you which case you are in without connecting:
+
+```json
+// list_devices {}
+{
+  "devices": [
+    { "serial_number": "5256657D8A5D7F03", "manufacturer": null,
+      "product": "Pico de Gallo", "pinned": false, "default_target": false },
+    { "serial_number": "568E9AAEC72B0D49", "manufacturer": null,
+      "product": "Pico de Gallo", "pinned": false, "default_target": false }
+  ],
+  "pinned": null,
+  "serial_number_required": true,
+  "note": "2 devices attached and this server is not pinned; pass serial_number on every device tool call."
+}
+```
+
+`note` is present only when `serial_number_required` is true.
+
+`status` never errors, so it stays answerable even when the target is
+ambiguous:
+
+```json
+// status {}
+{
+  "attached": true,
+  "serial_number": null,
+  "ambiguous": true,
+  "available": ["5256657D8A5D7F03", "568E9AAEC72B0D49"],
+  "pinned": null,
+  "reason": "Multiple Pico de Gallo devices attached; `serial_number` is required.\nAvailable: 5256657D8A5D7F03, 568E9AAEC72B0D49",
+  "firmware_version": null,
+  "schema_major": null,
+  "schema_minor": null
+}
+```
+
+`ambiguous` answers "would a call that omits `serial_number` fail?", so
+it stays true even when this particular `status` call named a board.
+`reason` is present only when no board was reached.
+
+## Concurrency
+
+The connection lock is keyed on the **board**, not on the server. Calls
+to different boards run concurrently; calls to the same board queue. A
+long-running tool — a `gpio_wait_*` sitting on its full `timeout_ms` —
+holds only the board it addressed, so traffic to every other board keeps
+flowing.
+
+`list_devices` connects to nothing and always answers immediately.
+`status` does open the board it names, so it queues behind a call that is
+still holding that board.
 
 ## Using it with an MCP client
 
@@ -77,17 +187,22 @@ that opt in.
 
 Byte payloads go in as **hex strings** and come back as both hex and a
 decimal array. Input accepts comma-separated or bare hex (`"0x00,0x10"`
-or `"0010"`); reads return `{ "hex": ..., "bytes": ... }`.
+or `"0010"`); reads return `{ "hex": ..., "bytes": ... }` inside the
+response envelope.
 
 ```json
 // i2c_write_read {"address":72,"data":"0x00","count":2}
-{ "hex": "0x0B,0xCF", "bytes": [11, 207] }
+{
+  "serial_number": "5256657D8A5D7F03",
+  "result": { "hex": "0x0B,0x8E", "bytes": [11, 142] }
+}
 ```
 
 ## Tool catalog
 
-35 tools, grouped by peripheral. Read-only tools carry the
+43 tools, grouped by peripheral. Read-only tools carry the
 `readOnlyHint` annotation; write/actuation tools carry `destructiveHint`.
+Every tool except `list_devices` accepts an optional `serial_number`.
 
 ### device (read-only)
 
@@ -180,6 +295,11 @@ tools requires a non-zero `timeout_ms`. This release deliberately does
 subscriptions — a wait that never returns would stall the stdio session,
 and event streaming is out of scope for v1.
 
+`uart_read`'s `timeout_ms` is **not** covered by that rule: there `0` is
+legal and means a non-blocking poll that returns whatever is already
+buffered. The asymmetry is deliberate — for an edge wait, `0` would mean
+an unbounded wait.
+
 ## Security
 
 `gallo-mcp` does **not** gate writes itself. Write approval is delegated
@@ -201,38 +321,59 @@ accordingly.**
 ## Validation
 
 The server was validated on real hardware: a Pico de Gallo (serial
-`5256657D8A5D7F03`, firmware v0.10.0, schema v0.6.0, HW rev2) with a
+`5256657D8A5D7F03`, firmware v0.10.1, schema v0.6.1, HW rev2) with a
 TMP108 temperature sensor on I<sup>2</sup>C.
 
 Over stdio, `status` reports the attached board:
 
 ```json
-{ "attached": true, "firmware_version": "0.10.0", "schema_major": 0, "schema_minor": 6 }
+// status {}
+{
+  "attached": true,
+  "serial_number": "5256657D8A5D7F03",
+  "ambiguous": false,
+  "available": ["5256657D8A5D7F03"],
+  "pinned": null,
+  "firmware_version": "0.10.1",
+  "schema_major": 0,
+  "schema_minor": 6
+}
 ```
 
 `i2c_scan` finds the sensor at address `0x48`:
 
 ```json
 // i2c_scan {"include_reserved":false}
-{ "addresses": ["0x48"], "raw": [72] }
+{
+  "serial_number": "5256657D8A5D7F03",
+  "result": { "addresses": ["0x48"], "raw": [72] }
+}
 ```
 
 And `i2c_write_read` reads its two temperature bytes:
 
 ```json
 // i2c_write_read {"address":72,"data":"0x00","count":2}
-{ "hex": "0x0B,0xCF", "bytes": [11, 207] }
+{
+  "serial_number": "5256657D8A5D7F03",
+  "result": { "hex": "0x0B,0x8E", "bytes": [11, 142] }
+}
 ```
 
 Those bytes are **byte-for-byte identical** to the `gallo` CLI:
 
 ```console
 $ gallo i2c write-read -a 0x48 -b 0x00 -c 2
-0b cf
+0b 8e
 ```
 
+Board selection was validated on the same bench with a second board
+attached (`568E9AAEC72B0D49`, bare bus): a bare `i2c_scan` is refused
+rather than answered from an arbitrary board, and naming either serial
+reaches that board. See [Choosing a board](#choosing-a-board).
+
 > [!NOTE]
-> Decoding `0x0BCF` into degrees Celsius is left to the reader and the
+> Decoding `0x0B8E` into degrees Celsius is left to the reader and the
 > TMP108 datasheet — it is not asserted here. The point of this
 > walkthrough is that the MCP round-trip returns exactly what the CLI
 > does, so an agent driving the board through `gallo-mcp` sees the same

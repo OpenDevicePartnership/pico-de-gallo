@@ -29,6 +29,29 @@ attached; tools begin working as soon as a Pico de Gallo is plugged in. Logs
 go to stderr; stdout carries the
 MCP protocol.
 
+## Choosing a board
+
+Every tool that touches a device takes an optional `serial_number`, and every
+device response is wrapped as `{ "serial_number": ..., "result": ... }`, naming
+the board that served the call. (`list_devices` and `status` are not wrapped:
+one opens no board, the other already reports a serial of its own.) With one
+board attached you can omit the argument. With two or more, omitting it is an
+error that lists the available serials rather than a silent guess:
+
+```text
+Multiple Pico de Gallo devices attached; `serial_number` is required.
+Available: 5256657D8A5D7F03, 568E9AAEC72B0D49
+```
+
+`--serial-number` pins the server to one board, which then refuses any tool
+call naming a different one — use it to scope an agent session to a single
+board. A pinned server makes `serial_number` optional again however many
+boards are attached. Call `list_devices` to see what is attached and whether a
+serial is required.
+
+Calls to different boards run concurrently; calls to the same board queue, so
+a long `gpio_wait_*` holds only the board it addressed.
+
 ## Use with an MCP client
 
 Add it to your client's MCP configuration. For example, opencode

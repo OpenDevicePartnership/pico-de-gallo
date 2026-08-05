@@ -5,6 +5,44 @@ All notable changes to `gallo-mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Optional `serial_number` argument on every tool except `list_devices`, so a
+  single server instance can address any attached board per call.
+- Calls naming different boards run concurrently. The connection lock is keyed
+  on the board rather than on the server, so a long `gpio_wait_*` holds only
+  the board it addressed; calls to the *same* board queue.
+
+### Changed
+
+- **Breaking (tool surface).** Omitting `serial_number` with two or more
+  boards attached is now an error listing the available serials, instead of
+  silently binding to whichever board enumerated first. The single-board case
+  is unchanged: `serial_number` stays optional.
+- **Breaking (response shape).** Device tool responses are now wrapped as
+  `{ "serial_number": ..., "result": ... }`, reporting which board served the
+  call. `list_devices` and `status` are the exceptions: the first opens no
+  board, and the second already carries a `serial_number` of its own.
+- **Breaking (response shape).** `list_devices` returns an object instead of a
+  bare array. Entries gained `pinned` and `default_target` flags, and the
+  object adds `pinned`, `serial_number_required`, and a `note` that is present
+  only when a serial is required.
+- `--serial-number` now pins the server: a tool call naming a different board
+  is refused, and `serial_number` stays optional however many boards are
+  attached.
+- `status` no longer reports `attached: false` when selection fails. It never
+  errors, and gained `serial_number`, `ambiguous`, `available`, `pinned`, and a
+  `reason` for an unresolved target, alongside the existing `firmware_version`,
+  `schema_major`, and `schema_minor`.
+
+### Fixed
+
+- Errors raised after a board was successfully opened no longer claim no
+  device is attached, which sent an agent looking for a missing board instead
+  of a board that stopped responding.
+
 ## [0.1.0] — 2026-07-28
 
 ### Added
@@ -13,8 +51,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a Pico de Gallo USB bridge to AI agents over stdio, built on the
   [`rmcp`](https://crates.io/crates/rmcp) SDK and wrapping `pico-de-gallo-lib`.
 - One MCP tool per peripheral operation across I²C, SPI, UART, GPIO, PWM, ADC,
-  and 1-Wire (35 tools total), plus device tools (`list_devices`, `status`,
-  `device_info`, `version`, `ping`).
+  and 1-Wire (38 tools), plus device tools (`list_devices`, `status`,
+  `device_info`, `version`, `ping`) — 43 in total.
 - Hex-string byte payloads (`"0x00,0x10"` in; `{ "hex", "bytes" }` out).
 - Read tools annotated `readOnlyHint`; write/actuation tools annotated
   `destructiveHint`. Write approval is delegated to the MCP client.
