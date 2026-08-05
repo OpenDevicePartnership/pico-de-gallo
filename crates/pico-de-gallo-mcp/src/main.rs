@@ -9,7 +9,10 @@ use rmcp::transport::stdio;
 #[derive(Debug, Parser)]
 #[command(name = "gallo-mcp", version, about)]
 struct Cli {
-    /// Connect to the device with this USB serial number (default: first match).
+    /// Pin the server to the board with this USB serial number
+    ///
+    /// Tool calls that omit serial_number use the pinned board, and a call
+    /// naming a different board is refused.
     #[arg(short, long)]
     serial_number: Option<String>,
 }
