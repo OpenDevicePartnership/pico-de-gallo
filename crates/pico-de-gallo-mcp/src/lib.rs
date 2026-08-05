@@ -87,6 +87,29 @@ pub(crate) fn attached_serials() -> Vec<Option<String>> {
 /// from a transient claim failure.
 const NOT_FOUND: &str = "Failed to find matching nusb device";
 
+/// The startup warning for an unusable `--serial-number` pin, if any.
+///
+/// A mistyped pin is otherwise completely silent: the server starts clean and
+/// then every device tool fails `PinnedNotFound` for the rest of the session.
+/// That matters more than an ordinary typo because the pin is the only
+/// defence against addressing the wrong board that holds by construction
+/// rather than by agent diligence, and it fails open on a typo.
+///
+/// Defers to [`select::resolve_target`] instead of re-deriving the condition,
+/// so the warning cannot drift from the policy: a pin two boards answer to is
+/// exactly as unusable as one no board answers to, and both are reported.
+///
+/// Returns `None` on an empty bus. A pin is trivially unresolvable when
+/// nothing is attached, but starting with no board and plugging one in
+/// mid-session is a supported, documented way to run the server — warning
+/// there would fire on the normal path and teach the reader to ignore it.
+fn pin_warning(attached: &[Option<String>], pinned_serial: &str) -> Option<String> {
+    match select::resolve_target(attached, Some(pinned_serial), None) {
+        Ok(_) | Err(select::SelectError::NoDevice) => None,
+        Err(e) => Some(e.to_string()),
+    }
+}
+
 /// The error message for a board that could not be opened after enumeration
 /// found it.
 ///
@@ -172,10 +195,13 @@ pub(crate) struct Device {
     /// for the lifetime of the connection. Released (after `inner`) when this
     /// drops.
     ///
-    /// Must remain the **last** field: fields drop in declaration order, and
-    /// the transport in `inner` has to be torn down before the lock is
-    /// released, or the next `connect` for the same board can win the lock
-    /// while this connection still holds the USB claim.
+    /// Must remain the **last** field: fields drop in declaration order, so
+    /// this ordering makes the transport's teardown *start* before the lock
+    /// is released. It cannot make teardown *finish* first — that is
+    /// asynchronous and signals nothing, which is exactly the overlap
+    /// [`open_with_retry`] absorbs. Reversing the fields would hand the lock
+    /// to the next caller before teardown had even begun, widening that
+    /// window for no reason.
     _claim: OwnedMutexGuard<()>,
 }
 
@@ -295,6 +321,24 @@ impl GalloMcp {
     /// `pin` means a GPIO pin.
     pub(crate) fn pinned_serial(&self) -> Option<&str> {
         self.serial_number.as_deref()
+    }
+
+    /// Log a warning if the `--serial-number` pin cannot be resolved right
+    /// now. Call once at startup.
+    ///
+    /// A **warning**, never an error: the server is documented to start with
+    /// no board attached and to begin working as soon as one appears, so
+    /// refusing to start would break a supported way to run it. But a
+    /// mistyped pin produces a server that starts perfectly and then fails
+    /// every device call for the whole session, so it is worth a line on
+    /// stderr. See [`pin_warning`] for which cases are worth reporting.
+    pub fn warn_if_pin_unresolvable(&self) {
+        let Some(pinned_serial) = self.pinned_serial() else {
+            return;
+        };
+        if let Some(msg) = pin_warning(&attached_serials(), pinned_serial) {
+            tracing::warn!("{msg}");
+        }
     }
 
     /// Acquire the connection lock for one board, creating it on first use.
@@ -475,6 +519,47 @@ mod tests {
         let msg = crate::vanished_board_msg(None);
         assert!(msg.contains("vanished"), "{msg}");
         assert!(!msg.contains("no device attached"), "{msg}");
+    }
+
+    // Named for the boards, not for `--serial-number`: in this repository
+    // "pin" means a GPIO pin.
+    const SERIAL_A: &str = "9A54ED7E3A1D9D98";
+    const SERIAL_B: &str = "5256657D8A5D7F03";
+
+    #[test]
+    fn a_resolvable_pin_is_not_warned_about() {
+        let attached = vec![Some(SERIAL_A.to_string()), Some(SERIAL_B.to_string())];
+        assert_eq!(crate::pin_warning(&attached, SERIAL_A), None);
+    }
+
+    #[test]
+    fn an_empty_bus_is_not_warned_about() {
+        // Starting with no board attached and plugging one in mid-session is
+        // supported, so this must stay silent or the warning becomes noise.
+        assert_eq!(crate::pin_warning(&[], SERIAL_A), None);
+    }
+
+    #[test]
+    fn a_mistyped_pin_is_warned_about_and_names_the_alternatives() {
+        let attached = vec![Some(SERIAL_A.to_string()), Some(SERIAL_B.to_string())];
+        let msg = crate::pin_warning(&attached, "BOGUSSERIAL")
+            .expect("a pin no attached board answers to must warn");
+        assert!(msg.contains("BOGUSSERIAL"), "{msg}");
+        assert!(msg.contains("not attached"), "{msg}");
+        // Without the available serials the reader cannot tell a typo from a
+        // board that is simply unplugged.
+        assert!(msg.contains(SERIAL_A) && msg.contains(SERIAL_B), "{msg}");
+    }
+
+    #[test]
+    fn a_pin_two_boards_answer_to_is_warned_about() {
+        // Just as unusable as an absent pin: every device call fails
+        // `Duplicate`. Deferring to `resolve_target` is what gets this for
+        // free rather than needing its own condition.
+        let attached = vec![Some(SERIAL_A.to_string()), Some(SERIAL_A.to_string())];
+        let msg =
+            crate::pin_warning(&attached, SERIAL_A).expect("a pin two boards answer to must warn");
+        assert!(msg.contains("cannot be told apart"), "{msg}");
     }
 
     #[tokio::test]

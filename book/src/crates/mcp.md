@@ -37,7 +37,10 @@ interactively.
 - `-s, --serial-number <SN>` **pins** the server to one board. A pinned
   server cannot address any other board: a tool call naming a different
   serial is refused. This is the way to scope an agent session to a
-  single board.
+  single board. If the pinned serial is not among the attached boards at
+  startup, the server logs a warning naming the serials it did find, and
+  starts anyway — see below. Set `RUST_LOG=warn` to see it; logging is
+  off by default.
 - **Per-call connection:** the server holds no persistent USB claim. Each
   tool call opens the board, runs, and releases it when the call completes,
   so the device is free for the `gallo` CLI or other host processes between
@@ -45,6 +48,22 @@ interactively.
   fixed per-call connection cost. The server starts even with no board
   attached and tools begin working as soon as a Pico de Gallo is present;
   you can plug the board in mid-session.
+
+The pin is checked once at startup, and an unusable one is a **warning**
+rather than a startup failure — starting with no board attached has to
+keep working, so the server cannot treat "pin not attached" as fatal:
+
+```text
+WARN gallo_mcp: This server is pinned to serial number 'BOGUSSERIAL' (--serial-number), which is not attached.
+Available: 5256657D8A5D7F03
+```
+
+Nothing is logged when the pin resolves, when no pin was given, or when
+no board is attached at all — that last case is indistinguishable from
+"not plugged in yet", which is supported. So the warning firing means a
+board *is* attached and the pin does not match it, which in practice
+means a typo. Without it a mistyped pin starts a server that looks
+healthy and then fails every device call for the rest of the session.
 
 ## Choosing a board
 

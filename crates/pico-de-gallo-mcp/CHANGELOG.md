@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Calls naming different boards run concurrently. The connection lock is keyed
   on the board rather than on the server, so a long `gpio_wait_*` holds only
   the board it addressed; calls to the *same* board queue.
+- A startup warning when `--serial-number` names a board that is not attached
+  while others are. A mistyped pin previously started a healthy-looking server
+  that then failed every device call for the whole session. It stays a warning,
+  not a startup error: running with no board attached and plugging one in
+  mid-session is supported. Requires `RUST_LOG` to be set (e.g. `RUST_LOG=warn`).
 
 ### Changed
 

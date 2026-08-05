@@ -12,7 +12,7 @@ use rmcp::ErrorData;
 ///
 /// Shared by every device tool that takes no other argument. Tools with their
 /// own parameters declare an identical `serial_number` field instead.
-#[derive(Debug, Default, serde::Deserialize, schemars::JsonSchema)]
+#[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct TargetParams {
     /// USB serial number of the board to use. Required when two or more
     /// boards are attached and the server is not pinned to one; optional
@@ -22,7 +22,13 @@ pub struct TargetParams {
 }
 
 /// Why device selection failed.
+///
+/// `#[non_exhaustive]` because this is public API on a published crate and
+/// the variant set has already grown once during development (`Duplicate`).
+/// Adding another would otherwise be a semver break, and `cargo-semver-checks`
+/// runs only on `pico-de-gallo-internal`, so nothing here would catch it.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SelectError {
     /// No Pico de Gallo is attached at all.
     NoDevice,
@@ -111,10 +117,17 @@ impl std::fmt::Display for SelectError {
             } => {
                 let total = available.len() + unaddressable;
                 let serials = format_serials(available);
+                // "1 of them report" reads as a typo in an agent-facing
+                // message, and one unaddressable board is the common case.
+                let reports = if *unaddressable == 1 {
+                    "reports"
+                } else {
+                    "report"
+                };
                 write!(
                     f,
                     "{total} Pico de Gallo devices attached; `serial_number` is required, \
-                     but {unaddressable} of them report no USB serial number and cannot \
+                     but {unaddressable} of them {reports} no USB serial number and cannot \
                      be addressed.\nAvailable: {serials}"
                 )
             }
@@ -277,6 +290,12 @@ mod tests {
         );
         assert_eq!(
             resolve_target(&[], Some(A), None),
+            Err(SelectError::NoDevice)
+        );
+        // A pin conflicting with the request still loses to an empty bus:
+        // nothing is attached, so there is no board either name could mean.
+        assert_eq!(
+            resolve_target(&[], Some(A), Some(B)),
             Err(SelectError::NoDevice)
         );
     }
@@ -456,6 +475,17 @@ mod tests {
     }
 
     #[test]
+    fn ambiguous_text_agrees_in_number_for_one_unaddressable_board() {
+        let mixed = vec![Some(A.to_string()), Some(B.to_string()), None];
+        let msg = resolve_target(&mixed, None, None).unwrap_err().to_string();
+        assert!(msg.contains("3 Pico de Gallo devices"), "{msg}");
+        assert!(
+            msg.contains("1 of them reports no USB serial number"),
+            "{msg}"
+        );
+    }
+
+    #[test]
     fn not_found_text_names_the_request_and_the_alternatives() {
         let msg = resolve_target(&attached(&[A, B]), None, Some("BOGUS"))
             .unwrap_err()
@@ -532,6 +562,21 @@ mod tests {
             map_select_err(SelectError::NotFound {
                 requested: A.to_string(),
                 available: vec![],
+            })
+            .code,
+            rmcp::model::ErrorCode::INTERNAL_ERROR
+        );
+    }
+
+    #[test]
+    fn unsatisfiable_ambiguous_maps_to_internal_error() {
+        // Shares the empty-`available` guard arm with `NotFound` above, so
+        // this pins the other half of it: every attached board is
+        // serial-less, and no argument can name one.
+        assert_eq!(
+            map_select_err(SelectError::Ambiguous {
+                available: vec![],
+                unaddressable: 2,
             })
             .code,
             rmcp::model::ErrorCode::INTERNAL_ERROR

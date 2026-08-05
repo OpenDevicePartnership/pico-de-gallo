@@ -243,9 +243,9 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 
 ### 5.5 Test baseline
 
-About **432 unit tests + 7 doctests** across the host workspace,
+About **438 unit tests + 7 doctests** across the host workspace,
 concentrated in `pico-de-gallo-internal` (149), `pico-de-gallo-mcp`
-(98), and `pico-de-gallo-ffi` (84). Seven of the `pico-de-gallo-mcp`
+(104), and `pico-de-gallo-ffi` (84). Seven of the `pico-de-gallo-mcp`
 tests are `#[ignore]`d because they need two boards attached; run
 them with `cargo test -p gallo-mcp -- --ignored`.
 `pyco-de-gallo` currently has no Rust-side tests. If you add code,

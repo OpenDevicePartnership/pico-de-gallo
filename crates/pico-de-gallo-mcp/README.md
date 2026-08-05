@@ -47,7 +47,9 @@ Available: 5256657D8A5D7F03, 568E9AAEC72B0D49
 call naming a different one — use it to scope an agent session to a single
 board. A pinned server makes `serial_number` optional again however many
 boards are attached. Call `list_devices` to see what is attached and whether a
-serial is required.
+serial is required. A pin that names no attached board is logged as a warning
+at startup (set `RUST_LOG=warn` to see it) rather than refused, so that
+starting with no board attached keeps working.
 
 Calls to different boards run concurrently; calls to the same board queue, so
 a long `gpio_wait_*` holds only the board it addressed.

@@ -26,6 +26,10 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let service = GalloMcp::new(cli.serial_number.as_deref());
+    // Before serving: a mistyped --serial-number otherwise starts a server
+    // that works right up until the first device call and then fails every
+    // one of them, with nothing on stderr to say why.
+    service.warn_if_pin_unresolvable();
 
     let server = service.serve(stdio()).await?;
     server.waiting().await?;
