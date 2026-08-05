@@ -388,9 +388,25 @@ this work.
 `gallo-mcp` only. No `pico-de-gallo-internal` types, endpoints, or enum ordering
 are touched; no firmware change; no schema-version bump (AGENTS.md §6).
 
-`gallo-mcp` is unpublished (still `0.1.0`), so this breaking tool-surface change
-lands without a released version to supersede, and **no `[package].version` bump**
-is made — per AGENTS.md §4 rule 12, feature PRs never bump versions.
+`gallo-mcp` **is** published: `0.1.0` went to crates.io on 2026-07-28, and the
+`mcp-v0.1.0` tag fires `release-crates.yml`. Issue #89 states the opposite
+("unpublished... can land without a released version to supersede") and this
+spec repeated it; both are wrong, discovered during the Task 10 documentation
+pass.
+
+That does not change what this branch does — no `[package].version` bump is
+made, because per AGENTS.md §4 rule 12 feature PRs never bump versions and a
+maintainer cuts the release separately. It does change two things downstream:
+
+- The release that carries this work must be **`0.2.0`**, not `0.1.1`. The tool
+  surface changes incompatibly: every device tool response becomes
+  `{serial_number, result}`, `list_devices` changes from a bare array to an
+  object, and omitting `serial_number` with two boards attached now errors
+  where it previously returned data. Pre-1.0 semver permits that on a minor
+  bump; a patch bump would misrepresent it.
+- Anyone already on `0.1.0` — 16 downloads at time of writing — has to adapt.
+  The `CHANGELOG.md` `[Unreleased]` section marks the breaking entries, which
+  is what tells them so.
 
 Commits use Conventional Commits with the `mcp` scope, LF line endings (§3), and
 the required AI attribution trailers with **no** `Signed-off-by` (§10).
