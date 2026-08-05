@@ -46,7 +46,7 @@ the project — see §6.
 ├── book/                            # mdBook → opendevicepartnership.github.io/pico-de-gallo/
 ├── hardware/                        # KiCad landing-board PCB
 ├── case/                            # FreeCAD enclosure
-├── Cargo.toml                       # HOST workspace (6 members)
+├── Cargo.toml                       # HOST workspace (7 members)
 ├── Cargo.lock                       # COMMITTED — keep it in sync
 └── crates/
     ├── pico-de-gallo-internal/      # Wire protocol types (postcard-rpc)
@@ -54,13 +54,14 @@ the project — see §6.
     ├── pico-de-gallo-hal/           # embedded-hal trait impls
     ├── pico-de-gallo-ffi/           # C FFI (cdylib + cbindgen → pico_de_gallo.h)
     ├── pico-de-gallo-app/           # CLI — binary name is `gallo`
+    ├── pico-de-gallo-mcp/           # MCP server — binary name is `gallo-mcp`
     ├── pyco-de-gallo/               # Python bindings (PyO3 + maturin)
     └── pico-de-gallo-firmware/      # SEPARATE workspace, no_std, RP2350
         └── Cargo.lock               # ALSO committed — separate from host lock
 ```
 
 There are **two** Cargo workspaces. The host workspace manifest
-lives at the repository root (`./Cargo.toml`) and includes the six
+lives at the repository root (`./Cargo.toml`) and includes the seven
 host crates under `crates/`. The firmware workspace is deliberately
 separate because it targets `thumbv8m.main-none-eabihf` and pulls
 in no_std-only deps — its own `Cargo.toml` is at
@@ -151,7 +152,7 @@ editing on Windows with CRLF.
     *are* deliberately cutting a release, a version bump is never
     isolated: in the **same commit** you must also (a) bump the
     matching `version = "..."` dep specs in every dependent crate
-    (`lib`→`internal`; `hal`/`ffi`/`application`/`pyco`→`lib`;
+    (`lib`→`internal`; `hal`/`ffi`/`application`/`mcp`/`pyco`→`lib`;
     `firmware`→`internal`), (b) hand-write the `CHANGELOG.md`
     entry, (c) regenerate **both** `Cargo.lock`s, and (d) after merge,
     push the per-component tags that fire the publish workflows.
@@ -170,7 +171,7 @@ something fails reproduce it per crate.
 
 ### 5.1 Host crates
 
-The host matrix is `pico-de-gallo-{app,internal,ffi,hal,lib}` and
+The host matrix is `pico-de-gallo-{app,internal,ffi,hal,lib,mcp}` and
 `pyco-de-gallo`.
 
 ```bash
@@ -238,12 +239,15 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 | `release-firmware.yml`    | `firmware-v*` tags **and PRs**     | Builds `.uf2` and `.elf`. PR runs are **build-only** (skip-upload) so tooling breakage is caught at PR time |
 | `release-hardware.yml`    | `hardware-v*` tags                 | KiCad ERC/DRC, gerbers, schematic PDF                                                                       |
 | `release-pyco.yml`        | `pyco-v*` tags                     | Builds Python wheels (CPython 3.8–3.14, Linux/Win/macOS), attaches to GitHub Release                        |
-| `release-crates.yml`      | `internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*` tags | Publishes the matching crate to crates.io                                       |
+| `release-crates.yml`      | `internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`, `mcp-v*` tags | Publishes the matching crate to crates.io                     |
 
 ### 5.5 Test baseline
 
-About **300 unit tests + 3 doctests** across the host workspace,
-concentrated in `pico-de-gallo-internal` and `pico-de-gallo-lib`.
+About **438 unit tests + 7 doctests** across the host workspace,
+concentrated in `pico-de-gallo-internal` (149), `pico-de-gallo-mcp`
+(104), and `pico-de-gallo-ffi` (84). Seven of the `pico-de-gallo-mcp`
+tests are `#[ignore]`d because they need two boards attached; run
+them with `cargo test -p gallo-mcp -- --ignored`.
 `pyco-de-gallo` currently has no Rust-side tests. If you add code,
 add tests next to it; round-trip serialization tests are the norm
 for wire types.
@@ -360,14 +364,14 @@ A wire-protocol change requires bumping in the **same release cycle**:
 1. `pico-de-gallo-internal` (with `feat!` / `BREAKING CHANGE:`),
 2. `pico-de-gallo-firmware` (encodes the new schema version),
 3. `pico-de-gallo-lib`, `pico-de-gallo-hal`, `pico-de-gallo-ffi`,
-   `pico-de-gallo-app`, `pyco-de-gallo` (so every host surface sees
-   the new types).
+   `pico-de-gallo-app`, `pico-de-gallo-mcp`, `pyco-de-gallo` (so every
+   host surface sees the new types).
 
 **Version bumps are manual.** There is no release automation
 (release-please was removed — see §12 and `.github/RELEASE.md`). When
 the wire protocol changes, a maintainer cuts a release that, in one
-commit, bumps `[package].version` on **all seven** released crates
-(internal, library, hal, ffi, application, pyco, firmware) to the
+commit, bumps `[package].version` on **all eight** released crates
+(internal, library, hal, ffi, application, mcp, pyco, firmware) to the
 same new version (pre-1.0: a minor bump for any wire change), because
 they are wire-coupled and must never drift in version space.
 
@@ -377,7 +381,7 @@ That single release commit must also:
   them for you now. Each dependent's `pico-de-gallo-X = { version =
   "Y.Z", path = "..." }` spec must point at the new version:
   - `lib` → `internal`
-  - `hal`, `ffi`, `application`, `pyco` → `lib`
+  - `hal`, `ffi`, `application`, `mcp`, `pyco` → `lib`
   - `firmware` → `internal` (separate workspace — easy to forget)
 - **Hand-write the `CHANGELOG.md`** entries (Keep a Changelog).
 - **Regenerate both `Cargo.lock`s** (`cargo update --workspace` at
@@ -388,7 +392,7 @@ That single release commit must also:
 
 After the release commit merges, push the per-component tags
 (`internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`,
-`pyco-v*`, `firmware-v*`) to fire the publish workflows. See §12 and
+`mcp-v*`, `pyco-v*`, `firmware-v*`) to fire the publish workflows. See §12 and
 `.github/RELEASE.md` for the full checklist.
 
 Nothing enforces wire coupling for you: bumping the version numbers
@@ -522,8 +526,8 @@ with a crate scope. Format:
 - **type:** `feat`, `fix`, `chore`, `docs`, `refactor`, `perf`,
   `test`, `build`, `ci`, `revert`. Use `!` (or `BREAKING CHANGE:`
   footer) for breaking changes.
-- **scope:** `internal`, `lib`, `hal`, `ffi`, `application`, `pyco`,
-  `firmware`, or `repo`. Multiple scopes are comma-separated:
+- **scope:** `internal`, `lib`, `hal`, `ffi`, `application`, `mcp`,
+  `pyco`, `firmware`, or `repo`. Multiple scopes are comma-separated:
   `feat(internal,firmware): ...`.
 - **subject:** ≤50 chars, capitalized, imperative mood, no trailing
   period.
@@ -575,7 +579,7 @@ tags. The full checklist lives in
 
 1. Bump `[package].version` in each crate being released, and the
    matching `version = "..."` dep specs in every dependent
-   (`lib`→`internal`; `hal`/`ffi`/`application`/`pyco`→`lib`;
+   (`lib`→`internal`; `hal`/`ffi`/`application`/`mcp`/`pyco`→`lib`;
    `firmware`→`internal`).
 2. Hand-write the `CHANGELOG.md` entries (Keep a Changelog).
 3. Regenerate both `Cargo.lock`s and verify `cargo check --locked`
@@ -595,6 +599,7 @@ tags. The full checklist lives in
 | `pico-de-gallo-hal`      | `hal-v*`         | crates.io            |
 | `pico-de-gallo-ffi`      | `ffi-v*`         | crates.io            |
 | `gallo` (CLI)            | `application-v*` | crates.io + binaries |
+| `gallo-mcp` (MCP server) | `mcp-v*`         | crates.io            |
 | `pyco-de-gallo`          | `pyco-v*`        | PyPI (wheels)        |
 | `pico-de-gallo-firmware` | `firmware-v*`    | `.uf2` / `.elf`      |
 | KiCad gerbers            | `hardware-v*`    | gerbers / PDF        |
@@ -742,6 +747,7 @@ next agent doesn't repeat it.
 | 2026-06-11 | Plan-Z infra-only PR scoped to add `linked-versions` plugin alone. | release-please's `linked-versions` plugin only coordinates version *numbers*; it does not rewrite cross-crate `version = "..."` dep specs. After internal 0.5.0 → 0.6.0, every dependent's `pico-de-gallo-internal = { version = "0.5.0", path = "..." }` spec would be stale: local `cargo build` fails between release-please merges, and `lib 0.6.0` published to crates.io would resolve `internal ^0.5.0` (silent wire mismatch). | Hoisted host workspace manifest from `crates/Cargo.toml` to repo-root `Cargo.toml` (chore(repo)! commit) so release-please's `cargo-workspace` plugin can find it. Added `cargo-workspace` plugin with `"merge": false` alongside `linked-versions`. Combined plugins now auto-bump every host-side dep spec; firmware is excluded from the host workspace, so its `pico-de-gallo-internal` dep spec is manually edited and its `Cargo.lock` is refreshed per release PR (documented in AGENTS.md §6.5 and RELEASE-PLEASE.md "Firmware dep-spec edit"). |
 | 2026-07-20 | `gallo` CLI opened a throwaway USB connection for the up-front `validate()` added 2026-06-04 (Category A #4), then opened a *second* connection for the actual subcommand (`spi write-read` opened a third). | On Windows every validated subcommand (`i2c scan`, `i2c get-config`, `adc info`, …) panicked at `postcard-rpc raw_nusb.rs:330` with `Failed claiming interface: … Access is denied` (`ACCESS_DENIED`). WinUSB grants exclusive access to one session per interface, and the first connection's background `nusb` worker had not released the handle before the second `claim_interface`. `version`/`list` (single/zero connections) always worked, so it looked like a driver/permissions problem; Linux/macOS release the interface synchronously on drop, so CI (Linux-only) never caught it. | Refactored `Cli::run` (approach A) to open exactly one `PicoDeGallo` per invocation, validate on it, and thread `&pg` into every device handler. `list` returns before connecting; `version` shares the one connection but skips validation. Verified on hardware (Windows, usbipd/VBoxUSBMon present): `i2c scan`/`i2c get-config`/`adc info` now succeed. Also corrected the book USB PID (`ffff`/`B33C` → `067d`) in `getting-started/usb.md` + `appendix/troubleshooting.md`. Host-only (`gallo`/application); no wire-protocol or CLI-surface change. |
 | 2026-07-23 | release-please retired (issue #83) after the recurring pain in the 2026-05-29 / 2026-06-11 rows (version↔manifest drift silently disabling releases, seven-PR fan-out, plugin collisions). | Not a regression — a deliberate policy change. Removed `.github/workflows/release-please.yml`, `.github/release-please-config.json`, `.github/.release-please-manifest.json`, and `.github/RELEASE-PLEASE.md`. | Releases are now **manual** (§12, `.github/RELEASE.md`): a maintainer hand-bumps every released crate's `[package].version` **and** the cross-crate `version = "..."` dep specs, hand-writes `CHANGELOG.md`, regenerates both `Cargo.lock`s, commits `chore(release): …`, merges, then pushes per-component tags (`internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`, `pyco-v*`, `firmware-v*`) that fire the unchanged `release-*.yml` publish workflows. §4 rule #12 flipped from "never hand-edit versions" to "hand-edit them, but only as a complete release commit". The old release-please rows above are kept as history; they describe tooling that no longer exists. |
+| 2026-07-29 | Two boards attached; `gallo-mcp` running unpinned, so `connect()` fell back to `PicoDeGallo::try_new()` ("first match"). | An agent asked to find which board carried a temperature sensor saw `list_devices` report **both** serials, `i2c_scan` report an **empty** bus, and `device_info`/`status` give no indication of which board answered. The only conclusion the evidence supported — "neither board has a sensor" — was wrong: the server was bound to the empty board and the sensor board was unreachable. Two independently configured server instances returned byte-identical `device_info`, so nothing revealed they had both grabbed the same board. Caught only because an unrelated `gallo` CLI result contradicted the MCP scan. Worse than one bad read: `i2c_set_config`→`i2c_write`, `gpio_set_config`→`gpio_put`, and `onewire_search`→`onewire_search(continue)` are stateful across calls, so an ambiguous target can drive the wrong pins on the wrong board. | Added a pure `select::resolve_target` deciding the target from the attached serials, the `--serial-number` pin, and a new per-call `serial_number` argument on every device tool. Fallback is now conditional: kept at N==1 (frictionless single-board path), an **error** at N>=2 that names the available serials so the agent self-corrects. Every device response is wrapped as `{serial_number, result}`, making the binding observable on every call (`list_devices` and `status` excepted — one opens no board, the other already carries its own serial). `--serial-number` became a hard pin that refuses any other board. `status` never errors and reports ambiguity explicitly instead of `attached:false`. The connection lock was re-keyed from the server to the board, so a `gpio_wait_*` on one board no longer stalls calls to another. Verified on two boards, including a mutation control that reintroducing "first match" fails 3 of the 7 hardware tests. Host-only, `gallo-mcp` only; no wire-protocol or firmware change. Issue #89. |
 
 ---
 
@@ -810,6 +816,7 @@ update at least the chapter(s) on the right:
 | `pico-de-gallo-ffi/src/lib.rs` — `Status` enum              | `book/src/appendix/status-codes.md`                                      |
 | `pico-de-gallo-ffi/src/lib.rs` — `gallo_*` functions        | `book/src/crates/ffi.md`                                                 |
 | `pico-de-gallo-app/src/...` — CLI subcommands/flags         | `book/src/crates/app.md`, the relevant `book/src/interfaces/*` chapter   |
+| `pico-de-gallo-mcp/src/...` — MCP tools / tool arguments    | `book/src/crates/mcp.md`, `crates/pico-de-gallo-mcp/README.md`           |
 | `pico-de-gallo-lib/src/lib.rs` — public methods             | `book/src/crates/lib.md`                                                 |
 | `pico-de-gallo-hal/src/...` — trait impls                   | `book/src/crates/hal.md`, `book/src/driver/*`, `docs/ai-agents/pico-de-gallo-hal-examples.md` |
 | `pyco-de-gallo/src/...` — Python surface                    | `book/src/crates/python.md`                                              |

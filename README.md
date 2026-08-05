@@ -46,6 +46,7 @@ writing an embedded device driver using Pico de Gallo.
 | [`pico-de-gallo-hal`](crates/pico-de-gallo-hal) | `embedded-hal` + `embedded-hal-async` implementation |
 | [`pico-de-gallo-ffi`](crates/pico-de-gallo-ffi) | C FFI bindings (shared library + header) |
 | [`gallo`](crates/pico-de-gallo-app) | CLI application for batch-mode access |
+| [`gallo-mcp`](crates/pico-de-gallo-mcp) | MCP server exposing the device to AI agents |
 | [`pico-de-gallo-internal`](crates/pico-de-gallo-internal) | Shared wire-protocol types (internal) |
 
 ### Firmware

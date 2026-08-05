@@ -3,7 +3,7 @@ Thanks for contributing to Pico de Gallo! 🌶️
 
 Please make sure your PR:
 - Follows Conventional Commits (`feat(scope): …`, `fix(scope): …`, `chore(scope): …`).
-  Scopes: internal, lib, hal, ffi, application, pyco, firmware, repo.
+  Scopes: internal, lib, hal, ffi, application, mcp, pyco, firmware, repo.
 - Has commits that each build and pass CI on their own (no "fixup" commits — squash them locally first).
 - Includes the `Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>` trailer
   for any AI-assisted commits, plus an `Assisted-by:` trailer per CONTRIBUTING.md.
@@ -26,6 +26,7 @@ If this is a draft, mark it as such and CI will still run.
 - [ ] embedded-hal adapter (`pico-de-gallo-hal`)
 - [ ] C FFI (`pico-de-gallo-ffi`)
 - [ ] CLI application (`gallo` / `pico-de-gallo-app`)
+- [ ] MCP server (`gallo-mcp` / `pico-de-gallo-mcp`)
 - [ ] Python bindings (`pyco-de-gallo`)
 - [ ] hardware (KiCad PCB / enclosure)
 - [ ] documentation (book, README, rustdoc)

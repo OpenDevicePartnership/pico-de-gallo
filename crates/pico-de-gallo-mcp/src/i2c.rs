@@ -6,7 +6,8 @@ use rmcp::{ErrorData, tool, tool_router};
 
 use crate::encoding::{Bytes, parse_bytes, validate_i2c_address};
 use crate::error::{invalid_arg, map_pdg_err};
-use crate::{GalloMcp, ok_json};
+use crate::select::TargetParams;
+use crate::{GalloMcp, ok_device_json};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct I2cReadParams {
@@ -14,6 +15,11 @@ pub struct I2cReadParams {
     pub address: u8,
     /// Number of bytes to read.
     pub count: u16,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -22,6 +28,11 @@ pub struct I2cWriteParams {
     pub address: u8,
     /// Bytes as a hex string, e.g. "0x00,0x10" or "0010".
     pub data: String,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -32,6 +43,11 @@ pub struct I2cWriteReadParams {
     pub data: String,
     /// Number of bytes to read back.
     pub count: u16,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -39,12 +55,22 @@ pub struct I2cScanParams {
     /// Include reserved addresses in the scan.
     #[serde(default)]
     pub include_reserved: bool,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct I2cSetConfigParams {
     /// Bus frequency: "standard" (100k), "fast" (400k), or "fast-plus" (1M).
     pub frequency: String,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -62,6 +88,11 @@ pub struct I2cBatchParams {
     pub address: u8,
     /// Ordered list of operations.
     pub ops: Vec<I2cBatchOpParam>,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
 
 #[tool_router(router = i2c_router, vis = "pub(crate)")]
@@ -76,9 +107,9 @@ impl GalloMcp {
         Parameters(p): Parameters<I2cReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         let data = dev.i2c_read(addr, p.count).await.map_err(map_pdg_err)?;
-        ok_json(&Bytes::from_slice(&data))
+        ok_device_json(&dev, &Bytes::from_slice(&data))
     }
 
     /// Write bytes to an I2C device.
@@ -92,9 +123,9 @@ impl GalloMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.i2c_write(addr, &bytes).await.map_err(map_pdg_err)?;
-        ok_json(&"ok")
+        ok_device_json(&dev, &"ok")
     }
 
     /// Write then read on an I2C device.
@@ -108,12 +139,12 @@ impl GalloMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         let data = dev
             .i2c_write_read(addr, &bytes, p.count)
             .await
             .map_err(map_pdg_err)?;
-        ok_json(&Bytes::from_slice(&data))
+        ok_device_json(&dev, &Bytes::from_slice(&data))
     }
 
     /// Scan the I2C bus for responding addresses.
@@ -125,13 +156,13 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<I2cScanParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         let addrs = dev
             .i2c_scan(p.include_reserved)
             .await
             .map_err(map_pdg_err)?;
         let hex: Vec<String> = addrs.iter().map(|a| format!("0x{a:02X}")).collect();
-        ok_json(&serde_json::json!({ "addresses": hex, "raw": addrs }))
+        ok_device_json(&dev, &serde_json::json!({ "addresses": hex, "raw": addrs }))
     }
 
     /// Get the current I2C frequency.
@@ -139,10 +170,13 @@ impl GalloMcp {
         description = "Get the current I2C frequency",
         annotations(read_only_hint = true)
     )]
-    async fn i2c_get_config(&self) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+    async fn i2c_get_config(
+        &self,
+        Parameters(p): Parameters<TargetParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         let f = dev.i2c_get_config().await.map_err(map_pdg_err)?;
-        ok_json(&format!("{f:?}"))
+        ok_device_json(&dev, &format!("{f:?}"))
     }
 
     /// Set the I2C frequency.
@@ -161,9 +195,9 @@ impl GalloMcp {
             "fast-plus" | "fastplus" => I2cFrequency::FastPlus,
             other => return Err(invalid_arg(format!("unknown frequency '{other}'"))),
         };
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.i2c_set_config(freq).await.map_err(map_pdg_err)?;
-        ok_json(&"ok")
+        ok_device_json(&dev, &"ok")
     }
 
     /// Execute a batch of I2C operations under one address.
@@ -198,9 +232,9 @@ impl GalloMcp {
                 }
             }
         }
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         let out = dev.i2c_batch(addr, &ops).await.map_err(map_pdg_err)?;
-        ok_json(&Bytes::from_slice(&out))
+        ok_device_json(&dev, &Bytes::from_slice(&out))
     }
 }
 
@@ -251,5 +285,15 @@ mod tests {
         ] {
             assert!(names.contains(&e.to_string()), "missing {e}");
         }
+    }
+
+    #[test]
+    fn read_params_accept_an_optional_serial_number() {
+        let without: I2cReadParams = serde_json::from_str(r#"{"address":72,"count":2}"#).unwrap();
+        assert_eq!(without.serial_number, None);
+
+        let with: I2cReadParams =
+            serde_json::from_str(r#"{"address":72,"count":2,"serial_number":"ABC123"}"#).unwrap();
+        assert_eq!(with.serial_number.as_deref(), Some("ABC123"));
     }
 }

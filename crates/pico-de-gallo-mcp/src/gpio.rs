@@ -8,20 +8,32 @@ use rmcp::{ErrorData, tool, tool_router};
 
 use crate::encoding::validate_timeout_ms;
 use crate::error::{invalid_arg, map_pdg_err};
-use crate::{GalloMcp, ok_json};
+use crate::{GalloMcp, ok_device_json};
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GpioGetParams {
     /// GPIO pin number.
     pub pin: u8,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GpioPutParams {
     /// GPIO pin number.
     pub pin: u8,
     /// Drive the pin high when true, low when false.
     pub high: bool,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
+
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
 pub struct GpioSetConfigParams {
     /// GPIO pin number.
@@ -31,7 +43,13 @@ pub struct GpioSetConfigParams {
     /// "none", "up", or "down".
     #[serde(default = "default_pull")]
     pub pull: String,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
+
 fn default_pull() -> String {
     "none".to_string()
 }
@@ -42,6 +60,11 @@ pub struct GpioWaitParams {
     pub pin: u8,
     /// Timeout in milliseconds (must be non-zero).
     pub timeout_ms: u32,
+    /// USB serial number of the board to use. Required when two or more
+    /// boards are attached and the server is not pinned to one; optional
+    /// otherwise.
+    #[serde(default)]
+    pub serial_number: Option<String>,
 }
 
 #[tool_router(router = gpio_router, vis = "pub(crate)")]
@@ -55,10 +78,13 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<GpioGetParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        let dev = self.connect().await?;
+        use pico_de_gallo_lib::GpioState;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         let state = dev.gpio_get(p.pin).await.map_err(map_pdg_err)?;
-        ok_json(&serde_json::json!({ "high": matches!(state, pico_de_gallo_lib::GpioState::High) }))
+        let high = state == GpioState::High;
+        ok_device_json(&dev, &serde_json::json!({ "high": high }))
     }
+
     /// Set a GPIO pin level.
     #[tool(
         description = "Set a GPIO pin level",
@@ -74,10 +100,11 @@ impl GalloMcp {
         } else {
             GpioState::Low
         };
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.gpio_put(p.pin, s).await.map_err(map_pdg_err)?;
-        ok_json(&"ok")
+        ok_device_json(&dev, &"ok")
     }
+
     /// Configure a GPIO pin direction and pull.
     #[tool(
         description = "Configure a GPIO pin direction and pull",
@@ -99,12 +126,13 @@ impl GalloMcp {
             "down" => GpioPull::Down,
             o => return Err(invalid_arg(format!("unknown pull '{o}'"))),
         };
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.gpio_set_config(p.pin, dir, pull)
             .await
             .map_err(map_pdg_err)?;
-        ok_json(&"ok")
+        ok_device_json(&dev, &"ok")
     }
+
     /// Wait for a rising edge with a timeout.
     #[tool(
         description = "Wait for a rising edge with a timeout",
@@ -115,12 +143,13 @@ impl GalloMcp {
         Parameters(p): Parameters<GpioWaitParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let ms = validate_timeout_ms(p.timeout_ms).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.gpio_wait_for_rising_edge_with_timeout(p.pin, Duration::from_millis(u64::from(ms)))
             .await
             .map_err(map_pdg_err)?;
-        ok_json(&"edge")
+        ok_device_json(&dev, &"edge")
     }
+
     /// Wait for a falling edge with a timeout.
     #[tool(
         description = "Wait for a falling edge with a timeout",
@@ -131,12 +160,13 @@ impl GalloMcp {
         Parameters(p): Parameters<GpioWaitParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let ms = validate_timeout_ms(p.timeout_ms).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.gpio_wait_for_falling_edge_with_timeout(p.pin, Duration::from_millis(u64::from(ms)))
             .await
             .map_err(map_pdg_err)?;
-        ok_json(&"edge")
+        ok_device_json(&dev, &"edge")
     }
+
     /// Wait for any edge with a timeout.
     #[tool(
         description = "Wait for any edge with a timeout",
@@ -147,23 +177,25 @@ impl GalloMcp {
         Parameters(p): Parameters<GpioWaitParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let ms = validate_timeout_ms(p.timeout_ms).map_err(invalid_arg)?;
-        let dev = self.connect().await?;
+        let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.gpio_wait_for_any_edge_with_timeout(p.pin, Duration::from_millis(u64::from(ms)))
             .await
             .map_err(map_pdg_err)?;
-        ok_json(&"edge")
+        ok_device_json(&dev, &"edge")
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
     #[test]
     fn wait_params_deserialize() {
         let p: GpioWaitParams = serde_json::from_str(r#"{"pin":5,"timeout_ms":1000}"#).unwrap();
         assert_eq!(p.pin, 5);
         assert_eq!(p.timeout_ms, 1000);
     }
+
     #[test]
     fn gpio_tools_registered() {
         let names: Vec<String> = crate::GalloMcp::router_for_test()
@@ -181,5 +213,18 @@ mod tests {
         ] {
             assert!(names.contains(&e.to_string()), "missing {e}");
         }
+    }
+
+    #[test]
+    fn set_config_params_accept_an_optional_serial_number() {
+        let without: GpioSetConfigParams =
+            serde_json::from_str(r#"{"pin":5,"direction":"output"}"#).unwrap();
+        assert_eq!(without.pull, "none");
+        assert_eq!(without.serial_number, None);
+
+        let with: GpioSetConfigParams =
+            serde_json::from_str(r#"{"pin":5,"direction":"output","serial_number":"ABC123"}"#)
+                .unwrap();
+        assert_eq!(with.serial_number.as_deref(), Some("ABC123"));
     }
 }
