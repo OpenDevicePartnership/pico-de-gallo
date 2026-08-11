@@ -26,7 +26,7 @@ git rev-list --count upstream/main..HEAD
 gh pr checks 112 --repo OpenDevicePartnership/pico-de-gallo
 ```
 
-Closed by the PR: **#103, #105, #107, #108, #111**. Refs #98, #106.
+Closed by the PR: **#103, #105, #106, #107, #108, #111**. Refs #98.
 
 Do not force-push without asking (§4 rule 8). The PR is a draft
 deliberately — per §11, request review only once it is intended to land.
@@ -102,17 +102,78 @@ PIN_7 (MOSI), PIN_4 (MISO). That is the substance of open issue **#99**.
 
 ## 4. Remaining work
 
-Nothing below was attempted. All were explicitly out of scope.
+Nothing below was attempted, except where a row says otherwise. All were
+explicitly out of scope.
+
+**Line numbers quoted inside issues #99–#110 are stale.** They were written
+against `f92dd10` and the files have moved since — e.g. #106 cites
+`pdg_spi.c:179` for the `config->slave > 3U` bound, which is now line 206.
+Grep for the code, do not trust the citation.
 
 | Issue | Notes for whoever picks it up |
 |---|---|
 | **#101** I2C probing broken (NULL / zero-length msgs) | Needs an I2C peripheral attached. `pdg_i2c.c:120-127` only accepts specific message groupings and returns `-ENOTSUP` otherwise. |
 | **#102** `i2c_burst_write()` → `-ENOTSUP` | Same root area as #101: the message-grouping matcher at `pdg_i2c.c:112-127`. |
-| **#104** SPI silently reconfigures GPIO0 as CS | Related to the index/pin confusion in §3. Consider fixing alongside #99. |
+| **#104** SPI silently reconfigures GPIO0 as CS | Related to the index/pin confusion in §3. Consider fixing alongside #99. The hard-coded `config->slave > 3U` can now be bounded by `GALLO_NUM_GPIOS` from the generated header — see §4.1. |
 | **#99** Can't use `SPI_CS` pin as CS | Firmware-side: GPIO 5 is never claimed. Wire-protocol change likely — read §6 of AGENTS.md before touching it. |
-| **#106** remainder | Only `GALLO_NUM_GPIOS` is left; needs `NUM_GPIOS` hoisted from the firmware crate into `pico-de-gallo-internal`. |
-| **#109** twister / CI | There is now a hardware-free build path worth wiring up: `samples/i2c_bridge` and `samples/spi_nor_id` both build without a board. |
+| **#109** twister / CI | Investigated and **deliberately deferred** by the maintainer, not blocked. See §4.2 for the constraint and what was already proven. |
 | **#110** book ↔ AGENTS.md parity | `zephyr/README.md` was rewritten and is accurate, but the module is still absent from `book/` and from the §15.1 mapping table. |
+
+### 4.1 #106 is closed
+
+`GALLO_NUM_GPIOS` shipped in `feat(internal,ffi,firmware): Export the GPIO
+count as GALLO_NUM_GPIOS`. `NUM_GPIOS` was `pub(crate)` in the firmware —
+invisible to every host crate — so it was hoisted into
+`pico-de-gallo-internal`, re-exported through `pico-de-gallo-lib`, and
+mirrored into the C header. The firmware now reaches it through a
+`pub(crate) use`, so every `crate::context::NUM_GPIOS` call site is
+unchanged.
+
+Both cbindgen traps were re-confirmed rather than assumed: the constant is
+written as a literal (a path expression emits *nothing*, silently) and a
+`const` assertion ties it back to the wire crate — mutating it to 5 fails
+the build. Running cbindgen confirmed `#define GALLO_NUM_GPIOS 4` really
+does reach the header.
+
+This removes the last magic number from the Zephyr module's list in #106
+that had no exported source of truth.
+
+### 4.2 #109 — what is settled and what is not
+
+**Hard constraint from the maintainer: no `#include` of a `.c` file.** That
+rules out the whitebox approach, which is otherwise the cheapest way in.
+
+The obstacle is unchanged: all six functions #109 wants tested are `static`,
+so a test binary cannot reach them —
+
+    speed_to_code_   pdg_i2c.c:47      bufset_len_     pdg_spi.c:71
+    freq_to_speed_   pdg_i2c.c:88      flatten_tx_     pdg_spi.c:95
+    validate_group_  pdg_i2c.c:110     unflatten_rx_   pdg_spi.c:116
+
+Remaining options are to extract them into a real `.c`/`.h` pair with
+external linkage, or to test only through the driver's public API.
+
+Three findings from the investigation are worth keeping, because they were
+verified by building and are not obvious:
+
+1. **Hardware-free CI is genuinely cheap.** A ztest suite that instantiates
+   no devicetree node leaves `CONFIG_PICO_DE_GALLO=n`, because
+   `zephyr/Kconfig` only defaults it `y` when a `odp,pico-de-gallo-*` node
+   is enabled. That skips the whole `if(CONFIG_PICO_DE_GALLO)` block in
+   `zephyr/CMakeLists.txt` — **no cargo, no rustc, no Corrosion tarball
+   fetch**. Confirmed by grepping the build tree. The board dependency only
+   bites for sample builds and hardware-in-the-loop.
+2. **twister builds with `-Werror`.** `CONFIG_COMPILER_WARNINGS_AS_ERRORS=y`
+   is set by twister's `runner.py`, so any `static` function reachable from
+   nothing is a hard build failure, not a warning.
+3. **A recording fake for the `pdg_*_bottom_*` layer is what makes #101
+   answerable at all.** #101's real question — what does a zero-length
+   write actually put on the wire? — cannot be answered by inspection, and
+   otherwise needs a bench peripheral and a logic analyser. The fake is
+   independent of how the `static` problem is solved.
+
+Also still true: `samples/i2c_bridge` and `samples/spi_nor_id` both build
+without a board, so a build-only CI tier is available whenever it is wanted.
 
 ### Not an issue yet
 
