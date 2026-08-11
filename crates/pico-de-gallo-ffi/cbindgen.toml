@@ -22,3 +22,25 @@ line_endings = "LF"
 style = "both"
 sort_by = "Name" # default for `fn.sort_by` and `const.sort_by`
 usize_is_size_t = true
+
+################################ Exports #######################################
+
+# cbindgen only emits types reachable from an exported function signature.
+# The configuration enums below are deliberately NOT in any signature — the
+# `gallo_*` entry points keep taking plain `uint8_t` so the existing C ABI is
+# unchanged — so they have to be listed here or they get pruned.
+#
+# Each of these enums carries `cbindgen:prefix-with-name=true` in its rustdoc,
+# because C enum variants share one global namespace and several of these
+# would otherwise collide (both batch-op tags define `Read` and `Write`).
+# The prefix is set per enum rather than globally so that `Status` keeps its
+# unprefixed variant names, which are stable C ABI.
+[export]
+include = [
+    "GalloGpioDirection",
+    "GalloGpioEdge",
+    "GalloGpioPull",
+    "GalloI2cBatchOpTag",
+    "GalloI2cFrequency",
+    "GalloSpiBatchOpTag",
+]

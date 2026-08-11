@@ -59,6 +59,51 @@ All operational functions return `Status`.
 The full status-code list lives in the
 [Status Code Reference](../appendix/status-codes.md).
 
+## Limits and configuration enums
+
+The header exports the firmware's transfer limits, so C callers can size
+buffers from the same numbers the firmware enforces instead of hard-coding
+copies:
+
+```c
+#define GALLO_MAX_TRANSFER_SIZE 4096
+#define GALLO_MAX_BATCH_OPS 64
+```
+
+`GALLO_MAX_TRANSFER_SIZE` applies **per direction** — a write-then-read may
+carry that many bytes each way. Exceeding it yields `Status::BufferTooLong`.
+Exceeding `GALLO_MAX_BATCH_OPS` in `gallo_i2c_batch` or `gallo_spi_batch`
+yields `Status::InvalidArgument`.
+
+Both mirror constants in `pico-de-gallo-internal`, and a compile-time
+assertion in `pico-de-gallo-ffi` fails the build if the two ever disagree.
+
+The header also names the integer values that the `gallo_*` entry points
+already accept and return as `uint8_t`:
+
+| Enum                  | Values                                                                    | Used by                                            |
+|-----------------------|---------------------------------------------------------------------------|----------------------------------------------------|
+| `GalloI2cFrequency`   | `_Standard` 0, `_Fast` 1, `_FastPlus` 2                                   | `gallo_i2c_set_config`, `gallo_i2c_get_config`     |
+| `GalloGpioDirection`  | `_Input` 0, `_Output` 1                                                   | `gallo_gpio_set_config`                            |
+| `GalloGpioPull`       | `_None` 0, `_Up` 1, `_Down` 2                                             | `gallo_gpio_set_config`                            |
+| `GalloGpioEdge`       | `_Rising` 0, `_Falling` 1, `_Any` 2                                       | `gallo_gpio_subscribe`                             |
+| `GalloI2cBatchOpTag`  | `_Read` 0, `_Write` 1                                                     | `GalloI2cBatchOp::tag`                             |
+| `GalloSpiBatchOpTag`  | `_Read` 0, `_Write` 1, `_Transfer` 2, `_DelayNs` 3                        | `GalloSpiBatchOp::tag`                             |
+
+Variant names are prefixed with the enum name (`GalloGpioPull_Up`), because C
+enum variants share a single global namespace and several of these would
+otherwise collide — both batch-op tags define `Read` and `Write`.
+
+> [!NOTE]
+> These enums are additive. The function signatures still take plain
+> `uint8_t`, so existing code that passes literals keeps working unchanged.
+
+> [!WARNING]
+> Like `Status`, these values are **stable C ABI** and must match the
+> `pico-de-gallo-internal` wire enums they mirror. Wire-enum variant order is
+> itself ABI, because postcard serializes by variant index. A unit test
+> (`config_enums_match_wire_enums`) asserts the two numberings agree.
+
 ## Function Reference
 
 The generated header is the canonical API surface, but these are the functions
@@ -110,7 +155,9 @@ Status gallo_i2c_get_config(const PicoDeGallo *gallo, uint8_t *out_frequency);
 ```
 
 `frequency` uses the wire enum encoding: `0 = Standard`, `1 = Fast`,
-`2 = FastPlus`.
+`2 = FastPlus`. The header also defines `GalloI2cFrequency`
+(`GalloI2cFrequency_Standard`, `_Fast`, `_FastPlus`) if you would rather pass a
+name than a number — see [Limits and configuration enums](#limits-and-configuration-enums).
 
 #### I<sup>2</sup>C batch
 
@@ -306,7 +353,20 @@ target/release/build/pico-de-gallo-ffi-<hash>/out/include/pico_de_gallo.h
 - language: C,
 - include guard: `PICO_DE_GALLO_H`,
 - style: both tagged and typedef forms,
-- line endings: LF.
+- line endings: LF,
+- an `[export] include` list.
+
+Two cbindgen behaviours are worth knowing before you add anything to the
+header, because both fail **silently**:
+
+- **Unreferenced types are pruned.** cbindgen only emits types reachable from
+  an exported function signature. The configuration enums above appear in no
+  signature, so they must be listed in `[export] include` or they vanish from
+  the header with no warning.
+- **Const initializers must be literals.** cbindgen folds them syntactically,
+  so `pub const A: usize = some::path::B;` compiles cleanly and emits nothing.
+  Write the literal and guard it with a `const` assertion instead — that is
+  what `GALLO_MAX_TRANSFER_SIZE` and `GALLO_MAX_BATCH_OPS` do.
 
 ## Complete Example
 
