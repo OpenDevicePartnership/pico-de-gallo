@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+config SPI_PICO_DE_GALLO
+	bool "Pico de Gallo SPI controller"
+	default y
+	depends on DT_HAS_ODP_PICO_DE_GALLO_SPI_ENABLED
+	depends on ARCH_POSIX
+	select SPI
+	help
+	  Enable the Pico de Gallo SPI controller driver. This driver forwards
+	  Zephyr SPI API calls to a Pico de Gallo USB bridge attached to the host
+	  running native_sim via the Pico de Gallo C FFI.

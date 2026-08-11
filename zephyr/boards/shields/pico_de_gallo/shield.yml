@@ -1,0 +1,7 @@
+shield:
+  name: pico_de_gallo
+  full_name: Pico de Gallo USB Bridge
+  vendor: odp
+  supported_features:
+    - i2c
+    - spi

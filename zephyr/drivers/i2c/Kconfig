@@ -1,0 +1,13 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+config I2C_PICO_DE_GALLO
+	bool "Pico de Gallo I2C controller"
+	default y
+	depends on DT_HAS_ODP_PICO_DE_GALLO_I2C_ENABLED
+	depends on ARCH_POSIX
+	select I2C
+	help
+	  Enable the Pico de Gallo I2C controller driver. This driver forwards
+	  Zephyr I2C API calls to a Pico de Gallo USB bridge attached to the host
+	  running native_sim via the Pico de Gallo C FFI.

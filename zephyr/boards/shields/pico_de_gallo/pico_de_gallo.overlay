@@ -1,0 +1,22 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+/ {
+	pdg_i2c0: pdg-i2c {
+		compatible = "odp,pico-de-gallo-i2c";
+		clock-frequency = <400000>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+
+	pdg_spi0: pdg-spi {
+		compatible = "odp,pico-de-gallo-spi";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		status = "disabled";
+	};
+};

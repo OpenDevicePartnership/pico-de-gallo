@@ -1,0 +1,5 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+config SHIELD_PICO_DE_GALLO
+	def_bool $(shields_list_contains,pico_de_gallo)
