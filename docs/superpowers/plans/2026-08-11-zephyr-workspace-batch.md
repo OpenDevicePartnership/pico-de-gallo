@@ -352,8 +352,29 @@ defect.
 
 - [ ] **Step 2: Add the guard**
 
-Edit `zephyr/drivers/spi/Kconfig`, appending to the `SPI_PICO_DE_GALLO`
-block after `select SPI`:
+> **The Kconfig spelling below does not work.** It is kept here because it is
+> the obvious approach and the reason it fails is worth knowing. `SPI_ASYNC`
+> and `SPI_RTIO` both `depend on SPI`, and this driver `select`s SPI, so
+> adding `depends on !SPI_ASYNC` closes a loop and Kconfig refuses to parse:
+>
+> ```
+> SPI (drivers/spi/Kconfig:9), with definition...
+> (select-related dependencies: ... (SPI_PICO_DE_GALLO && ... && !SPI_ASYNC && !SPI_RTIO ...))
+> ...depends on SPI_ASYNC (defined at drivers/spi/Kconfig:25)
+> config SPI_ASYNC ... depends on MULTITHREADING && SPI
+> ...depends again on SPI
+> ```
+>
+> Use `BUILD_ASSERT` in `pdg_spi.c` instead — see Step 2b. Besides sidestepping
+> the loop it diagnoses better: `depends on` would silently drop the driver and
+> surface much later as an unresolved `__device_dts_ord_N` at link time,
+> whereas the assertion names the option to turn off. Switching `select SPI`
+> to `depends on SPI` would also break the loop and both SPI samples already
+> set `CONFIG_SPI=y`, but it forfeits the "enable the DT node and the driver
+> appears" behaviour for no benefit.
+
+~~Edit `zephyr/drivers/spi/Kconfig`, appending to the `SPI_PICO_DE_GALLO`
+block after `select SPI`:~~
 
 ```
 config SPI_PICO_DE_GALLO
@@ -374,6 +395,23 @@ config SPI_PICO_DE_GALLO
 	  Zephyr SPI API calls to a Pico de Gallo USB bridge attached to the host
 	  running native_sim via the Pico de Gallo C FFI.
 ```
+
+- [ ] **Step 2b: Add the guard, for real**
+
+Leave `zephyr/drivers/spi/Kconfig` untouched. Add to `pdg_spi.c` after the
+includes:
+
+```c
+BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_ASYNC),
+	     "The Pico de Gallo SPI driver does not implement transceive_async(); "
+	     "disable CONFIG_SPI_ASYNC.");
+BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
+	     "The Pico de Gallo SPI driver does not implement iodev_submit(); "
+	     "disable CONFIG_SPI_RTIO (CONFIG_SENSOR_ASYNC_API selects it).");
+```
+
+Because the driver still compiles, `CONFIG_SPI_PICO_DE_GALLO` stays `y` in
+every state below; the discriminator is the **build result**, not the symbol.
 
 - [ ] **Step 3: State B — guard fires under RTIO**
 
@@ -663,14 +701,30 @@ Substitute the target name you found in Step 1:
 `$<TARGET_FILE:...>` resolves to `.so`, `.dylib` or `.dll` per platform, so
 the extension is no longer assumed.
 
-> **Risk:** this only works if Zephyr's `native_simulator` machinery consumes
-> `RUNNER_LINK_LIBRARIES` somewhere generator expressions are expanded. If it
-> is interpolated at configure time instead, the literal string
-> `$<TARGET_FILE:pico_de_gallo_ffi>` leaks into the link line. Step 3 will
-> show this as a "no such file" on a path containing `$<`. If that happens,
-> fall back to reconstructing the name from Corrosion's output directory plus
-> `${CMAKE_SHARED_LIBRARY_PREFIX}`/`${CMAKE_SHARED_LIBRARY_SUFFIX}`, which is
-> still platform-correct and expands at configure time.
+> **This does not work either — the risk below is real, and it fired.** Two
+> independent reasons, both confirmed on `native_sim/native/64`:
+>
+> 1. `Target "pico_de_gallo_ffi" is not an executable or library.` Corrosion's
+>    target is not a form `$<TARGET_FILE:>`/`$<TARGET_FILE_DIR:>` accepts.
+> 2. Generator expressions are **not recursive**. The
+>    `$<TARGET_PROPERTY:native_simulator,RUNNER_LINK_LIBRARIES>` read in
+>    `boards/native/common/natsim_config.cmake:36` returns the stored string
+>    without evaluating it, so the genex reached `nsi_config` verbatim as
+>    `NSI_EXTRA_LIBS:=$<TARGET_FILE:pico_de_gallo_ffi>`. Seeing `$<JOIN:` in
+>    that file is *not* evidence that a nested genex will expand.
+>
+> Use the configure-time fallback instead:
+>
+> ```cmake
+> 	set(_pdg_ffi_library
+> 		"${_pdg_ffi_output_dir}/${CMAKE_SHARED_LIBRARY_PREFIX}pico_de_gallo_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}")
+> 	if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+> 		target_link_options(native_simulator INTERFACE "-Wl,-rpath,${_pdg_ffi_output_dir}")
+> 	endif()
+> ```
+>
+> (If Stage B lands, this becomes `CMAKE_STATIC_LIBRARY_PREFIX`/`_SUFFIX` and
+> the rpath goes away entirely.)
 
 - [ ] **Step 3: Rebuild and confirm it still links on Linux**
 
@@ -792,6 +846,39 @@ EOF
 ```
 
 ---
+
+## Outcome
+
+All three issues closed, plus two findings the plan did not anticipate.
+Verified on Zephyr `v4.4.0-11199-g3a6406439c5a`, `native_sim/native/64`,
+CMake 4.4.2, gcc 16.1.1, rustc 1.97.1.
+
+| Task | Result |
+|---|---|
+| 0 | Workspace at `~/zephyrproject` (7.0 G). Needs `ZEPHYR_TOOLCHAIN_VARIANT=host`. |
+| 1 (#103) | `BUILD_ASSERT`, not Kconfig — `depends on` is a dependency loop. |
+| 2 (#107) | In-tree FFI; `GALLO_MAX_TRANSFER_SIZE` in header 0 → 1; mutation check fails the build. |
+| 3A (#108) | Prefix/suffix variables; `$<TARGET_FILE:>` does not work here. |
+| 3B | Static link landed: `ldd` shows 0 entries, 730584 → 6699432 bytes. |
+
+Host workspace after the change: fmt, clippy `-D warnings`, `cargo check
+--workspace --locked` all clean; 441 tests passed, 0 failed, 7 ignored;
+`Cargo.lock` unchanged.
+
+### Findings outside the plan's scope
+
+1. **The SPI driver has an undeclared heap dependency.** `pdg_spi.c:204,212`
+   call `k_malloc`, which lives in `kernel/mempool.c` and is only compiled
+   when `CONFIG_HEAP_MEM_POOL_SIZE > 0`. `SPI_PICO_DE_GALLO` does not select
+   or depend on it, so an application that enables the SPI node without
+   setting the heap fails at link with `undefined reference to 'k_malloc'`.
+   Both SPI samples paper over it by setting `CONFIG_HEAP_MEM_POOL_SIZE=1024`
+   in `prj.conf` by hand. Belongs with the #101/#102/#104 SPI-correctness
+   group. Not fixed here.
+2. **`zephyr/.gitignore` had no `build/` rule**, and its `!*.h` negation
+   re-included every generated header in the in-tree build output. Fixed in
+   `chore(zephyr): Ignore in-tree west build output`, since the workflow this
+   plan mandates is what creates the hazard.
 
 ## Definition of done
 
