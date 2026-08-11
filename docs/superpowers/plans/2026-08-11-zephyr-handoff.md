@@ -14,10 +14,17 @@ already in the repo.
 
 | Item | Value |
 |---|---|
-| Branch | `zephyr`, 18 commits ahead of `upstream/main` @ `f92dd100` |
+| Branch | `zephyr`, based on `upstream/main` @ `f92dd100` |
 | Pushed to | `origin` (`felipebalbi/pico-de-gallo`). **Not** on `upstream`. |
-| PR | #112, **draft**, 49/49 CI checks green (`deploy` skipped, main-only) |
+| PR | #112, **draft**, CI green (`deploy` skipped, main-only) |
 | Worktree | clean |
+
+Check the live state rather than trusting a number written here:
+
+```bash
+git rev-list --count upstream/main..HEAD
+gh pr checks 112 --repo OpenDevicePartnership/pico-de-gallo
+```
 
 Closed by the PR: **#103, #105, #107, #108, #111**. Refs #98, #106.
 
