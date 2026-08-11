@@ -192,17 +192,32 @@ Step 2.
 
 - [ ] **Step 5: Build the baseline**
 
-`native_sim` uses the host toolchain, so no Zephyr SDK is needed for this
-board.
+`native_sim` uses the host toolchain, so no Zephyr SDK is needed — but you
+must **say so explicitly**. Zephyr's default is to hunt for an SDK first, and
+on this machine it finds a 0.16.0 install that Zephyr 4.4.99 rejects:
+
+```
+Could not find a configuration file for package "Zephyr-sdk" that is
+compatible with requested version "1.0".
+  /home/balbi/.local/zephyr-sdk-0.16.0/cmake/Zephyr-sdkConfig.cmake, version: 0.16.0
+```
+
+Setting `ZEPHYR_TOOLCHAIN_VARIANT=host` skips that search entirely. Export
+all three variables — every `west build` in this plan assumes them:
 
 ```bash
-source ~/zephyr-venv/bin/activate
-export ZEPHYR_BASE=~/zephyrproject/zephyr
+export ZEPHYR_BASE=/home/balbi/zephyrproject/zephyr
+export ZEPHYR_TOOLCHAIN_VARIANT=host
+export PATH=/home/balbi/zephyr-venv/bin:$PATH
 cd /home/balbi/workspace/pico-de-gallo/zephyr/samples/i2c_bridge
 west build -p always -b native_sim/native/64 -- -DSHIELD=pico_de_gallo
 ```
 
 Expected: build succeeds and produces `build/zephyr/zephyr.exe`.
+
+> `ZEPHYR_BASE` also disambiguates a **stale** entry in the CMake user
+> package registry (`~/.cmake/packages/Zephyr`) left pointing at a deleted
+> `~/workspace/zephyrproject`. CMake skips dead entries, but pin it anyway.
 
 > The sample's `CMakeLists.txt` sets `BOARD`/`SHIELD` via `set(... CACHE ...)`,
 > but west resolves `BOARD` *before* invoking CMake, so those are inert. Pass
@@ -219,6 +234,28 @@ west build -p always -b native_sim/native/64 -- -DSHIELD=pico_de_gallo 2>&1 \
   | tee /tmp/zephyr-baseline.log
 grep -E "^\[|error|warning" /tmp/zephyr-baseline.log | tail -20
 ```
+
+Baseline measured on 2026-08-11 (Zephyr `v4.4.0-11199-g3a6406439c5a`,
+CMake 4.4.2, gcc 16.1.1, rustc 1.97.1):
+
+| Observation | Value |
+|---|---|
+| `build/zephyr/zephyr.exe` | built, 730584 bytes |
+| FFI source cargo compiled | `build/_deps/pico_de_gallo_ffi_src-src` (crates.io 0.7.1) |
+| `GALLO_MAX_TRANSFER_SIZE` in generated `pico_de_gallo.h` | **0** |
+| same constant in `crates/pico-de-gallo-ffi/src/lib.rs` | 6 occurrences |
+| `.so` copied to | `build/modules/pico-de-gallo/libpico_de_gallo_ffi.so` |
+| cargo's own output | `build/cargo/build/x86_64-unknown-linux-gnu/release/` |
+
+Rows 2–4 are the #107 evidence: the in-tree crate has the #106 constants and
+the header the Zephyr build actually consumes does not. Task 2 flips the
+third row to a non-zero count.
+
+> Note for Task 3: Corrosion *copies* the artifact to
+> `${CMAKE_CURRENT_BINARY_DIR}` as a separate build step, so
+> `$<TARGET_FILE:pico_de_gallo_ffi>` may resolve to the **cargo** directory
+> instead. Either is fine as long as the rpath follows it — verify with
+> `ldd`, do not assume.
 
 Do not commit anything in this task.
 
