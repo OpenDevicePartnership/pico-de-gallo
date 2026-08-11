@@ -264,8 +264,23 @@ pub const GALLO_MAX_TRANSFER_SIZE: usize = 4096;
 /// Mirrors `pico_de_gallo_internal::MAX_BATCH_OPS`.
 pub const GALLO_MAX_BATCH_OPS: usize = 64;
 
+/// Number of user-controllable GPIO pins the firmware exposes.
+///
+/// Valid pin indices are `0..GALLO_NUM_GPIOS`. Passing anything at or
+/// above this bound to [`gallo_gpio_get`], [`gallo_gpio_put`],
+/// [`gallo_gpio_set_config`] or the `gallo_gpio_wait_*` family yields
+/// [`Status::GpioInvalidPin`].
+///
+/// The same indices select the SPI chip-select pin in
+/// [`gallo_spi_batch`], so C callers validating a chip select should
+/// bound it by this constant rather than a literal.
+///
+/// Mirrors `pico_de_gallo_internal::NUM_GPIOS`.
+pub const GALLO_NUM_GPIOS: usize = 4;
+
 const _: () = assert!(GALLO_MAX_TRANSFER_SIZE == lib::MAX_TRANSFER_SIZE);
 const _: () = assert!(GALLO_MAX_BATCH_OPS == lib::MAX_BATCH_OPS);
+const _: () = assert!(GALLO_NUM_GPIOS == lib::NUM_GPIOS);
 
 // ----------------------------- Configuration Enums -----------------------------
 //
@@ -4051,6 +4066,7 @@ mod tests {
     fn limits_match_wire_constants() {
         assert_eq!(GALLO_MAX_TRANSFER_SIZE, lib::MAX_TRANSFER_SIZE);
         assert_eq!(GALLO_MAX_BATCH_OPS, lib::MAX_BATCH_OPS);
+        assert_eq!(GALLO_NUM_GPIOS, lib::NUM_GPIOS);
     }
 
     /// The C-visible enum values must equal the discriminants of the

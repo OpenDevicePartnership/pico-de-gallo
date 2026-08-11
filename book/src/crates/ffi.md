@@ -61,13 +61,14 @@ The full status-code list lives in the
 
 ## Limits and configuration enums
 
-The header exports the firmware's transfer limits, so C callers can size
-buffers from the same numbers the firmware enforces instead of hard-coding
-copies:
+The header exports the firmware's transfer limits and pin count, so C
+callers can size buffers and validate indices from the same numbers the
+firmware enforces instead of hard-coding copies:
 
 ```c
 #define GALLO_MAX_TRANSFER_SIZE 4096
 #define GALLO_MAX_BATCH_OPS 64
+#define GALLO_NUM_GPIOS 4
 ```
 
 `GALLO_MAX_TRANSFER_SIZE` applies **per direction** — a write-then-read may
@@ -75,8 +76,15 @@ carry that many bytes each way. Exceeding it yields `Status::BufferTooLong`.
 Exceeding `GALLO_MAX_BATCH_OPS` in `gallo_i2c_batch` or `gallo_spi_batch`
 yields `Status::InvalidArgument`.
 
-Both mirror constants in `pico-de-gallo-internal`, and a compile-time
-assertion in `pico-de-gallo-ffi` fails the build if the two ever disagree.
+`GALLO_NUM_GPIOS` bounds the valid pin indices, `0..GALLO_NUM_GPIOS`, which
+map to physical GPIO8–GPIO11 on the Pico 2 header. Anything at or above it
+yields `Status::GpioInvalidPin`. The same indices select the SPI chip select
+in `gallo_spi_batch`, so bound a chip select by this constant rather than a
+literal. Note the dedicated `SPI_CS` header pin (GPIO5) is not one of these
+and is not currently claimed by the firmware.
+
+All three mirror constants in `pico-de-gallo-internal`, and a compile-time
+assertion in `pico-de-gallo-ffi` fails the build if they ever disagree.
 
 The header also names the integer values that the `gallo_*` entry points
 already accept and return as `uint8_t`:
@@ -399,7 +407,8 @@ header, because both fail **silently**:
 - **Const initializers must be literals.** cbindgen folds them syntactically,
   so `pub const A: usize = some::path::B;` compiles cleanly and emits nothing.
   Write the literal and guard it with a `const` assertion instead — that is
-  what `GALLO_MAX_TRANSFER_SIZE` and `GALLO_MAX_BATCH_OPS` do.
+  what `GALLO_MAX_TRANSFER_SIZE`, `GALLO_MAX_BATCH_OPS` and
+  `GALLO_NUM_GPIOS` do.
 
 ## Complete Example
 

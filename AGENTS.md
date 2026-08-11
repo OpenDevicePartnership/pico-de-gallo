@@ -492,9 +492,9 @@ version.
   discriminants of the `pico-de-gallo-internal` wire enums they
   mirror (variant order there is itself ABI — see §6.1). The
   `config_enums_match_wire_enums` test enforces the correspondence.
-- `GALLO_MAX_TRANSFER_SIZE` / `GALLO_MAX_BATCH_OPS` mirror the
-  `pico-de-gallo-internal` constants. **They must be written as
-  literals** — cbindgen folds const initializers syntactically and
+- `GALLO_MAX_TRANSFER_SIZE` / `GALLO_MAX_BATCH_OPS` / `GALLO_NUM_GPIOS`
+  mirror the `pico-de-gallo-internal` constants. **They must be written
+  as literals** — cbindgen folds const initializers syntactically and
   silently emits nothing for `= lib::MAX_TRANSFER_SIZE`. `const`
   assertions next to them turn drift into a build failure.
 - **cbindgen prunes types no exported signature references.** Anything

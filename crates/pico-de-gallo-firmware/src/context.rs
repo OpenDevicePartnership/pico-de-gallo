@@ -17,6 +17,11 @@ use embassy_rp::{
 use pico_de_gallo_internal::NUM_ADC_GPIO_CHANNELS;
 use pico_de_gallo_internal::{I2cError, I2cFrequency, MAX_TRANSFER_SIZE, SpiPhase, SpiPolarity};
 
+// Re-exported so the rest of the firmware keeps reaching this through
+// `crate::context`, while the value itself lives in the wire crate where
+// the C FFI can mirror it as GALLO_NUM_GPIOS.
+pub(crate) use pico_de_gallo_internal::NUM_GPIOS;
+
 bind_interrupts!(pub(crate) struct Irqs {
     USBCTRL_IRQ => embassy_rp::usb::InterruptHandler<USB>;
     I2C1_IRQ => embassy_rp::i2c::InterruptHandler<I2C1>;
@@ -30,7 +35,6 @@ bind_interrupts!(pub(crate) struct Rev2Irqs {
     PIO0_IRQ_0 => embassy_rp::pio::InterruptHandler<PIO0>;
 });
 
-pub(crate) const NUM_GPIOS: usize = 4;
 pub(crate) const NUM_PWM_SLICES: usize = 2;
 
 /// System clock frequency in Hz.
