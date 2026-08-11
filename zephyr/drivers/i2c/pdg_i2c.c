@@ -95,7 +95,12 @@ static int freq_to_speed_(uint32_t clock_frequency, uint32_t* speed)
 		case 5000000U: 	{ *speed = I2C_SPEED_ULTRA; 	return 0; }
 
 		default: {
-			LOG_ERR("Invalid I2C frequency provided (frequency=% " PRIu32 "). Returning -EINVAL. Try using one of the following: I2C_SPEED_STANDARD (100_000 Hz), I2C_SPEED_FAST (400_000 Hz), I2C_SPEED_FAST_PLUS (1_000_000 Hz), I2C_SPEED_HIGH (3_400_000 Hz), or I2C_SPEED_ULTRA (5_000_000 Hz).");
+			LOG_ERR("Invalid I2C frequency provided (frequency=%" PRIu32 "). "
+				"Returning -EINVAL. Try using one of the following: "
+				"I2C_SPEED_STANDARD (100_000 Hz), I2C_SPEED_FAST (400_000 Hz), "
+				"I2C_SPEED_FAST_PLUS (1_000_000 Hz), "
+				"I2C_SPEED_HIGH (3_400_000 Hz), "
+				"or I2C_SPEED_ULTRA (5_000_000 Hz).", clock_frequency);
 			return -EINVAL;
 		}
 	}
@@ -181,7 +186,8 @@ static int pdg_i2c_transfer(const struct device *dev, struct i2c_msg *msgs, uint
 		// make sure msgs isn't null
 		// (the Zephyr API should already enforce this via the i2c_transfer() docs but still going to check here)
 		if ((msgs[i].buf == NULL)) {
-			LOG_ERR("NULL buffer provided for I2C message %u. Returning -EINVAL.", i, msgs[i].len);
+			LOG_ERR("NULL buffer provided for I2C message %u (len=%" PRIu32 "). "
+				"Returning -EINVAL.", i, msgs[i].len);
 			return -EINVAL;
 		}
 
