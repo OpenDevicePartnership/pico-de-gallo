@@ -527,8 +527,9 @@ with a crate scope. Format:
   `test`, `build`, `ci`, `revert`. Use `!` (or `BREAKING CHANGE:`
   footer) for breaking changes.
 - **scope:** `internal`, `lib`, `hal`, `ffi`, `application`, `mcp`,
-  `pyco`, `firmware`, or `repo`. Multiple scopes are comma-separated:
-  `feat(internal,firmware): ...`.
+  `pyco`, `firmware`, or `repo`. Non-crate subprojects have their own
+  scope: `zephyr` for the Zephyr module under `zephyr/`. Multiple
+  scopes are comma-separated: `feat(internal,firmware): ...`.
 - **subject:** ≤50 chars, capitalized, imperative mood, no trailing
   period.
 
