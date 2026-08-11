@@ -42,6 +42,10 @@ if(CONFIG_PICO_DE_GALLO)
 
 	# using Corrosion 0.5 because it supports CMake 3.20 (which is Zephyr's baseline CMake version). Corrosion 0.6 requires 3.22 so
 	# it can't be used here
+	#
+	# For offline or air-gapped builds, point FetchContent at a local
+	# Corrosion checkout instead of the GitHub tarball:
+	#   cmake -DFETCHCONTENT_SOURCE_DIR_CORROSION=/path/to/corrosion ...
 	FetchContent_Declare(
 		Corrosion
 		URL https://github.com/corrosion-rs/corrosion/archive/refs/tags/v0.5.2.tar.gz
@@ -50,26 +54,14 @@ if(CONFIG_PICO_DE_GALLO)
 	)
 	FetchContent_MakeAvailable(Corrosion)
 
-	FetchContent_Declare(
-		pico_de_gallo_ffi_src
-		URL https://static.crates.io/crates/pico-de-gallo-ffi/pico-de-gallo-ffi-0.7.1.crate
-		URL_HASH SHA256=600148491a19fb14caad56a144ffb182ee24c0719850273aacaf77eda25cff64
-		${_pdg_fetchcontent_timestamp_args}
-	)
-	FetchContent_MakeAvailable(pico_de_gallo_ffi_src)
-
-	# this keeps Cargo from treating this generated dependency as a member of a
-	# parent workspace when the Zephyr build directory is inside this repository.
-	set(_pdg_ffi_manifest "${pico_de_gallo_ffi_src_SOURCE_DIR}/Cargo.toml")
-	file(READ "${_pdg_ffi_manifest}" _pdg_ffi_manifest_contents)
-	if(NOT _pdg_ffi_manifest_contents MATCHES "(^|[\r\n])[ \t]*\\[workspace\\][ \t]*([\r\n]|$)")
-		file(APPEND "${_pdg_ffi_manifest}" "\n[workspace]\n")
-	endif()
-
 	get_property(_pdg_shared_libs_supported GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS)
 	set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
+	# Build the FFI from this repository rather than crates.io, so that
+	# edits to crates/pico-de-gallo-ffi/ are picked up by the Zephyr build
+	# and so the pin stays visible to cargo-deny, cargo-semver-checks and
+	# CI's lockfile job. Also makes offline configure possible.
 	corrosion_import_crate(
-		MANIFEST_PATH "${_pdg_ffi_manifest}"
+		MANIFEST_PATH "${ZEPHYR_PICO_DE_GALLO_MODULE_DIR}/crates/pico-de-gallo-ffi/Cargo.toml"
 		CRATES pico-de-gallo-ffi
 		CRATE_TYPES cdylib
 		PROFILE release
