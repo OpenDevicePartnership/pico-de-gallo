@@ -143,7 +143,42 @@ Simulated time otherwise advances as fast as the host allows, which makes
 IS31FL3743B LED matrix, and that driver is **not** in Zephyr `main` — only
 `is31fl319x`, `is31fl3216a` and `is31fl3733` are upstream. Until it lands,
 those two samples cannot be built against an upstream checkout. Use
-`samples/i2c_bridge`, or write your own application as below.
+`samples/spi_nor_id` for SPI instead.
+
+---
+
+## Running the SPI sample
+
+`samples/spi_nor_id` identifies a JEDEC SPI NOR flash. It is deliberately
+read-only — it issues only `RDID`, `RDSR`, `RDSFDP` and `READ`, and never a
+write-enable, program, erase or write-status opcode — so it is safe to point
+at a part whose contents you care about.
+
+Wire the flash to SCK/MOSI/MISO and put its chip-select on **GPIO 8**, then:
+
+```bash
+cd zephyr/samples/spi_nor_id
+west build -p always -b native_sim/native/64 -- -DSHIELD=pico_de_gallo
+west build -t run
+```
+
+Actual output, against a GigaDevice GD25Q16 holding an iCE40 bitstream:
+
+```text
+<inf> spi_pico_de_gallo: Opening Pico de Gallo SPI bridge
+<inf> spi_pico_de_gallo: Pico de Gallo SPI bridge ready
+*** Booting Zephyr OS build v4.4.0-... ***
+JEDEC id: mfr=0xC8 type=0x40 cap=0x15 (2048 KiB)
+status:   0x00 (WIP=0 WEL=0)
+SFDP:     53 46 44 50  ("SFDP" signature OK)
+@000000:  FF 00 00 FF 7E AA 99 7E 51 00 01 05 92 00 20 62
+```
+
+The sample talks to the bus directly rather than through Zephyr's
+`jedec,spi-nor` driver. That driver is a reasonable choice in a real
+application, but its configuration path issues `WREN`/`WRSR` to clear block
+protection, which is a write. Driving the opcodes by hand keeps every byte
+that reaches the wire visible in `src/main.c`.
 
 ---
 
@@ -200,6 +235,37 @@ Bus speed comes from the `clock-frequency` property on the controller node
 ```conf
 CONFIG_SPI=y
 ```
+
+> **`reg` is a chip-select index, not a GPIO number, and not the board's
+> dedicated `SPI_CS` pin.** The driver passes `reg` straight through as the
+> bridge's CS index, which selects one of the four *user* GPIOs:
+>
+> | `reg` | Drives |
+> |---|---|
+> | `<0>` | GPIO 8 |
+> | `<1>` | GPIO 9 |
+> | `<2>` | GPIO 10 |
+> | `<3>` | GPIO 11 |
+>
+> The `SPI_CS` pin on GPIO 5 in the hardware pinout is **not** driven by the
+> firmware and cannot be used here. Anything outside 0–3 is rejected with
+> `-ENOTSUP`. Do **not** add `cs-gpios` to the controller node either: the
+> driver refuses GPIO-controlled chip select, also with `-ENOTSUP`.
+
+If you would rather not declare a child node, build the `spi_config` yourself
+and address the controller directly — `samples/spi_nor_id` does this:
+
+```c
+static const struct device *const bus = DEVICE_DT_GET(DT_NODELABEL(pdg_spi0));
+
+static const struct spi_config cfg = {
+	.frequency = 10000000,
+	.operation = SPI_WORD_SET(8) | SPI_OP_MODE_MASTER | SPI_TRANSFER_MSB,
+	.slave = 0, /* CS index 0 -> GPIO 8 */
+};
+```
+
+Leave `.cs` zeroed, for the same reason you omit `cs-gpios`.
 
 The driver allocates flattened transfer buffers from the system heap. You do
 **not** need to set `CONFIG_HEAP_MEM_POOL_SIZE`: enabling the driver

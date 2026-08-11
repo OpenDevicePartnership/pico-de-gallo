@@ -1,0 +1,9 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+&pdg_spi0 {
+	status = "okay";
+};
