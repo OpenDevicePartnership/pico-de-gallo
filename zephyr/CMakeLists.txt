@@ -77,9 +77,27 @@ if(CONFIG_PICO_DE_GALLO)
 	set(_pdg_ffi_output_dir "${CMAKE_CURRENT_BINARY_DIR}")
 	set(_pdg_ffi_include_dir
 		"${_pdg_ffi_output_dir}/corrosion_generated/cbindgen/pico_de_gallo_ffi/include")
-	set(_pdg_ffi_library "${_pdg_ffi_output_dir}/libpico_de_gallo_ffi.so")
+	# Derive the artifact name from CMake's platform conventions instead of
+	# hardcoding an ELF shared object. This resolves to
+	# libpico_de_gallo_ffi.so on Linux, libpico_de_gallo_ffi.dylib on macOS
+	# (a supported native_sim host, where the hardcoded .so named a file that
+	# never exists) and pico_de_gallo_ffi.dll on Windows -- matching the names
+	# Corrosion copies into this directory on each platform.
+	#
+	# $<TARGET_FILE:pico_de_gallo_ffi> would be the obvious spelling but does
+	# not work here, for two independent reasons: Corrosion's target is not an
+	# executable or library target that TARGET_FILE accepts, and generator
+	# expressions are not recursive, so the $<TARGET_PROPERTY:> read of
+	# RUNNER_LINK_LIBRARIES in boards/native/common/natsim_config.cmake would
+	# emit the genex verbatim rather than evaluating it.
+	set(_pdg_ffi_library
+		"${_pdg_ffi_output_dir}/${CMAKE_SHARED_LIBRARY_PREFIX}pico_de_gallo_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}")
 	target_compile_options(native_simulator INTERFACE "-I${_pdg_ffi_include_dir}")
-	target_link_options(native_simulator INTERFACE "-Wl,-rpath,${_pdg_ffi_output_dir}")
+	# -Wl,-rpath is an ELF/Mach-O concept; it is meaningless to the Windows
+	# linker, which resolves DLLs by search path instead.
+	if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
+		target_link_options(native_simulator INTERFACE "-Wl,-rpath,${_pdg_ffi_output_dir}")
+	endif()
 	set_property(TARGET native_simulator APPEND PROPERTY RUNNER_LINK_LIBRARIES
 		"${_pdg_ffi_library}")
 
