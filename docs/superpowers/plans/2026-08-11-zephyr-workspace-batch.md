@@ -102,6 +102,17 @@ evidence.
   Types unreferenced by an exported signature are pruned unless listed in
   `[export] include`; const initializers that are not literals emit nothing.
   Relevant if Task 3 tempts you to touch header generation.
+- **This machine has CMake 4.4.2, not 3.2x.** Corrosion 0.5.2 predates CMake
+  4, which dropped compatibility with `cmake_minimum_required(VERSION <3.5)`.
+  Corrosion declares 3.15 so it should configure, but treat any CMake-4
+  policy or removed-command error during Task 0 as an environment problem to
+  solve there — not as a defect introduced by Tasks 1–3. Escape hatch if it
+  bites: `-DCMAKE_POLICY_VERSION_MINIMUM=3.5`.
+- **The SPI node is disabled by default.** The shield overlay
+  (`zephyr/boards/shields/pico_de_gallo/pico_de_gallo.overlay:19`) sets
+  `pdg_spi0` to `status = "disabled"`, so `CONFIG_SPI_PICO_DE_GALLO` is
+  unselectable in `samples/i2c_bridge` regardless of Kconfig. Task 1 Step 0
+  works around this; do not verify SPI Kconfig behaviour without it.
 
 ---
 
@@ -239,21 +250,68 @@ ops.
 **Files:**
 - Modify: `zephyr/drivers/spi/Kconfig`
 
-- [ ] **Step 1: Reproduce the crash**
+- [ ] **Step 0: Make the SPI driver reachable at all**
 
-Confirm the failure is real before fixing it. Add RTIO to the sample and
-build:
+> **Do not skip this.** `zephyr/boards/shields/pico_de_gallo/pico_de_gallo.overlay:19`
+> sets `pdg_spi0` to `status = "disabled"`, and `i2c_bridge/app.overlay` only
+> enables `pdg_i2c0`. So `DT_HAS_ODP_PICO_DE_GALLO_SPI_ENABLED` is false and
+> `CONFIG_SPI_PICO_DE_GALLO` is *already* unselectable via the pre-existing
+> `depends on` at `zephyr/drivers/spi/Kconfig:7` — before any change.
+>
+> Verifying against the stock sample therefore proves nothing: the "before"
+> build succeeds because the SPI driver is never compiled, and
+> `# CONFIG_SPI_PICO_DE_GALLO is not set` is true with *and* without the fix.
+> Such a check passes on an empty diff, and would also pass if the guard were
+> typo'd into something that disables the driver unconditionally.
+
+Create a throwaway overlay that enables the SPI node. It lives in `/tmp` — it
+is a verification artifact, **not** something to commit:
+
+```bash
+cat > /tmp/pdg-spi-check.overlay <<'EOF'
+&pdg_spi0 {
+	status = "okay";
+};
+EOF
+```
+
+- [ ] **Step 1: Establish the three states**
+
+Every build below adds `-DEXTRA_DTC_OVERLAY_FILE=/tmp/pdg-spi-check.overlay`.
+Define a helper so the states differ only in the config fragment:
 
 ```bash
 cd /home/balbi/workspace/pico-de-gallo/zephyr/samples/i2c_bridge
-west build -p always -b native_sim/native/64 -- \
-  -DSHIELD=pico_de_gallo -DCONFIG_SPI=y -DCONFIG_SPI_RTIO=y
+pdg_cfg () {   # usage: pdg_cfg [extra -DCONFIG_... args]
+  west build -p always -b native_sim/native/64 -- \
+    -DSHIELD=pico_de_gallo \
+    -DEXTRA_DTC_OVERLAY_FILE=/tmp/pdg-spi-check.overlay "$@" >/dev/null 2>&1
+  grep -E '^(CONFIG_SPI_PICO_DE_GALLO|CONFIG_SPI_RTIO|CONFIG_SPI_ASYNC)=|^# CONFIG_SPI_PICO_DE_GALLO' \
+    build/zephyr/.config
+}
 ```
 
-Expected *before* the fix: the build **succeeds**. That is the bug — nothing
-stops the combination. Note it and move on. (Triggering the actual segfault
-needs an application that calls an RTIO API; a build that silently permits
-the combination is sufficient evidence.)
+**State A — baseline (Kconfig unchanged), RTIO on.** This is the bug:
+
+```bash
+pdg_cfg -DCONFIG_SPI_RTIO=y
+```
+
+Expected: **`CONFIG_SPI_PICO_DE_GALLO=y` *and* `CONFIG_SPI_RTIO=y`** both
+present. That is the defect — the driver is compiled with only `.transceive`
+and `.release` while the subsystem will happily dispatch `iodev_submit()`
+through a NULL pointer.
+
+> Assert `CONFIG_SPI_RTIO=y` really landed. A `-DCONFIG_*` whose own
+> dependencies are unmet is dropped with a warning, and if that happens
+> State B becomes vacuous for exactly the reason Step 0 describes. If it is
+> missing, add `CONFIG_SPI=y` explicitly and re-check before continuing.
+
+Record the output. Only now apply the fix in Step 2.
+
+Triggering the actual segfault would need an application that calls an RTIO
+API; a config that permits the combination is sufficient evidence of the
+defect.
 
 - [ ] **Step 2: Add the guard**
 
@@ -280,34 +338,51 @@ config SPI_PICO_DE_GALLO
 	  running native_sim via the Pico de Gallo C FFI.
 ```
 
-- [ ] **Step 3: Verify the guard fires**
+- [ ] **Step 3: State B — guard fires under RTIO**
 
 ```bash
-cd /home/balbi/workspace/pico-de-gallo/zephyr/samples/i2c_bridge
-west build -p always -b native_sim/native/64 -- \
-  -DSHIELD=pico_de_gallo -DCONFIG_SPI=y -DCONFIG_SPI_RTIO=y
+pdg_cfg -DCONFIG_SPI_RTIO=y
 ```
 
-Expected *after* the fix: `SPI_PICO_DE_GALLO` is no longer selectable, so the
-SPI driver is not compiled. Confirm:
+Expected: `# CONFIG_SPI_PICO_DE_GALLO is not set`, with `CONFIG_SPI_RTIO=y`
+still present. Compare against the State A output recorded in Step 1 — the
+line must have *changed*. If State A and State B agree, the check is not
+measuring the guard; go back to Step 0.
+
+- [ ] **Step 4: State C — guard fires under async**
 
 ```bash
-grep SPI_PICO_DE_GALLO build/zephyr/.config
+pdg_cfg -DCONFIG_SPI_ASYNC=y
 ```
 
 Expected: `# CONFIG_SPI_PICO_DE_GALLO is not set`.
 
-- [ ] **Step 4: Verify the normal build still works**
+- [ ] **Step 5: State D — guard does NOT over-fire**
+
+This is the check the original plan lacked, and the one that catches a guard
+mistyped into something that disables the driver unconditionally.
+
+```bash
+pdg_cfg
+```
+
+Expected: **`CONFIG_SPI_PICO_DE_GALLO=y`**, with neither `CONFIG_SPI_RTIO`
+nor `CONFIG_SPI_ASYNC` set. The driver must still build on the normal path.
+
+- [ ] **Step 6: Confirm the stock sample is unaffected**
+
+Without the throwaway overlay, exactly as a user would build it:
 
 ```bash
 west build -p always -b native_sim/native/64 -- -DSHIELD=pico_de_gallo
-grep SPI_PICO_DE_GALLO build/zephyr/.config
 ```
 
-Expected: build succeeds. (`i2c_bridge` does not enable SPI, so the symbol
-may be unset here too; the point is that the build is unaffected.)
+Expected: build succeeds, producing `build/zephyr/zephyr.exe`, matching the
+Task 0 baseline. (`CONFIG_SPI_PICO_DE_GALLO` is unset here because
+`pdg_spi0` is disabled in the shield overlay — that is expected and is
+*not* evidence about the guard.)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 cd /home/balbi/workspace/pico-de-gallo
@@ -551,6 +626,15 @@ Substitute the target name you found in Step 1:
 `$<TARGET_FILE:...>` resolves to `.so`, `.dylib` or `.dll` per platform, so
 the extension is no longer assumed.
 
+> **Risk:** this only works if Zephyr's `native_simulator` machinery consumes
+> `RUNNER_LINK_LIBRARIES` somewhere generator expressions are expanded. If it
+> is interpolated at configure time instead, the literal string
+> `$<TARGET_FILE:pico_de_gallo_ffi>` leaks into the link line. Step 3 will
+> show this as a "no such file" on a path containing `$<`. If that happens,
+> fall back to reconstructing the name from Corrosion's output directory plus
+> `${CMAKE_SHARED_LIBRARY_PREFIX}`/`${CMAKE_SHARED_LIBRARY_SUFFIX}`, which is
+> still platform-correct and expands at configure time.
+
 - [ ] **Step 3: Rebuild and confirm it still links on Linux**
 
 ```bash
@@ -675,14 +759,22 @@ EOF
 ## Definition of done
 
 - [ ] `samples/i2c_bridge` builds clean on `native_sim/native/64`.
-- [ ] `CONFIG_SPI_RTIO=y` no longer permits `SPI_PICO_DE_GALLO` (#103).
+- [ ] `CONFIG_SPI_RTIO=y` no longer permits `SPI_PICO_DE_GALLO` (#103) —
+      proven by the State A/B/C/D matrix in Task 1, with the SPI node enabled
+      via the throwaway overlay. State A must differ from State B, and State D
+      must still be `=y`. A check that passes on an empty diff is not a check.
 - [ ] The Zephyr build compiles the in-tree FFI — proven by the mutation
       check in Task 2 Step 6, not by inspection (#107).
 - [ ] No `.so` literal and no unguarded `-Wl,-rpath` in
       `zephyr/CMakeLists.txt` (#108).
 - [ ] `cargo check --workspace --locked` passes at the repo root.
+- [ ] If any `crates/` file changed (i.e. Task 3 Stage B landed):
+      `cargo fmt --check`, `cargo clippy --all-targets --locked -- -D warnings`
+      and `cargo test --locked` all pass (`AGENTS.md` §5.1).
 - [ ] Every new commit: subject ≤50 chars, valid scope, `Assisted-by:` +
       `Co-authored-by:`, no `Signed-off-by:`, LF endings.
+- [ ] No throwaway verification artifacts committed (`/tmp/pdg-spi-check.overlay`
+      stays in `/tmp`; `git status` is clean of stray overlays).
 - [ ] Nothing pushed without asking.
 
 ## Out of scope
