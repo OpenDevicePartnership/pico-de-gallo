@@ -24,6 +24,33 @@
 
 #include "pdg_spi_bottom.h"
 
+/*
+ * Every operation in this driver is a blocking USB round trip, so the
+ * asynchronous and RTIO driver ops are not implemented: .transceive and
+ * .release are the only entries in pdg_spi_driver_api.
+ *
+ * Zephyr's SPI subsystem dispatches transceive_async() and iodev_submit()
+ * straight through the driver API with no NULL check -- unlike I2C, which
+ * returns -ENOSYS. Compiling this driver into an image that enables either
+ * option would turn any async use into a jump through a NULL function
+ * pointer, which on native_sim is a segfault rather than an error return.
+ * CONFIG_SPI_RTIO is also selected transitively by CONFIG_SENSOR_ASYNC_API,
+ * so an application can reach it without asking.
+ *
+ * This is deliberately a BUILD_ASSERT rather than a Kconfig "depends on
+ * !SPI_ASYNC". Both SPI_ASYNC and SPI_RTIO depend on SPI, which this driver
+ * selects, so expressing the constraint in Kconfig produces a dependency
+ * loop and refuses to parse. A BUILD_ASSERT also fails loudly with the
+ * reason, where "depends on" would silently drop the driver and surface as
+ * an unresolved __device_dts_ord_N at link time.
+ */
+BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_ASYNC),
+	     "The Pico de Gallo SPI driver does not implement transceive_async(); "
+	     "disable CONFIG_SPI_ASYNC.");
+BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
+	     "The Pico de Gallo SPI driver does not implement iodev_submit(); "
+	     "disable CONFIG_SPI_RTIO (CONFIG_SENSOR_ASYNC_API selects it).");
+
 LOG_MODULE_REGISTER(spi_pico_de_gallo, CONFIG_SPI_LOG_LEVEL);
 
 // Firmware single-transfer limit (pico_de_gallo_internal::MAX_TRANSFER_SIZE).
