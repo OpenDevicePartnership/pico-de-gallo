@@ -54,20 +54,22 @@ if(CONFIG_PICO_DE_GALLO)
 	)
 	FetchContent_MakeAvailable(Corrosion)
 
-	get_property(_pdg_shared_libs_supported GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS)
-	set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS TRUE)
 	# Build the FFI from this repository rather than crates.io, so that
 	# edits to crates/pico-de-gallo-ffi/ are picked up by the Zephyr build
 	# and so the pin stays visible to cargo-deny, cargo-semver-checks and
 	# CI's lockfile job. Also makes offline configure possible.
+	#
+	# staticlib rather than cdylib: the native_simulator runner then carries
+	# the FFI inside the executable, so there is no -Wl,-rpath to get right,
+	# no shared object to keep alongside zephyr.exe, and no need to force
+	# TARGET_SUPPORTS_SHARED_LIBS on for Zephyr's toolchain files.
 	corrosion_import_crate(
 		MANIFEST_PATH "${ZEPHYR_PICO_DE_GALLO_MODULE_DIR}/crates/pico-de-gallo-ffi/Cargo.toml"
 		CRATES pico-de-gallo-ffi
-		CRATE_TYPES cdylib
+		CRATE_TYPES staticlib
 		PROFILE release
 		LOCKED
 	)
-	set_property(GLOBAL PROPERTY TARGET_SUPPORTS_SHARED_LIBS "${_pdg_shared_libs_supported}")
 	corrosion_set_hostbuild(pico_de_gallo_ffi)
 	corrosion_experimental_cbindgen(
 		TARGET pico_de_gallo_ffi
@@ -78,11 +80,10 @@ if(CONFIG_PICO_DE_GALLO)
 	set(_pdg_ffi_include_dir
 		"${_pdg_ffi_output_dir}/corrosion_generated/cbindgen/pico_de_gallo_ffi/include")
 	# Derive the artifact name from CMake's platform conventions instead of
-	# hardcoding an ELF shared object. This resolves to
-	# libpico_de_gallo_ffi.so on Linux, libpico_de_gallo_ffi.dylib on macOS
-	# (a supported native_sim host, where the hardcoded .so named a file that
-	# never exists) and pico_de_gallo_ffi.dll on Windows -- matching the names
-	# Corrosion copies into this directory on each platform.
+	# hardcoding an ELF archive: libpico_de_gallo_ffi.a on Linux and macOS,
+	# pico_de_gallo_ffi.lib on Windows. macOS is a supported native_sim host,
+	# and the previous hardcoded libpico_de_gallo_ffi.so named a file that
+	# never exists there.
 	#
 	# $<TARGET_FILE:pico_de_gallo_ffi> would be the obvious spelling but does
 	# not work here, for two independent reasons: Corrosion's target is not an
@@ -91,13 +92,8 @@ if(CONFIG_PICO_DE_GALLO)
 	# RUNNER_LINK_LIBRARIES in boards/native/common/natsim_config.cmake would
 	# emit the genex verbatim rather than evaluating it.
 	set(_pdg_ffi_library
-		"${_pdg_ffi_output_dir}/${CMAKE_SHARED_LIBRARY_PREFIX}pico_de_gallo_ffi${CMAKE_SHARED_LIBRARY_SUFFIX}")
+		"${_pdg_ffi_output_dir}/${CMAKE_STATIC_LIBRARY_PREFIX}pico_de_gallo_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}")
 	target_compile_options(native_simulator INTERFACE "-I${_pdg_ffi_include_dir}")
-	# -Wl,-rpath is an ELF/Mach-O concept; it is meaningless to the Windows
-	# linker, which resolves DLLs by search path instead.
-	if(NOT CMAKE_SYSTEM_NAME STREQUAL "Windows")
-		target_link_options(native_simulator INTERFACE "-Wl,-rpath,${_pdg_ffi_output_dir}")
-	endif()
 	set_property(TARGET native_simulator APPEND PROPERTY RUNNER_LINK_LIBRARIES
 		"${_pdg_ffi_library}")
 
