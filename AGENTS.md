@@ -549,8 +549,10 @@ with a crate scope. Format:
   `pyco`, `firmware`, or `repo`. Non-crate subprojects have their own
   scope: `zephyr` for the Zephyr module under `zephyr/`. Multiple
   scopes are comma-separated: `feat(internal,firmware): ...`.
-- **subject:** ≤50 chars, capitalized, imperative mood, no trailing
-  period.
+- **subject:** ≤72 chars, capitalized, imperative mood, no trailing
+  period. 72 is the limit, not a target — prefer shorter when it
+  costs no clarity, but do not truncate a subject into vagueness to
+  chase 50.
 
 Required trailers for AI-assisted commits:
 

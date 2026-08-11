@@ -55,7 +55,7 @@ given specification or scoped task.
   - **Firmware is `no_std` with `defmt` only** (§4#5). No `log`,
     `println!`, or `eprintln!` in firmware code.
   - **Conventional Commits with a crate scope** (§4#6, §10).
-    Subject line ≤50 chars, imperative, no trailing period. Use
+    Subject line ≤72 chars, imperative, no trailing period. Use
     only the scopes listed in §10. AI-assisted commits carry
     **both** trailers:
     `Assisted-by: GitHub Copilot:<model>` **and**
