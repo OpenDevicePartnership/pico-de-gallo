@@ -6,4 +6,30 @@
 
 &pdg_spi0 {
 	status = "okay";
+
+	/*
+	 * A JEDEC SPI NOR flash on chip-select index 0, which the Pico de
+	 * Gallo bridge drives on GPIO 8.
+	 *
+	 * The omissions here are deliberate. Every write-capable path in
+	 * Zephyr's spi_nor driver is gated on a devicetree property, and none
+	 * of them are set: has-lock (WREN+WRSR to clear block protect),
+	 * requires-ulbpr (ULBPR), enter-4byte-addr (WREN+4BA), has-dpd
+	 * (DPD/RDPD), mxicy-mx25r-power-mode (WREN+WRSR on config registers)
+	 * and use-flag-status-register (CLRFLSR). With those absent, and with
+	 * the application calling only flash_read(), the driver never issues a
+	 * write, erase or write-enable opcode.
+	 *
+	 * jedec-id and size are informational under CONFIG_SPI_NOR_SFDP_RUNTIME,
+	 * which discovers the real geometry from the device. Note that Zephyr
+	 * expresses size in *bits*: 16 Mbit is 2 MiB.
+	 */
+	nor: nor@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <10000000>;
+		jedec-id = [c8 40 15];
+		size = <0x1000000>;
+		status = "okay";
+	};
 };

@@ -149,10 +149,12 @@ those two samples cannot be built against an upstream checkout. Use
 
 ## Running the SPI sample
 
-`samples/spi_nor_id` identifies a JEDEC SPI NOR flash. It is deliberately
-read-only — it issues only `RDID`, `RDSR`, `RDSFDP` and `READ`, and never a
-write-enable, program, erase or write-status opcode — so it is safe to point
-at a part whose contents you care about.
+`samples/spi_nor_id` identifies a JEDEC SPI NOR flash. Nothing in it is Pico
+de Gallo specific: it uses Zephyr's stock `jedec,spi-nor` driver and the
+generic flash API, and the bridge is just another SPI controller as far as
+they are concerned. Geometry is discovered from the part at runtime over SFDP
+(`CONFIG_SPI_NOR_SFDP_RUNTIME`), so the values printed are read from the
+device rather than echoed back out of the devicetree.
 
 Wire the flash to SCK/MOSI/MISO and put its chip-select on **GPIO 8**, then:
 
@@ -165,20 +167,50 @@ west build -t run
 Actual output, against a GigaDevice GD25Q16 holding an iCE40 bitstream:
 
 ```text
-<inf> spi_pico_de_gallo: Opening Pico de Gallo SPI bridge
 <inf> spi_pico_de_gallo: Pico de Gallo SPI bridge ready
+<inf> spi_nor: nor@0: SFDP v 1.0 AP ff with 2 PH
+<inf> spi_nor: PH0: ff00 rev 1.0: 9 DW @ 30
+<inf> spi_nor: nor@0: 2 MiBy flash
+<inf> spi_nor: PH1: ffc8 rev 1.0: 3 DW @ 60
 *** Booting Zephyr OS build v4.4.0-... ***
-JEDEC id: mfr=0xC8 type=0x40 cap=0x15 (2048 KiB)
-status:   0x00 (WIP=0 WEL=0)
-SFDP:     53 46 44 50  ("SFDP" signature OK)
+Flash device ready: nor@0
+size:     2048 KiB
+write:    1 B block, erased value 0xFF
+erase:    65536 B pages, 32 total
 @000000:  FF 00 00 FF 7E AA 99 7E 51 00 01 05 92 00 20 62
 ```
 
-The sample talks to the bus directly rather than through Zephyr's
-`jedec,spi-nor` driver. That driver is a reasonable choice in a real
-application, but its configuration path issues `WREN`/`WRSR` to clear block
-protection, which is a write. Driving the opcodes by hand keeps every byte
-that reaches the wire visible in `src/main.c`.
+That the driver reaches `ready` at all is most of the result: it read the
+JEDEC ID and walked the SFDP parameter tables across the USB bridge during
+initialisation, and refuses to initialise if either fails. `PH1: ffc8` is the
+GigaDevice vendor parameter header, so the tables really came from this part.
+
+### Keeping it read-only
+
+The sample calls only `flash_read()`. It never calls `flash_write()`,
+`flash_erase()` or `flash_ex_op()`.
+
+That alone is not sufficient, because the driver can also write during
+initialisation. Every such path is gated on a devicetree property, and
+`app.overlay` omits all of them:
+
+| Property | Would allow |
+|---|---|
+| `has-lock` | `WREN`+`WRSR` to clear block-protect bits |
+| `requires-ulbpr` | `ULBPR` |
+| `enter-4byte-addr` | `WREN`+`4BA` |
+| `has-dpd` | `DPD` / `RDPD` |
+| `mxicy-mx25r-power-mode` | `WREN`+`WRSR` on the configuration registers |
+| `use-flag-status-register` | `CLRFLSR` |
+
+With those absent, initialisation issues only `RDID` and `RDSFDP`. Verified
+on hardware: both status registers read `0x00` before and after, and flash
+contents were byte-identical across the run.
+
+**If you add any of those properties, or call a writing API, the driver will
+write to your part.** That is the intended behaviour of the driver, not a
+defect — just be deliberate about it when the flash holds something you care
+about, such as an FPGA bitstream.
 
 ---
 
@@ -253,7 +285,7 @@ CONFIG_SPI=y
 > driver refuses GPIO-controlled chip select, also with `-ENOTSUP`.
 
 If you would rather not declare a child node, build the `spi_config` yourself
-and address the controller directly — `samples/spi_nor_id` does this:
+and address the controller directly:
 
 ```c
 static const struct device *const bus = DEVICE_DT_GET(DT_NODELABEL(pdg_spi0));
