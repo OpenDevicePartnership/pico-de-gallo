@@ -58,7 +58,7 @@ yourself.
   intended files are staged, confirm no secrets, confirm LF endings
   and trailing newline on edited text files (`AGENTS.md` §3).
 - Commit messages follow Conventional Commits per `AGENTS.md` §10:
-  `<type>(<scope>)<!>: <subject>` (≤50 chars, imperative, no
+  `<type>(<scope>)<!>: <subject>` (≤72 chars, imperative, no
   trailing period), with a body wrapped at ~72 cols that explains
   *why*. Use only the scopes listed in §10 (`internal`, `lib`,
   `hal`, `ffi`, `application`, `pyco`, `firmware`, `repo`;

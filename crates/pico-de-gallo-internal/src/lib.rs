@@ -464,6 +464,18 @@ pub type SpiTransferError = SpiError;
 
 // --- GPIO
 
+/// Number of user-controllable GPIO pins exposed by the firmware.
+///
+/// Pin indices 0–3 map to physical GPIO8–GPIO11 on the Pico 2 header.
+/// Requests naming an index at or above this bound are rejected with
+/// [`GpioError::InvalidPin`].
+///
+/// The same indices double as SPI chip-select selectors: see
+/// [`SpiBatchRequest::cs_pin`]. Note the dedicated `SPI_CS` header pin
+/// (GPIO5) is *not* one of these and is not currently claimed by the
+/// firmware.
+pub const NUM_GPIOS: usize = 4;
+
 /// Request to read the current level of a GPIO pin.
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct GpioGetRequest {

@@ -35,10 +35,11 @@ Format:
   `build`, `ci`, `revert`. Use `!` (or a `BREAKING CHANGE:` footer) for
   breaking changes.
 - **Scope:** the crate name, without the `pico-de-gallo-` prefix —
-  one of `internal`, `lib`, `hal`, `ffi`, `application`, `pyco`,
-  `firmware`. For repo-wide changes use `repo`. For changes that span
-  several crates, list them comma-separated, e.g. `feat(internal,
-  firmware): …`.
+  one of `internal`, `lib`, `hal`, `ffi`, `application`, `mcp`,
+  `pyco`, `firmware`. Non-crate subprojects have their own scope:
+  `zephyr` for the Zephyr module under `zephyr/`. For repo-wide
+  changes use `repo`. For changes that span several crates, list
+  them comma-separated, e.g. `feat(internal, firmware): …`.
 - **Subject:** imperative mood, no trailing period (Tim Pope's
   [classic guide](http://tbaggery.com/2008/04/19/a-note-about-git-commit-messages.html)
   still applies for body wording).

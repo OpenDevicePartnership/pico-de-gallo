@@ -237,6 +237,141 @@ pub enum Status {
     GpioTimeout = -70,
 }
 
+// ----------------------------- Limits -----------------------------
+//
+// These must be literals. cbindgen evaluates const initializers
+// syntactically and silently skips any it cannot fold, so writing
+// `= lib::MAX_TRANSFER_SIZE` here compiles fine but emits nothing into
+// pico_de_gallo.h. The `const _` assertions below tie the literals back
+// to the wire crate, turning any upstream change into a build failure
+// rather than a stale header.
+
+/// Maximum number of bytes the firmware will move in a single transfer.
+///
+/// Requests larger than this are rejected with [`Status::BufferTooLong`].
+/// Applies per direction: a write-then-read may carry up to this many
+/// bytes in each direction.
+///
+/// Mirrors `pico_de_gallo_internal::MAX_TRANSFER_SIZE` so C callers can
+/// size their buffers from the same limit the firmware enforces.
+pub const GALLO_MAX_TRANSFER_SIZE: usize = 4096;
+
+/// Maximum number of operations in a single [`gallo_i2c_batch`] or
+/// [`gallo_spi_batch`] call.
+///
+/// Passing more than this returns [`Status::InvalidArgument`].
+///
+/// Mirrors `pico_de_gallo_internal::MAX_BATCH_OPS`.
+pub const GALLO_MAX_BATCH_OPS: usize = 64;
+
+/// Number of user-controllable GPIO pins the firmware exposes.
+///
+/// Valid pin indices are `0..GALLO_NUM_GPIOS`. Passing anything at or
+/// above this bound to [`gallo_gpio_get`], [`gallo_gpio_put`],
+/// [`gallo_gpio_set_config`] or the `gallo_gpio_wait_*` family yields
+/// [`Status::GpioInvalidPin`].
+///
+/// The same indices select the SPI chip-select pin in
+/// [`gallo_spi_batch`], so C callers validating a chip select should
+/// bound it by this constant rather than a literal.
+///
+/// Mirrors `pico_de_gallo_internal::NUM_GPIOS`.
+pub const GALLO_NUM_GPIOS: usize = 4;
+
+const _: () = assert!(GALLO_MAX_TRANSFER_SIZE == lib::MAX_TRANSFER_SIZE);
+const _: () = assert!(GALLO_MAX_BATCH_OPS == lib::MAX_BATCH_OPS);
+const _: () = assert!(GALLO_NUM_GPIOS == lib::NUM_GPIOS);
+
+// ----------------------------- Configuration Enums -----------------------------
+//
+// These mirror the integer values that the `gallo_*` entry points already
+// accept and return as `uint8_t`. They exist so C callers can use a name
+// instead of a magic number; the underlying function signatures are
+// unchanged, so passing a plain integer still works.
+//
+// The numeric values are part of the stable C ABI (see AGENTS.md §8) and
+// must match the corresponding `pico-de-gallo-internal` wire enums, whose
+// variant order is itself ABI (see AGENTS.md §6.1). `config_enums_match_wire_enums`
+// in the test module locks that correspondence down.
+
+/// I2C bus speed, as accepted by [`gallo_i2c_set_config`] and reported by
+/// [`gallo_i2c_get_config`].
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloI2cFrequency {
+    /// Standard mode, 100 kHz.
+    Standard = 0,
+    /// Fast mode, 400 kHz.
+    Fast = 1,
+    /// Fast mode plus, 1 MHz.
+    FastPlus = 2,
+}
+
+/// GPIO pin direction, as accepted by [`gallo_gpio_set_config`].
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloGpioDirection {
+    /// Pin is an input.
+    Input = 0,
+    /// Pin is an output.
+    Output = 1,
+}
+
+/// GPIO pull resistor configuration, as accepted by
+/// [`gallo_gpio_set_config`].
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloGpioPull {
+    /// No pull resistor.
+    None = 0,
+    /// Pull-up resistor enabled.
+    Up = 1,
+    /// Pull-down resistor enabled.
+    Down = 2,
+}
+
+/// GPIO edge selection, as accepted by [`gallo_gpio_subscribe`].
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloGpioEdge {
+    /// Trigger on rising edges only.
+    Rising = 0,
+    /// Trigger on falling edges only.
+    Falling = 1,
+    /// Trigger on both edges.
+    Any = 2,
+}
+
+/// Variant tag for [`GalloSpiBatchOp::tag`].
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloSpiBatchOpTag {
+    /// Read `read_len` bytes.
+    Read = 0,
+    /// Write `data_len` bytes from `data`.
+    Write = 1,
+    /// Full-duplex transfer of `data_len` bytes.
+    Transfer = 2,
+    /// Delay `delay_ns` nanoseconds.
+    DelayNs = 3,
+}
+
+/// Variant tag for [`GalloI2cBatchOp::tag`].
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloI2cBatchOpTag {
+    /// Read `read_len` bytes.
+    Read = 0,
+    /// Write `data_len` bytes from `data`.
+    Write = 1,
+}
+
 // ----------------------------- Error Mapping Helpers -----------------------------
 
 fn i2c_error_to_status(e: PicoDeGalloError<I2cError>) -> Status {
@@ -3925,5 +4060,65 @@ mod tests {
         assert_eq!(Status::SpiBatchFailed as i32, -67);
         assert_eq!(Status::SpiTransferFailed as i32, -68);
         assert_eq!(Status::SystemResetSubscriptionsFailed as i32, -69);
+    }
+
+    #[test]
+    fn limits_match_wire_constants() {
+        assert_eq!(GALLO_MAX_TRANSFER_SIZE, lib::MAX_TRANSFER_SIZE);
+        assert_eq!(GALLO_MAX_BATCH_OPS, lib::MAX_BATCH_OPS);
+        assert_eq!(GALLO_NUM_GPIOS, lib::NUM_GPIOS);
+    }
+
+    /// The C-visible enum values must equal the discriminants of the
+    /// `pico-de-gallo-internal` wire enums they mirror.
+    ///
+    /// This is not cosmetic. `gallo_i2c_get_config` writes `freq as u8`
+    /// straight out to the caller, and `gallo_i2c_set_config` /
+    /// `gallo_gpio_set_config` / `gallo_gpio_subscribe` match on the raw
+    /// integer, so the two numberings are the same ABI. Wire-enum variant
+    /// order is itself ABI for postcard (AGENTS.md §6.1), so if someone
+    /// ever reorders a variant upstream this test is what catches it.
+    #[test]
+    fn config_enums_match_wire_enums() {
+        assert_eq!(
+            GalloI2cFrequency::Standard as u8,
+            lib::I2cFrequency::Standard as u8
+        );
+        assert_eq!(GalloI2cFrequency::Fast as u8, lib::I2cFrequency::Fast as u8);
+        assert_eq!(
+            GalloI2cFrequency::FastPlus as u8,
+            lib::I2cFrequency::FastPlus as u8
+        );
+
+        assert_eq!(
+            GalloGpioDirection::Input as u8,
+            lib::GpioDirection::Input as u8
+        );
+        assert_eq!(
+            GalloGpioDirection::Output as u8,
+            lib::GpioDirection::Output as u8
+        );
+
+        assert_eq!(GalloGpioPull::None as u8, lib::GpioPull::None as u8);
+        assert_eq!(GalloGpioPull::Up as u8, lib::GpioPull::Up as u8);
+        assert_eq!(GalloGpioPull::Down as u8, lib::GpioPull::Down as u8);
+
+        assert_eq!(GalloGpioEdge::Rising as u8, lib::GpioEdge::Rising as u8);
+        assert_eq!(GalloGpioEdge::Falling as u8, lib::GpioEdge::Falling as u8);
+        assert_eq!(GalloGpioEdge::Any as u8, lib::GpioEdge::Any as u8);
+    }
+
+    /// Batch-op tags are declared stable C ABI in the `GalloSpiBatchOp` /
+    /// `GalloI2cBatchOp` docs, and the dispatch in `gallo_spi_batch` /
+    /// `gallo_i2c_batch` matches on these literals. Pin them.
+    #[test]
+    fn batch_op_tags_are_stable() {
+        assert_eq!(GalloSpiBatchOpTag::Read as u8, 0);
+        assert_eq!(GalloSpiBatchOpTag::Write as u8, 1);
+        assert_eq!(GalloSpiBatchOpTag::Transfer as u8, 2);
+        assert_eq!(GalloSpiBatchOpTag::DelayNs as u8, 3);
+
+        assert_eq!(GalloI2cBatchOpTag::Read as u8, 0);
+        assert_eq!(GalloI2cBatchOpTag::Write as u8, 1);
     }
 }

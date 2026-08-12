@@ -1,0 +1,14 @@
+name: pico-de-gallo
+build:
+  cmake: zephyr
+  kconfig: zephyr/Kconfig
+  settings:
+    board_root: zephyr
+    dts_root: zephyr
+    snippet_root: zephyr
+samples:
+  - zephyr/samples
+tests:
+  - zephyr/tests
+boards:
+  - zephyr/boards
