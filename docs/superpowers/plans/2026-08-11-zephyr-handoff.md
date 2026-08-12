@@ -210,8 +210,27 @@ Do not re-litigate these; do not assume anything else was checked.
 - **#107**, by mutation rather than inspection: changing
   `GALLO_MAX_BATCH_OPS` in the working tree fails the Zephyr build on the
   const assertion at `crates/pico-de-gallo-ffi/src/lib.rs:268`.
-- **I2C: build only.** `samples/i2c_bridge` compiles and runs; with no board
-  it reports `-ENODEV` as expected. No I2C traffic has ever been observed.
+- **I2C, on hardware, end to end** (verified 2026-08-12). `samples/i2c_bridge`
+  reads a TMP117 at `0x48` through Zephyr's stock `ti,tmp11x` driver and the
+  generic sensor API, over USB via the bridge. Observed 23.61–23.65 °C on
+  board `5256657D8A5D7F03` (hw rev 2, firmware 0.10.1, schema 0.6.1),
+  cross-checked minutes earlier through an independent path — the `gallo` MCP
+  server, not the Zephyr driver — reading device ID `0x0117` and 23.5 °C. The
+  no-board path still reports `-ENODEV` as before. This supersedes the earlier
+  "build only; no I2C traffic has ever been observed" status.
+- **The first `sensor_sample_fetch` returns `-EBUSY`**, printing
+  `Temperature: 0.000000 C`, reproducibly across two independent build trees.
+  This is **not** a bridge defect: it is the tmp11x driver's DATA_READY check
+  at `tmp11x.c:229`, firing because the sample fetches before the TMP117's
+  first (~1 s) conversion completes. Our I2C driver's only `-EBUSY` is
+  `GpioPinMonitored`, which is unrelated. Deliberately left unfixed and
+  undocumented in `zephyr/README.md` — one sensor is not enough to rule out a
+  board-specific quirk. Note this means the README's expected-output block is
+  known to differ from reality, which retires the open question in §4.
+- **The Zephyr floor is lower than §2 implies.** All of the above ran against
+  `v4.4.0-6123-g26f811ee9d0`, roughly 5000 commits older than the
+  `v4.4.0-11199` recorded in §2. §6 trap 5 still holds — `main` is required
+  because `setup_ns` is in no release — but it need not be a recent `main`.
 
 ---
 
