@@ -18,3 +18,6 @@ fp-info-cache
 # python environment
 .env
 *.pyc
+
+# agent tool state
+/.superpowers/
