@@ -672,3 +672,76 @@ one — the witness is not the CS pin, so only an external drive explains it.
 This is the "before" half of the acceptance evidence. The "after" half re-runs
 the identical sequence on M2 firmware and must show `CsPinUnavailable` at step 3
 with the witness still LOW at step 4.
+### 8.13 M2 hardware acceptance — PASSED
+
+Executed on board `5256657D8A5D7F03` (hw rev 2) after flashing
+`pico-de-gallo-firmware-hw-rev2.uf2`, using the branch-built CLI
+(`cargo run -p gallo --locked`). No `gallo_*` MCP tool was used after flashing.
+
+The flash itself is confirmed by decode, not by version string: D11 means the
+version is unchanged at `FW v0.10.1 / Schema v0.6.1`, but the branch CLI expects
+a nine-field `DeviceInfo` and would fail `DeserializeUnexpectedEnd` against the
+old firmware. It decoded cleanly, so the new firmware is running.
+
+**Before / after on identical hardware, CS index 2, witness index 3:**
+
+| Observation | Before (pre-M2) | After (M2) |
+| --- | --- | --- |
+| `spi/batch{cs:2}` on an `ExplicitInput` pin | **succeeded silently** | **`CsPinUnavailable`**, exit 1 |
+| witness pin 3 (never named as CS) | LOW → **HIGH** | LOW → **LOW** |
+| `gpio/get{2}` | **HIGH**, no error | **LOW** |
+| `gpio/put{2}` | **`WrongDirection`** | n/a — pin never corrupted |
+
+**Full results:**
+
+| # | Test | Expected | Result |
+| --- | --- | --- | --- |
+| 1 | `ExplicitInput` CS | `CsPinUnavailable`, pin untouched | **PASS** — witness stayed LOW |
+| 2 | `ExplicitOutput` CS | succeeds, CS parked high | **PASS** — witness LOW → HIGH |
+| 3 | `LegacyAuto` CS | succeeds, pin still usable | **PASS** — `gpio/get{0}` returned Ok |
+| 4 | `--cs 4` | `InvalidCsPin`, not `Other` | **PASS**, device stayed responsive |
+| 5 | orphaned subscription | `CsPinMonitored`, not `Other` | **PASS** — cross-check gave `PinMonitored` first |
+| E1 | `--cs 255` | `InvalidCsPin`, no truncation | **PASS** — did not alias to index 3 |
+| E2 | `--cs 3` upper boundary | succeeds | **PASS** — guard is `>= NUM_GPIOS`, not off by one |
+| E4 | re-run a refused batch | same refusal, no state change | **PASS** — refusal is idempotent |
+
+Two results carry more weight than the rest. Test 1's witness is not the
+chip-select pin, so only an external drive explains a LOW→HIGH transition;
+its absence after M2 is direct evidence the pin was never touched. And test 3's
+`gpio/get{0}` returning `Ok` rather than `WrongDirection` proves `pin_modes` was
+not written, confirming **D4** on hardware rather than by inspection.
+
+Test 2 proves the guard is not simply refusing everything: an `ExplicitOutput`
+pin is accepted and genuinely driven, confirming **D2**.
+
+**Left in a dirty state:** pin 2 still carries the orphaned subscription from
+test 5, and pin 3 is `ExplicitOutput` parked high. Neither has a software reset
+path — power-cycle the board before further hardware work.
+
+### 8.14 Pre-existing CLI bug found during acceptance — for M3
+
+**`gallo gpio put` panics on every invocation and cannot be used at all.**
+
+```
+The application panicked (crashed).
+Message:  Command put: Short option names must be unique for each argument,
+          but '-h' is in use by both 'high' and 'help'
+```
+
+`crates/pico-de-gallo-app/src/lib.rs:378` declares `#[arg(short, long)] high: bool`.
+`short` derives `-h` from `high`, colliding with clap's auto-generated `-h` for
+`--help`. It is a builder assertion, so it fires before any parsing.
+
+Confirmed **pre-existing**: identical code is present at the merge base
+`d201e7fb8240`, and the most recent commits touching that file (`74bb845eff77`,
+`33f8ff3e4810`) predate this work. Not introduced by M1 or M2.
+
+A second defect is stacked on it: `high: bool` in clap derive is a **flag**
+(`SetTrue`), so `--high false` would be rejected even after the collision is
+fixed. As written the subcommand cannot set a pin LOW. A correct fix needs both
+`#[arg(long)]` (dropping `short`) and a decision on the value syntax — either
+`--high` / `--low` flags, or an explicit `--level <high|low>`.
+
+M3 owns the `app` crate. This is adjacent rather than in scope for #104, so
+either fix it there or file it separately — but it should not be left silently
+broken, and it invalidates any test procedure that calls `gallo gpio put`.
