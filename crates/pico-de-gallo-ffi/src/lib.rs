@@ -241,6 +241,19 @@ pub enum Status {
     SpiCsPinUnavailable = -72,
     /// SPI chip-select pin is currently monitored for GPIO events
     SpiCsPinMonitored = -73,
+    /// Device reports zero GPIOs, so no SPI chip-select pin exists.
+    ///
+    /// Distinct from [`Status::SpiInvalidCsPin`]: the caller's index is not
+    /// the problem, the board has no usable pin at all.
+    SpiNoGpios = -74,
+    /// The `device/info` round-trip did not complete within the host
+    /// library's 300-second bound.
+    ///
+    /// Distinct from [`Status::DeviceInfoFailed`], which reports an actual
+    /// transport or decode failure. On expiry there is no transport error
+    /// at all — the request is simply still outstanding — and collapsing
+    /// the two would erase the only actionable diagnosis.
+    DeviceInfoTimeout = -75,
 }
 
 // ----------------------------- Limits -----------------------------
@@ -401,6 +414,44 @@ fn spi_error_to_status(e: PicoDeGalloError<SpiError>) -> Status {
         PicoDeGalloError::Endpoint(SpiError::CsPinUnavailable) => Status::SpiCsPinUnavailable,
         PicoDeGalloError::Endpoint(SpiError::CsPinMonitored) => Status::SpiCsPinMonitored,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
+    }
+}
+
+/// Map a [`lib::ValidateError`] to a status code.
+///
+/// Every arm lands in `{-62, -63, -64, -75}`. **None** of them may ever be a
+/// chip-select status (-71..-74): a failure to *learn* the valid pin range
+/// is not a complaint about the caller's pin, and reporting it as one would
+/// send users hunting for a bug in their own arguments. See issue #104.
+///
+/// Exhaustive on purpose: appending a `ValidateError` variant must break
+/// this build.
+fn validate_error_to_status(e: &lib::ValidateError) -> Status {
+    match e {
+        lib::ValidateError::Comms(_) => Status::DeviceInfoFailed,
+        lib::ValidateError::Timeout => Status::DeviceInfoTimeout,
+        lib::ValidateError::LegacyFirmware => Status::LegacyFirmware,
+        lib::ValidateError::SchemaMismatch { .. } => Status::SchemaMismatch,
+    }
+}
+
+/// Map a [`lib::SpiBatchCallError`] to a status code.
+///
+/// The five outcome classes are disjoint: metadata failure keeps its
+/// `ValidateError` classification, a zero GPIO count is
+/// [`Status::SpiNoGpios`], a locally refused index is
+/// [`Status::SpiInvalidCsPin`], an actual batch transport failure is
+/// [`Status::CommsFailed`], and a firmware refusal keeps the existing
+/// explicit [`SpiError`] mapping.
+fn spi_batch_call_error_to_status(e: &lib::SpiBatchCallError) -> Status {
+    match e {
+        lib::SpiBatchCallError::DeviceInfo(v) => validate_error_to_status(v),
+        lib::SpiBatchCallError::NoGpios => Status::SpiNoGpios,
+        lib::SpiBatchCallError::InvalidCsPin { .. } => Status::SpiInvalidCsPin,
+        lib::SpiBatchCallError::Comms(_) => Status::CommsFailed,
+        lib::SpiBatchCallError::Endpoint(SpiBatchError { kind, .. }) => {
+            spi_error_to_status(PicoDeGalloError::Endpoint(*kind))
+        }
     }
 }
 
@@ -1150,6 +1201,65 @@ pub struct GalloSpiBatchOp {
     pub delay_ns: u32,
 }
 
+/// Write the outcome of an SPI batch call into the caller's out-params.
+///
+/// Called by [`gallo_spi_batch`] for **every** outcome once `out_len` has
+/// been validated non-NULL, so the invariants hold uniformly:
+///
+/// - `*out_len` is zeroed first, and only a successful (or capacity-short)
+///   result overwrites it.
+/// - `*out_failed_op` is written **only** for
+///   [`lib::SpiBatchCallError::Endpoint`]. Metadata failures, timeouts and
+///   local chip-select refusals never executed an operation, so fabricating
+///   an index for them would be a lie.
+///
+/// # Safety
+///
+/// `out_len` must be non-NULL and writable. `out_buf` must be valid for
+/// `out_capacity` bytes when `out_capacity > 0`. `out_failed_op`, if
+/// non-NULL, must be writable.
+unsafe fn spi_batch_write_outputs(
+    result: Result<Vec<u8>, lib::SpiBatchCallError>,
+    out_buf: *mut u8,
+    out_capacity: usize,
+    out_len: *mut usize,
+    out_failed_op: *mut u16,
+) -> Status {
+    unsafe { *out_len = 0 };
+
+    let err = match result {
+        Ok(data) => {
+            if data.len() > out_capacity {
+                eprintln!(
+                    "SPI batch produced {} bytes, out_buf only fits {}",
+                    data.len(),
+                    out_capacity
+                );
+                // Still report the required length so the caller can retry
+                // with a larger buffer.
+                unsafe { *out_len = data.len() };
+                return Status::BufferTooLong;
+            }
+            if !data.is_empty() {
+                // Safety: out_buf validated by the caller when capacity > 0.
+                let slot = unsafe { std::slice::from_raw_parts_mut(out_buf, data.len()) };
+                slot.copy_from_slice(&data);
+            }
+            unsafe { *out_len = data.len() };
+            return Status::Ok;
+        }
+        Err(e) => e,
+    };
+
+    if let lib::SpiBatchCallError::Endpoint(SpiBatchError { failed_op, .. }) = &err
+        && !out_failed_op.is_null()
+    {
+        unsafe { *out_failed_op = *failed_op };
+    }
+
+    spi_batch_call_error_to_status(&err)
+}
+
 /// gallo_spi_batch - Execute a batch of SPI operations atomically under CS.
 ///
 /// The firmware asserts `cs_pin` low before the first operation and
@@ -1165,7 +1275,43 @@ pub struct GalloSpiBatchOp {
 /// Returns [`Status::Ok`] on success, [`Status::BufferTooLong`] if
 /// `out_buf` is too small for the cumulative read data, or one of the
 /// SPI error statuses on a per-operation failure. `out_failed_op` is only
-/// written on per-operation failure, never on success.
+/// written on per-operation failure, never on success and never on a
+/// metadata or chip-select failure.
+///
+/// # Chip-select preflight
+///
+/// `cs_pin` is checked against the device-reported GPIO count (see
+/// [`gallo_num_gpios`]) before any operation payload is translated and
+/// before anything is transmitted. A refused chip-select drives no pin and
+/// sends no `spi/batch` request.
+///
+/// - [`Status::SpiNoGpios`] (-74) — the device reports zero GPIOs.
+/// - [`Status::SpiInvalidCsPin`] (-71) — `cs_pin` is at or beyond the count.
+/// - [`Status::DeviceInfoFailed`] (-62), [`Status::DeviceInfoTimeout`]
+///   (-75), [`Status::LegacyFirmware`] (-64), [`Status::SchemaMismatch`]
+///   (-63) — the count could not be established. A metadata failure is
+///   never reported as an invalid chip-select.
+///
+/// The first call on a handle performs one implicit `device/info`
+/// round-trip; afterwards the count is cached per handle.
+///
+/// # Ordering
+///
+/// The nine steps run strictly in this order:
+///
+/// 1. validate `gallo`;
+/// 2. validate `out_len`;
+/// 3. validate the top-level `ops` / `ops_count` / `out_capacity` shape;
+/// 4. write `*out_len = 0`;
+/// 5. resolve the device-reported GPIO count;
+/// 6. classify `cs_pin`;
+/// 7. translate operation payloads;
+/// 8. call the library once;
+/// 9. write outputs / copy response.
+///
+/// Steps 1-3 precede any write, so an invalid or NULL `out_len` is never
+/// dereferenced. Because op translation is step 7, an invalid op `tag` or
+/// a NULL `data` pointer is only reported once the device has been reached.
 ///
 /// # Safety
 ///
@@ -1209,8 +1355,32 @@ pub unsafe extern "C" fn gallo_spi_batch(
         return Status::InvalidArgument;
     }
 
+    // `out_len` is now known writable, so every outcome from here on leaves
+    // it at zero unless data was actually produced.
+    unsafe { *out_len = 0 };
+
     // Safety: caller must ensure that `gallo` is a valid opaque pointer.
     let gallo = unsafe { &*gallo };
+
+    // Resolve the runtime-authoritative bound. The classifier below only
+    // ever sees an `Ok(n)`; an `Err` returns here, so a metadata failure can
+    // never be reported as a chip-select complaint.
+    let num_gpios = match block_on(gallo.0.num_gpios()) {
+        Ok(n) => n,
+        Err(e) => {
+            let status = validate_error_to_status(&e);
+            eprintln!("SPI batch: could not determine num_gpios: {e}");
+            return status;
+        }
+    };
+    if num_gpios == 0 {
+        eprintln!("SPI batch: device reports num_gpios=0; no chip-select pin is available");
+        return Status::SpiNoGpios;
+    }
+    if cs_pin >= num_gpios {
+        eprintln!("SPI batch: invalid chip-select pin {cs_pin}; device reports {num_gpios} GPIOs");
+        return Status::SpiInvalidCsPin;
+    }
 
     // Safety: caller must ensure `ops` is valid for `ops_count` elements.
     let raw_ops: &[GalloSpiBatchOp] = if ops_count == 0 {
@@ -1252,39 +1422,7 @@ pub unsafe extern "C" fn gallo_spi_batch(
 
     let result = block_on(gallo.0.spi_batch(cs_pin, &typed));
 
-    match result {
-        Ok(data) => {
-            if data.len() > out_capacity {
-                eprintln!(
-                    "SPI batch produced {} bytes, out_buf only fits {}",
-                    data.len(),
-                    out_capacity
-                );
-                // Still report the required length so the caller can retry
-                // with a larger buffer.
-                unsafe { *out_len = data.len() };
-                return Status::BufferTooLong;
-            }
-            if !data.is_empty() {
-                // Safety: out_buf validated above when capacity > 0.
-                let slot = unsafe { std::slice::from_raw_parts_mut(out_buf, data.len()) };
-                slot.copy_from_slice(&data);
-            }
-            unsafe { *out_len = data.len() };
-            Status::Ok
-        }
-        Err(PicoDeGalloError::Endpoint(SpiBatchError { failed_op, kind })) => {
-            if !out_failed_op.is_null() {
-                unsafe { *out_failed_op = failed_op };
-            }
-            unsafe { *out_len = 0 };
-            spi_error_to_status(PicoDeGalloError::Endpoint(kind))
-        }
-        Err(PicoDeGalloError::Comms(_)) => {
-            unsafe { *out_len = 0 };
-            Status::CommsFailed
-        }
-    }
+    unsafe { spi_batch_write_outputs(result, out_buf, out_capacity, out_len, out_failed_op) }
 }
 
 // ----------------------------- I2C Batch endpoint -----------------------------
@@ -3052,10 +3190,78 @@ pub unsafe extern "C" fn gallo_get_device_info(
             }
             Status::Ok
         }
-        Err(lib::ValidateError::SchemaMismatch { .. }) => Status::SchemaMismatch,
-        Err(lib::ValidateError::LegacyFirmware) => Status::LegacyFirmware,
-        Err(lib::ValidateError::Comms(_)) => Status::DeviceInfoFailed,
+        Err(e) => validate_error_to_status(&e),
     }
+}
+
+/// Write the outcome of a `num_gpios` lookup into the caller's out-param.
+///
+/// The output is written **only** on success — including a successful zero,
+/// which is a legitimate answer and not an error. Every error leaves the
+/// caller's buffer untouched, so a sentinel written before the call is a
+/// reliable "was this populated?" check.
+///
+/// # Safety
+///
+/// `out` must be non-NULL and point to a writable `u8`.
+unsafe fn num_gpios_write_output(res: Result<u8, lib::ValidateError>, out: *mut u8) -> Status {
+    match res {
+        Ok(n) => {
+            unsafe { *out = n };
+            Status::Ok
+        }
+        Err(e) => validate_error_to_status(&e),
+    }
+}
+
+/// gallo_num_gpios - Query how many GPIO pins the device reports.
+///
+/// This is the runtime-authoritative bound for a GPIO index and for the
+/// SPI chip-select pin of [`gallo_spi_batch`]. Prefer it over the
+/// compile-time [`GALLO_NUM_GPIOS`], which is only this build's default.
+///
+/// The first call on a handle performs one `device/info` round-trip, which
+/// also validates the firmware's reported schema version; the value is
+/// cached for the lifetime of the handle. Note that during the current
+/// schema freeze a matching reported version does not prove wire-*shape*
+/// compatibility — it bounds how long you wait and checks the reported
+/// numbers, nothing more.
+///
+/// `*out_num_gpios` is written only on [`Status::Ok`]. A device that
+/// reports zero is a success and writes zero. On any error the caller's
+/// buffer is left untouched.
+///
+/// Returns [`Status::Uninitialized`] for a NULL handle,
+/// [`Status::InvalidArgument`] for a NULL output,
+/// [`Status::DeviceInfoFailed`] on a transport or decode failure,
+/// [`Status::DeviceInfoTimeout`] if the query did not complete within 300
+/// seconds, [`Status::LegacyFirmware`] if the firmware has no
+/// `device/info` endpoint, or [`Status::SchemaMismatch`] on a version
+/// disagreement.
+///
+/// # Safety
+///
+/// Caller must ensure that `gallo` is a valid, opaque pointer to
+/// `PicoDeGallo` returned by `gallo_init()`, and that `out_num_gpios`
+/// points to a writable `uint8_t`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn gallo_num_gpios(
+    gallo: *const PicoDeGallo,
+    out_num_gpios: *mut u8,
+) -> Status {
+    if gallo.is_null() {
+        eprintln!("Unexpected NULL context");
+        return Status::Uninitialized;
+    }
+    if out_num_gpios.is_null() {
+        eprintln!("Unexpected NULL out_num_gpios pointer");
+        return Status::InvalidArgument;
+    }
+
+    let gallo = unsafe { &*gallo };
+    let res = block_on(gallo.0.num_gpios());
+
+    unsafe { num_gpios_write_output(res, out_num_gpios) }
 }
 
 #[cfg(test)]
@@ -3146,6 +3352,8 @@ mod tests {
             Status::SpiInvalidCsPin as i32,
             Status::SpiCsPinUnavailable as i32,
             Status::SpiCsPinMonitored as i32,
+            Status::SpiNoGpios as i32,
+            Status::DeviceInfoTimeout as i32,
         ];
         for code in error_codes {
             assert!(code < 0, "error code {code} should be negative");
@@ -3229,6 +3437,8 @@ mod tests {
             Status::SpiInvalidCsPin as i32,
             Status::SpiCsPinUnavailable as i32,
             Status::SpiCsPinMonitored as i32,
+            Status::SpiNoGpios as i32,
+            Status::DeviceInfoTimeout as i32,
         ];
         let unique: HashSet<i32> = codes.iter().copied().collect();
         assert_eq!(codes.len(), unique.len(), "duplicate status codes found");
@@ -3243,6 +3453,361 @@ mod tests {
         assert_eq!(Status::SpiInvalidCsPin as i32, -71);
         assert_eq!(Status::SpiCsPinUnavailable as i32, -72);
         assert_eq!(Status::SpiCsPinMonitored as i32, -73);
+    }
+
+    // ===================================================================
+    // M3 — SPI chip-select bounds (issue #104)
+    // ===================================================================
+
+    #[test]
+    fn status_spi_no_gpios_is_minus_seventy_four() {
+        assert_eq!(Status::SpiNoGpios as i32, -74);
+    }
+
+    #[test]
+    fn status_device_info_timeout_is_minus_seventy_five() {
+        assert_eq!(Status::DeviceInfoTimeout as i32, -75);
+    }
+
+    #[test]
+    fn status_cs_codes_are_unchanged_at_minus_seventy_one_to_seventy_three() {
+        // M1 shipped these. They are stable C ABI and must never be
+        // renumbered to make room for an addition.
+        assert_eq!(Status::SpiInvalidCsPin as i32, -71);
+        assert_eq!(Status::SpiCsPinUnavailable as i32, -72);
+        assert_eq!(Status::SpiCsPinMonitored as i32, -73);
+    }
+
+    fn all_validate_errors() -> Vec<lib::ValidateError> {
+        vec![
+            lib::ValidateError::Comms(lib::HostErr::Closed),
+            lib::ValidateError::Timeout,
+            lib::ValidateError::LegacyFirmware,
+            lib::ValidateError::SchemaMismatch {
+                expected_major: 0,
+                actual_major: 0,
+                expected_minor: 7,
+                actual_minor: 6,
+            },
+        ]
+    }
+
+    #[test]
+    fn validate_error_to_status_maps_comms_to_device_info_failed() {
+        assert_eq!(
+            validate_error_to_status(&lib::ValidateError::Comms(lib::HostErr::Closed)) as i32,
+            -62
+        );
+    }
+
+    #[test]
+    fn validate_error_to_status_maps_timeout_to_device_info_timeout() {
+        assert_eq!(
+            validate_error_to_status(&lib::ValidateError::Timeout) as i32,
+            -75
+        );
+    }
+
+    #[test]
+    fn validate_error_to_status_maps_legacy_to_legacy_firmware() {
+        assert_eq!(
+            validate_error_to_status(&lib::ValidateError::LegacyFirmware) as i32,
+            -64
+        );
+    }
+
+    #[test]
+    fn validate_error_to_status_maps_schema_to_schema_mismatch() {
+        assert_eq!(
+            validate_error_to_status(&lib::ValidateError::SchemaMismatch {
+                expected_major: 0,
+                actual_major: 0,
+                expected_minor: 7,
+                actual_minor: 6,
+            }) as i32,
+            -63
+        );
+    }
+
+    #[test]
+    fn validate_error_never_maps_to_a_chip_select_status() {
+        // THE BINDING CONSTRAINT at the FFI boundary. A failure to *learn*
+        // the valid chip-select range must never be reported as a complaint
+        // about the caller's chip-select.
+        let allowed: HashSet<i32> = [-62, -63, -64, -75].into_iter().collect();
+        let forbidden: HashSet<i32> = [-71, -72, -73, -74].into_iter().collect();
+        for e in all_validate_errors() {
+            let code = validate_error_to_status(&e) as i32;
+            assert!(
+                !forbidden.contains(&code),
+                "{e:?} mapped to chip-select status {code}"
+            );
+            assert!(
+                allowed.contains(&code),
+                "{e:?} mapped to unexpected status {code}"
+            );
+        }
+    }
+
+    fn all_spi_batch_call_errors() -> Vec<lib::SpiBatchCallError> {
+        vec![
+            lib::SpiBatchCallError::DeviceInfo(lib::ValidateError::Comms(lib::HostErr::Closed)),
+            lib::SpiBatchCallError::NoGpios,
+            lib::SpiBatchCallError::InvalidCsPin {
+                cs: 255,
+                num_gpios: 4,
+            },
+            lib::SpiBatchCallError::Comms(lib::HostErr::Closed),
+            lib::SpiBatchCallError::Endpoint(SpiBatchError {
+                failed_op: 0,
+                kind: SpiError::Other,
+            }),
+        ]
+    }
+
+    #[test]
+    fn spi_batch_call_error_to_status_is_injective() {
+        let mapped: Vec<i32> = all_spi_batch_call_errors()
+            .iter()
+            .map(|e| spi_batch_call_error_to_status(e) as i32)
+            .collect();
+        let unique: HashSet<i32> = mapped.iter().copied().collect();
+        assert_eq!(
+            mapped.len(),
+            unique.len(),
+            "collapsed distinct outcomes: {mapped:?}"
+        );
+    }
+
+    #[test]
+    fn spi_batch_call_error_status_witness_is_exhaustive() {
+        // Compile-time witness: appending a SpiBatchCallError variant must
+        // fail to build here rather than fall through a wildcard.
+        fn witness(e: &lib::SpiBatchCallError) -> u8 {
+            match e {
+                lib::SpiBatchCallError::DeviceInfo(_) => 0,
+                lib::SpiBatchCallError::NoGpios => 1,
+                lib::SpiBatchCallError::InvalidCsPin { .. } => 2,
+                lib::SpiBatchCallError::Comms(_) => 3,
+                lib::SpiBatchCallError::Endpoint(_) => 4,
+            }
+        }
+        let tags: HashSet<u8> = all_spi_batch_call_errors().iter().map(witness).collect();
+        assert_eq!(tags.len(), 5);
+    }
+
+    // --- gallo_spi_batch output invariants (via the outputs seam) ---
+    //
+    // `gallo_init` opens USB, so no test may construct a handle. These drive
+    // the extracted output helper directly, which is the code path
+    // `gallo_spi_batch` uses for every outcome after `out_len` has been
+    // validated.
+
+    /// Run `spi_batch_write_outputs` with sentinel out-params and report
+    /// `(status, *out_len, *out_failed_op)`.
+    fn run_outputs(result: Result<Vec<u8>, lib::SpiBatchCallError>) -> (i32, usize, u16) {
+        let mut buf = [0u8; 16];
+        let mut out_len: usize = 0xABCD;
+        let mut failed_op: u16 = 0xA5A5;
+        let status = unsafe {
+            spi_batch_write_outputs(
+                result,
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut out_len,
+                &mut failed_op,
+            )
+        };
+        (status as i32, out_len, failed_op)
+    }
+
+    #[test]
+    fn spi_batch_outputs_zero_out_len_on_metadata_failure() {
+        let (status, len, _) = run_outputs(Err(lib::SpiBatchCallError::DeviceInfo(
+            lib::ValidateError::Comms(lib::HostErr::Closed),
+        )));
+        assert_eq!(status, -62);
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn spi_batch_outputs_zero_out_len_on_local_refusals() {
+        let (status, len, _) = run_outputs(Err(lib::SpiBatchCallError::InvalidCsPin {
+            cs: 255,
+            num_gpios: 4,
+        }));
+        assert_eq!(status, -71);
+        assert_eq!(len, 0);
+
+        let (status, len, _) = run_outputs(Err(lib::SpiBatchCallError::NoGpios));
+        assert_eq!(status, -74);
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn spi_batch_outputs_zero_out_len_on_timeout() {
+        let (status, len, _) = run_outputs(Err(lib::SpiBatchCallError::DeviceInfo(
+            lib::ValidateError::Timeout,
+        )));
+        assert_eq!(status, -75);
+        assert_eq!(len, 0);
+    }
+
+    #[test]
+    fn spi_batch_null_out_len_returns_invalid_argument_before_any_write() {
+        // A NULL handle must be rejected before anything is written, so the
+        // caller's `out_len` sentinel survives untouched.
+        let mut out_len: usize = 0xABCD;
+        let status = unsafe {
+            gallo_spi_batch(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                0,
+                &mut out_len,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::Uninitialized);
+        assert_eq!(out_len, 0xABCD);
+    }
+
+    #[test]
+    fn spi_batch_outputs_never_write_failed_op_on_metadata_failure() {
+        for e in all_validate_errors() {
+            let (_, _, failed_op) = run_outputs(Err(lib::SpiBatchCallError::DeviceInfo(e)));
+            assert_eq!(
+                failed_op, 0xA5A5,
+                "metadata failure fabricated a failed-op index"
+            );
+        }
+    }
+
+    #[test]
+    fn spi_batch_outputs_never_write_failed_op_on_local_refusal() {
+        for e in [
+            lib::SpiBatchCallError::InvalidCsPin {
+                cs: 255,
+                num_gpios: 4,
+            },
+            lib::SpiBatchCallError::NoGpios,
+        ] {
+            let (_, _, failed_op) = run_outputs(Err(e));
+            assert_eq!(
+                failed_op, 0xA5A5,
+                "local refusal fabricated a failed-op index"
+            );
+        }
+    }
+
+    #[test]
+    fn spi_batch_outputs_never_write_failed_op_on_batch_comms() {
+        let (status, _, failed_op) =
+            run_outputs(Err(lib::SpiBatchCallError::Comms(lib::HostErr::Closed)));
+        assert_eq!(status, -25);
+        assert_eq!(failed_op, 0xA5A5);
+    }
+
+    #[test]
+    fn spi_batch_outputs_write_failed_op_only_on_endpoint_error() {
+        // Positive control: a suite that only forbids writes would be
+        // satisfied by an implementation that never writes at all.
+        let (_, _, failed_op) = run_outputs(Err(lib::SpiBatchCallError::Endpoint(SpiBatchError {
+            failed_op: 3,
+            kind: SpiError::Other,
+        })));
+        assert_eq!(failed_op, 3);
+    }
+
+    #[test]
+    fn spi_batch_outputs_tolerate_null_failed_op_pointer() {
+        let mut buf = [0u8; 4];
+        let mut out_len: usize = 0xABCD;
+        let status = unsafe {
+            spi_batch_write_outputs(
+                Err(lib::SpiBatchCallError::Endpoint(SpiBatchError {
+                    failed_op: 1,
+                    kind: SpiError::Other,
+                })),
+                buf.as_mut_ptr(),
+                buf.len(),
+                &mut out_len,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status as i32, Status::SpiReadFailed as i32);
+        assert_eq!(out_len, 0);
+    }
+
+    // --- gallo_num_gpios ---
+
+    fn run_num_gpios(res: Result<u8, lib::ValidateError>) -> (i32, u8) {
+        let mut out: u8 = 0xAB;
+        let status = unsafe { num_gpios_write_output(res, &mut out) };
+        (status as i32, out)
+    }
+
+    #[test]
+    fn num_gpios_output_written_only_on_success() {
+        let (status, out) = run_num_gpios(Ok(4));
+        assert_eq!(status, 0);
+        assert_eq!(out, 4);
+    }
+
+    #[test]
+    fn num_gpios_output_written_on_successful_zero() {
+        // Zero is a legitimate answer, not an error: the sentinel must be
+        // overwritten.
+        let (status, out) = run_num_gpios(Ok(0));
+        assert_eq!(status, 0);
+        assert_eq!(out, 0);
+    }
+
+    #[test]
+    fn num_gpios_output_unchanged_on_every_validate_error() {
+        let expected = [-62, -75, -64, -63];
+        for (e, want) in all_validate_errors().into_iter().zip(expected) {
+            let (status, out) = run_num_gpios(Err(e));
+            assert_eq!(status, want);
+            assert_eq!(out, 0xAB, "an error wrote the output buffer");
+        }
+    }
+
+    #[test]
+    fn header_declares_num_gpios_and_new_statuses() {
+        // cbindgen prunes anything not reachable from an exported signature
+        // (AGENTS.md §8), so the generated header is the only place that
+        // proves C callers can actually see these.
+        let path = std::path::Path::new(env!("OUT_DIR"))
+            .join("include")
+            .join("pico_de_gallo.h");
+        let header = std::fs::read_to_string(&path).expect("generated header must exist");
+        for needle in ["gallo_num_gpios", "SpiNoGpios", "DeviceInfoTimeout"] {
+            assert!(
+                header.contains(needle),
+                "{needle} missing from {}",
+                path.display()
+            );
+        }
+    }
+
+    #[test]
+    fn num_gpios_null_device_returns_uninitialized() {
+        let mut out: u8 = 0xAB;
+        let status = unsafe { gallo_num_gpios(std::ptr::null(), &mut out) };
+        assert_eq!(status, Status::Uninitialized);
+        assert_eq!(out, 0xAB);
+    }
+
+    #[test]
+    fn num_gpios_null_output_returns_invalid_argument() {
+        // A non-null handle would open USB, so this pins the ordering that
+        // is reachable without hardware: the handle check runs first, and a
+        // null handle short-circuits before the output pointer is touched.
+        let status = unsafe { gallo_num_gpios(std::ptr::null(), std::ptr::null_mut()) };
+        assert_eq!(status, Status::Uninitialized);
     }
 
     #[test]

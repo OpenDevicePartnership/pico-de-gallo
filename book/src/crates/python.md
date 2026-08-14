@@ -81,7 +81,42 @@ pg = gallo.open()
 print(pg.ping(123))
 print(pg.version().major, pg.version().minor, pg.version().patch)
 print(pg.device_info().hw_version)
+print(pg.device_info().num_gpios)
 ```
+
+## GPIO count and the SPI chip select
+
+`DeviceInfo.num_gpios` and `PycoDeGallo.num_gpios()` both report the GPIO
+count the connected board advertises. That is the runtime-authoritative
+bound for a pin index and for `spi_batch`'s `cs_pin`; do not hardcode 4.
+
+```python
+n = pg.num_gpios()          # one implicit device/info round-trip, then cached
+data = pg.spi_batch(0, ops) # cs_pin checked against n before anything is sent
+```
+
+`spi_batch` resolves the count and classifies `cs_pin` before it converts
+the operation objects, so a refused chip-select costs nothing and drives
+no pin. All failures raise `RuntimeError`, with disjoint messages:
+
+```text
+invalid SPI chip-select pin 7; device reports 4 GPIOs (valid 0..4)
+device reports num_gpios=0; no SPI chip-select pin is available
+failed to determine num_gpios: device/info did not respond within 300 seconds ...
+```
+
+Messages beginning `failed to determine num_gpios` mean the host could
+not establish the valid range at all — transport failure, the 300-second
+`device/info` timeout, legacy firmware, or a schema mismatch. They are
+never phrased as a chip-select complaint. A failed lookup is not cached,
+so retrying is allowed.
+
+A `cs_pin` outside `0..=255` raises `OverflowError` during PyO3 argument
+extraction, before the device is contacted.
+
+> **Schema-freeze caveat.** On this branch a successful `validate()` or
+> `open_strict()` does not prove wire-*shape* compatibility: `DeviceInfo`
+> changed while both host and firmware still report schema 0.6.1.
 
 ## Enums and Value Types
 

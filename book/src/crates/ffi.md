@@ -77,11 +77,15 @@ Exceeding `GALLO_MAX_BATCH_OPS` in `gallo_i2c_batch` or `gallo_spi_batch`
 yields `Status::InvalidArgument`.
 
 `GALLO_NUM_GPIOS` bounds the valid pin indices, `0..GALLO_NUM_GPIOS`, which
-map to physical GPIO8–GPIO11 on the Pico 2 header. Anything at or above it
-yields `Status::GpioInvalidPin`. The same indices select the SPI chip select
-in `gallo_spi_batch`, so bound a chip select by this constant rather than a
-literal. Note the dedicated `SPI_CS` header pin (GPIO5) is not one of these
-and is not currently claimed by the firmware.
+map to physical GPIO8-GPIO11 on the Pico 2 header. Anything at or above it
+yields `Status::GpioInvalidPin`. Note the dedicated `SPI_CS` header pin
+(GPIO5) is not one of these and is not currently claimed by the firmware.
+
+For the SPI chip select in `gallo_spi_batch`, prefer the *runtime* count
+from `gallo_num_gpios` over this compile-time constant — see below.
+`GALLO_NUM_GPIOS` is only this build's default, and the library checks
+`cs_pin` against what the connected board actually reports.
+
 
 All three mirror constants in `pico-de-gallo-internal`, and a compile-time
 assertion in `pico-de-gallo-ffi` fails the build if they ever disagree.
@@ -127,12 +131,21 @@ Status gallo_version(const PicoDeGallo *gallo,
 
 Status gallo_get_device_info(const PicoDeGallo *gallo, GalloDeviceInfo *info);
 
+Status gallo_num_gpios(const PicoDeGallo *gallo, uint8_t *out_num_gpios);
+
 Status gallo_system_reset_subscriptions(const PicoDeGallo *gallo,
                                         uint8_t *out_reset);
 ```
 
 `gallo_get_device_info` returns firmware version, schema version, hardware
 revision, and a capability bitfield.
+
+`gallo_num_gpios` returns the GPIO count the connected device reports —
+the runtime-authoritative bound for a pin index and for the SPI chip
+select. It performs one `device/info` round-trip on first use, bounded at
+300 seconds, and caches the value per handle; the round-trip also
+validates the firmware's reported schema version. `*out_num_gpios` is
+written only on `Ok`, including a successful zero.
 
 `gallo_system_reset_subscriptions` tears down any GPIO subscriptions
 left over from a previous host session and writes the reset count to
@@ -248,6 +261,49 @@ deasserts it after the last (or on error), providing atomic
 per-op failure, `*out_failed_op` (if non-NULL) receives the zero-based
 index. `BufferTooLong` means `out_buf` was too small; `*out_len` still
 receives the required capacity.
+
+#### Chip-select preflight
+
+`cs_pin` is validated against the device-reported GPIO count before any
+operation payload is translated and before anything is transmitted:
+
+```c
+uint8_t n = 0;
+Status s = gallo_num_gpios(gallo, &n);   // writes n only on Ok
+```
+
+`gallo_num_gpios` performs one `device/info` round-trip on first use —
+which also validates the firmware's reported schema version — and caches
+the answer per handle. A device reporting zero is a success and writes
+zero; every error leaves your buffer untouched, so a sentinel written
+before the call is a reliable "was this populated?" check.
+
+`gallo_spi_batch` returns:
+
+| Status | Meaning |
+|---|---|
+| `SpiInvalidCsPin` (−71) | `cs_pin` is at or beyond the reported count |
+| `SpiNoGpios` (−74) | the device reports zero GPIOs |
+| `DeviceInfoFailed` (−62) | the count could not be read (transport/decode) |
+| `DeviceInfoTimeout` (−75) | `device/info` did not answer within 300 seconds |
+| `LegacyFirmware` (−64) | the firmware has no `device/info` endpoint |
+| `SchemaMismatch` (−63) | host and firmware disagree on the wire version |
+
+The last four mean the host could not establish the valid range at all;
+they are never reported as an invalid chip-select. A refused chip-select
+drives no pin, sends nothing, leaves `*out_len` at zero, and never writes
+`*out_failed_op` — only a firmware-side per-operation failure does that.
+
+Ordering inside `gallo_spi_batch` is fixed: validate `gallo`, validate
+`out_len`, validate the top-level `ops`/`ops_count`/`out_capacity` shape,
+write `*out_len = 0`, resolve the GPIO count, classify `cs_pin`, translate
+the operation payloads, call the library once, then write outputs. A NULL
+`out_len` is therefore never dereferenced, and an invalid op `tag` or NULL
+`data` pointer is reported only after the device has been reached.
+
+> **Schema-freeze caveat.** On this branch a matching reported schema
+> version does not prove wire-*shape* compatibility: `DeviceInfo` changed
+> while both host and firmware still report 0.6.1.
 
 ### GPIO
 

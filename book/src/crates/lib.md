@@ -138,6 +138,20 @@ mysterious decoding problems later.
 `validate()` returns the `DeviceInfo` on success, so you can immediately inspect
 firmware version, hardware revision, and capability bits.
 
+The `device/info` round-trip is bounded at **300 seconds**. On expiry
+`validate()` returns `ValidateError::Timeout`, which is deliberately
+distinct from `ValidateError::Comms`: nothing failed at the transport
+layer, the request is simply still outstanding, so there is no transport
+error to carry. The bound is generous because firmware dispatch is serial
+and a legal maximum-length SPI batch can occupy it for about 275 seconds;
+the point is that the wait is finite, not that it is short.
+
+> **Schema-freeze caveat.** On this branch a successful `validate()` does
+> not prove wire-*shape* compatibility: `DeviceInfo` changed while both
+> host and firmware still report schema 0.6.1. Validation bounds how long
+> you wait and checks the reported numbers; it cannot make those numbers
+> trustworthy.
+
 ```rust,no_run
 use pico_de_gallo_lib::PicoDeGallo;
 
@@ -168,6 +182,38 @@ The failure modes are explicit:
 - `ValidateError::LegacyFirmware` — firmware is too old for `device/info`,
 - `ValidateError::SchemaMismatch` — host and firmware do not agree on the wire
   schema.
+
+## `num_gpios()` and the SPI Chip-Select Bound
+
+`num_gpios().await` returns the GPIO count the connected device reports.
+That is the runtime-authoritative bound for a chip-select index; prefer it
+over the compile-time `NUM_GPIOS`, which is only this build's default.
+
+The value is resolved lazily. A cache miss performs one implicit
+`validate()` — so the same 300-second bound and the same schema check
+apply — and stores the result. Handles cloned from the same connection
+share that cache, so a warm lookup costs no USB traffic. A failed lookup
+is not cached, so the next call retries. A reported count of zero is a
+legitimate, cacheable answer rather than a miss.
+
+`spi_batch(cs_pin, ops)` uses that bound to refuse a bad chip-select
+*before* it encodes anything or transmits an `spi/batch` request, and
+returns `SpiBatchCallError`:
+
+| Variant | Meaning |
+|---|---|
+| `DeviceInfo(ValidateError)` | The count could not be established — transport, 300-second timeout, legacy firmware, or schema mismatch. **Never** a chip-select complaint. |
+| `NoGpios` | The device reports zero GPIOs. Distinct from an out-of-range index. |
+| `InvalidCsPin { cs, num_gpios }` | `cs` is at or beyond the reported count. Carries the caller's index verbatim. |
+| `Comms(HostErr)` | The `spi/batch` request itself failed at the transport layer. |
+| `Endpoint(SpiBatchError)` | The firmware executed the batch and refused or failed an operation, with `failed_op`. |
+
+A local refusal transmits nothing, drives no pin, and never fabricates a
+`failed_op` index. A cached count belongs to the handle that learned it:
+if the board is unplugged, that handle keeps the byte and a
+plausible-looking request will reach the batch RPC and fail with `Comms`.
+The client never rebinds itself to a different board, and a freshly
+constructed handle starts cold.
 
 ## GPIO Topic Subscriptions
 
@@ -221,7 +267,7 @@ The library exposes one typed async method per firmware capability.
 | `spi_write` | `contents` | Write bytes to the SPI bus |
 | `spi_transfer` | `contents` | Full-duplex SPI transfer |
 | `spi_flush` | — | Flush pending SPI traffic |
-| `spi_batch` | `cs_pin`, `ops` | Execute atomic multi-step SPI traffic under chip-select |
+| `spi_batch` | `cs_pin`, `ops` | Execute atomic multi-step SPI traffic under chip-select (see below) |
 | `spi_set_config` | `spi_frequency`, `spi_phase`, `spi_polarity` | Set SPI timing and mode |
 | `spi_get_config` | — | Read back the active SPI configuration |
 | `uart_read` | `count`, `timeout_ms` | Read up to `count` bytes with timeout |
@@ -242,6 +288,7 @@ The library exposes one typed async method per firmware capability.
 | `version` | — | Read the firmware version |
 | `device_info` | — | Read firmware version, schema version, HW revision, and capabilities |
 | `validate` | — | Perform a strict schema compatibility check and return `DeviceInfo` |
+| `num_gpios` | — | Read the device-reported GPIO count; validates lazily on the first call, then caches |
 | `pwm_set_duty_cycle` | `channel`, `duty` | Set a raw PWM duty-cycle value |
 | `pwm_get_duty_cycle` | `channel` | Read current and maximum PWM duty |
 | `pwm_enable` | `channel` | Enable the PWM slice behind a channel |

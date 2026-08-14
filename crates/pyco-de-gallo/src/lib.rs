@@ -38,7 +38,8 @@ use pico_de_gallo_lib::{
     PwmConfigurationInfo as LibPwmConfigurationInfo, PwmDutyCycleInfo as LibPwmDutyCycleInfo,
     SpiBatchOp as LibSpiBatchOp, SpiConfigurationInfo as LibSpiConfigurationInfo,
     SpiPhase as LibSpiPhase, SpiPolarity as LibSpiPolarity,
-    UartConfigurationInfo as LibUartConfigurationInfo, VersionInfo as LibVersionInfo,
+    UartConfigurationInfo as LibUartConfigurationInfo, ValidateError as LibValidateError,
+    VersionInfo as LibVersionInfo,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -498,6 +499,13 @@ struct DeviceInfo {
     /// Bitfield of supported peripheral capabilities.
     #[pyo3(get)]
     capabilities: u64,
+    /// Number of GPIO pins the device reports.
+    ///
+    /// This is the runtime-authoritative bound for a GPIO index and for the
+    /// SPI chip-select pin of :meth:`PycoDeGallo.spi_batch`. Also available
+    /// directly as :meth:`PycoDeGallo.num_gpios`.
+    #[pyo3(get)]
+    num_gpios: u8,
 }
 
 impl From<LibDeviceInfo> for DeviceInfo {
@@ -511,8 +519,36 @@ impl From<LibDeviceInfo> for DeviceInfo {
             schema_patch: info.schema_patch,
             hw_version: info.hw_version,
             capabilities: info.capabilities.0,
+            num_gpios: info.num_gpios,
         }
     }
+}
+
+/// Message for a failed `num_gpios` lookup.
+///
+/// GIL-free so the exact wording is testable without a Python interpreter.
+/// Deliberately disjoint from the chip-select messages below: a failure to
+/// *learn* the valid range must never read as a complaint about the
+/// caller's pin (issue #104).
+fn num_gpios_error_message(e: &LibValidateError) -> String {
+    format!("failed to determine num_gpios: {e}")
+}
+
+/// Classify a chip-select index against a device-reported GPIO count.
+///
+/// `num_gpios` must come from a successful lookup; every failure path
+/// returns before this is called, so the two message families never mix.
+fn classify_cs(cs: u8, num_gpios: u8) -> Result<(), String> {
+    if num_gpios == 0 {
+        return Err("device reports num_gpios=0; no SPI chip-select pin is available".to_string());
+    }
+    if cs >= num_gpios {
+        return Err(format!(
+            "invalid SPI chip-select pin {cs}; device reports {num_gpios} \
+             GPIOs (valid 0..{num_gpios})"
+        ));
+    }
+    Ok(())
 }
 
 /// Current UART configuration returned by :meth:`PycoDeGallo.uart_get_config`.
@@ -932,16 +968,63 @@ impl PycoDeGallo {
     /// The firmware asserts CS on ``cs_pin`` before the first operation and
     /// deasserts it after the last (or on error).
     ///
+    /// ``cs_pin`` is checked against the device-reported GPIO count (see
+    /// :meth:`num_gpios`) before anything is transmitted, so a bad
+    /// chip-select drives no pin. The first call performs one implicit
+    /// ``device/info`` round-trip; afterwards the count is cached.
+    ///
     /// Args:
-    ///     cs_pin (int): GPIO pin number to use as chip-select.
+    ///     cs_pin (int): GPIO pin number to use as chip-select. Must be in
+    ///         ``0..num_gpios``. Values outside ``0..=255`` raise
+    ///         ``OverflowError`` during argument extraction, before the
+    ///         device is contacted at all.
     ///     ops (list[SpiBatchOp]): Sequence of read/write/transfer/delay ops.
     ///
     /// Returns:
     ///     bytes: Concatenated data from all ``Read`` and ``Transfer`` ops, in order.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the GPIO count could not be determined (the
+    ///         message starts with ``failed to determine num_gpios``), if
+    ///         the device reports zero GPIOs, if ``cs_pin`` is at or beyond
+    ///         the reported count, or if the batch itself fails.
     fn spi_batch(&self, py: Python<'_>, cs_pin: u8, ops: Vec<SpiBatchOp>) -> PyResult<Vec<u8>> {
+        // Resolve the bound before converting the operation objects: a
+        // refused chip-select must cost nothing and transmit nothing.
+        let num_gpios = self
+            .block(py, self.inner.num_gpios())
+            .map_err(|e| PyRuntimeError::new_err(num_gpios_error_message(&e)))?;
+        classify_cs(cs_pin, num_gpios).map_err(PyRuntimeError::new_err)?;
+
         let lib_ops: Vec<LibSpiBatchOp<'_>> = ops.iter().map(Into::into).collect();
         self.block(py, self.inner.spi_batch(cs_pin, &lib_ops))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+
+    /// Query how many GPIO pins the device reports.
+    ///
+    /// This is the runtime-authoritative bound for a GPIO index and for the
+    /// SPI chip-select pin of :meth:`spi_batch`. The first call performs one
+    /// implicit validated ``device/info`` round-trip, bounded at 300
+    /// seconds; afterwards the value is cached. A reported count of zero is
+    /// a legitimate answer, not an error.
+    ///
+    /// Note: during the current wire-schema freeze a matching reported
+    /// schema version does not prove wire-*shape* compatibility. Validation
+    /// bounds how long you wait and checks the reported numbers; it cannot
+    /// make those numbers trustworthy.
+    ///
+    /// Returns:
+    ///     int: The device-reported GPIO count.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the count could not be determined — transport
+    ///         failure, 300-second timeout, legacy firmware, or schema
+    ///         mismatch. The message starts with
+    ///         ``failed to determine num_gpios``. Retrying is allowed.
+    fn num_gpios(&self, py: Python<'_>) -> PyResult<u8> {
+        self.block(py, self.inner.num_gpios())
+            .map_err(|e| PyRuntimeError::new_err(num_gpios_error_message(&e)))
     }
 
     /// Read up to ``count`` bytes from the UART bus.
@@ -1539,5 +1622,136 @@ impl PycoDeGallo {
     fn onewire_search_next(&self, py: Python<'_>) -> PyResult<Option<u64>> {
         self.block(py, self.inner.onewire_search_next())
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ===================================================================
+    // M3 — SPI chip-select bounds (issue #104)
+    // ===================================================================
+    //
+    // `pyo3`'s `auto-initialize` feature is not enabled and enabling it
+    // would be a manifest change, so no test here may hold a `Python<'_>`
+    // token. Everything below is therefore GIL-free: the `From` conversion
+    // and the message/classification helpers. The `#[pymethods]` dispatch
+    // for `num_gpios()`, and the ordering claim that an out-of-`u8` Python
+    // int raises `OverflowError` before the bound is resolved, are not
+    // executable in Rust and remain unproven here.
+
+    fn lib_info(num_gpios: u8) -> LibDeviceInfo {
+        LibDeviceInfo {
+            fw_major: 1,
+            fw_minor: 2,
+            fw_patch: 3,
+            schema_major: 0,
+            schema_minor: 6,
+            schema_patch: 1,
+            hw_version: 1,
+            capabilities: pico_de_gallo_lib::Capabilities::NONE,
+            num_gpios,
+        }
+    }
+
+    #[test]
+    fn device_info_conversion_carries_num_gpios() {
+        let py_info: DeviceInfo = lib_info(7).into();
+        assert_eq!(py_info.num_gpios, 7);
+    }
+
+    #[test]
+    fn device_info_conversion_carries_num_gpios_across_the_full_u8_range() {
+        // Sweeping the range is what separates "converted the field" from
+        // "hardcoded a plausible constant".
+        for n in 0..=u8::MAX {
+            let py_info: DeviceInfo = lib_info(n).into();
+            assert_eq!(py_info.num_gpios, n);
+        }
+    }
+
+    fn all_validate_errors() -> Vec<LibValidateError> {
+        vec![
+            LibValidateError::Comms(pico_de_gallo_lib::host_client::HostErr::Closed),
+            LibValidateError::Timeout,
+            LibValidateError::LegacyFirmware,
+            LibValidateError::SchemaMismatch {
+                expected_major: 0,
+                actual_major: 0,
+                expected_minor: 7,
+                actual_minor: 6,
+            },
+        ]
+    }
+
+    #[test]
+    fn num_gpios_error_message_prefix_is_exact() {
+        let msg = num_gpios_error_message(&LibValidateError::Comms(
+            pico_de_gallo_lib::host_client::HostErr::Closed,
+        ));
+        assert!(
+            msg.starts_with("failed to determine num_gpios: "),
+            "got: {msg}"
+        );
+    }
+
+    #[test]
+    fn num_gpios_timeout_message_names_the_endpoint() {
+        let msg = num_gpios_error_message(&LibValidateError::Timeout);
+        assert!(msg.contains("failed to determine num_gpios"), "got: {msg}");
+        assert!(msg.contains("device/info"), "got: {msg}");
+        assert!(msg.contains("300"), "got: {msg}");
+    }
+
+    #[test]
+    fn num_gpios_messages_are_disjoint_from_chip_select_messages() {
+        // The binding constraint at the Python boundary.
+        let cs_messages = [
+            classify_cs(4, 4).expect_err("out of range"),
+            classify_cs(0, 0).expect_err("zero bound"),
+        ];
+        for e in all_validate_errors() {
+            let msg = num_gpios_error_message(&e);
+            assert!(
+                !msg.to_lowercase().contains("chip-select"),
+                "metadata message leaked CS wording: {msg}"
+            );
+        }
+        for msg in &cs_messages {
+            assert!(
+                !msg.contains("failed to determine num_gpios"),
+                "CS message leaked metadata wording: {msg}"
+            );
+        }
+    }
+
+    #[test]
+    fn spi_batch_out_of_range_message_is_exact() {
+        assert_eq!(
+            classify_cs(4, 4).expect_err("out of range"),
+            "invalid SPI chip-select pin 4; device reports 4 GPIOs (valid 0..4)"
+        );
+        // A truncating implementation would report pin 3 here — and accept it.
+        assert_eq!(
+            classify_cs(255, 4).expect_err("out of range"),
+            "invalid SPI chip-select pin 255; device reports 4 GPIOs (valid 0..4)"
+        );
+    }
+
+    #[test]
+    fn spi_batch_zero_bound_message_is_exact() {
+        assert_eq!(
+            classify_cs(0, 0).expect_err("no pin is valid at n = 0"),
+            "device reports num_gpios=0; no SPI chip-select pin is available"
+        );
+    }
+
+    #[test]
+    fn classify_cs_boundaries_at_n_four_and_n_seven() {
+        classify_cs(3, 4).expect("pin 3 is valid at n = 4");
+        assert!(classify_cs(4, 4).is_err());
+        classify_cs(6, 7).expect("pin 6 is valid at n = 7");
+        assert!(classify_cs(7, 7).is_err());
     }
 }

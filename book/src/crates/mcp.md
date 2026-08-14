@@ -284,6 +284,23 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 | `spi_set_config` | Set frequency, phase, and polarity | destructive |
 | `spi_batch` | Atomic multi-step transaction under chip-select | destructive |
 
+`spi_batch` takes `cs` as a `u8` and runs its steps in a fixed order:
+parse every operation payload, connect exactly once, read the GPIO count
+from the `DeviceInfo` that connection already validated, classify `cs`,
+then call the library once. No second metadata query is issued.
+
+Parsing comes first on purpose. `connect` runs
+`system_reset_subscriptions`, which tears down every GPIO subscription on
+the board — including ones owned by other host processes — so a malformed
+request must not reach it. A payload that fails to parse returns
+`-32602` (invalid params) without connecting.
+
+An out-of-range `cs` and a device reporting zero GPIOs are also `-32602`,
+with distinct messages, and nothing is transmitted. A failure to
+establish the count — transport, 300-second `device/info` timeout, legacy
+firmware, or schema mismatch — is `-32603` (internal error), never
+`-32602`: it is not a complaint about your argument.
+
 ### uart
 
 | Tool | Description | Kind |

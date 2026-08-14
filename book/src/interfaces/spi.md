@@ -181,12 +181,47 @@ The HAL provides two flavours of SPI access:
 - **`hal.spi_device(cs_pin)`** — an `SpiDevice` that automatically
   drives the given GPIO as chip-select around every transaction.
 
+## Host chip-select preflight
+
+Every host surface checks the chip-select index against the GPIO count
+the connected device reports in `device/info`, *before* the pin is driven
+and before any `spi/batch` request is transmitted. The bound is therefore
+runtime-authoritative: it comes from the board, not from a compile-time
+constant.
+
+The count is resolved lazily. The first call that needs it performs one
+implicit validated `device/info` round-trip — bounded at 300 seconds —
+and caches the result for the lifetime of the connection; handles cloned
+from the same connection share that cache. A failed lookup is not cached,
+so the next call retries.
+
+The failure modes stay disjoint, which is the point:
+
+- the index is at or beyond the reported count → invalid chip-select;
+- the device reports zero GPIOs → its own distinct error, for every index;
+- the count could not be established (transport failure, 300-second
+  timeout, legacy firmware, schema mismatch) → a communications /
+  compatibility error, **never** an invalid chip-select. Misreporting a
+  metadata failure as a bad argument would send you hunting for a bug in
+  your own code.
+
+A refused chip-select drives no pin and transmits nothing, so the pin
+keeps whatever direction you configured.
+
+> **Schema-freeze caveat.** On this branch, a successful validation does
+> not prove wire-*shape* compatibility: `DeviceInfo` changed while both
+> host and firmware still report schema 0.6.1. Validation bounds how long
+> you wait and checks the reported numbers; it cannot make those numbers
+> trustworthy.
+
 ```rust,no_run
 use embedded_hal::spi::{Operation, SpiDevice};
 use pico_de_gallo_hal::Hal;
 
 fn read_jedec(hal: &Hal) -> [u8; 3] {
-    let mut spi = hal.spi_device(0);
+    // `spi_device` returns a Result: the chip-select is validated against
+    // the device-reported GPIO count before the pin is driven.
+    let mut spi = hal.spi_device(0).expect("CS 0 is valid on this board");
     let mut id = [0u8; 3];
 
     // One transaction; CS asserted for the whole thing; batched into

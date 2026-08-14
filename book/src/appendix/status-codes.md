@@ -99,6 +99,16 @@ that doesn't appear in your header means success.
 | `SpiInvalidCsPin`          |   −71 | SPI chip-select index is outside the reported GPIO range |
 | `SpiCsPinUnavailable`      |   −72 | SPI chip-select pin is configured as an input            |
 | `SpiCsPinMonitored`        |   −73 | SPI chip-select pin is monitored for GPIO events         |
+| `SpiNoGpios`               |   −74 | Device reports zero GPIOs, so no chip-select pin exists  |
+| `DeviceInfoTimeout`        |   −75 | `device/info` did not respond within 300 seconds         |
+
+`SpiInvalidCsPin` (−71) and `SpiNoGpios` (−74) are host-side refusals: the
+chip-select was rejected before anything was transmitted, and no pin was
+driven. `DeviceInfoFailed` (−62), `SchemaMismatch` (−63),
+`LegacyFirmware` (−64) and `DeviceInfoTimeout` (−75) mean the host could
+not establish the device-reported GPIO count at all. Those four are never
+reported as a chip-select error: a failure to learn the valid range is not
+a complaint about the caller's pin.
 
 ## Source of Truth
 

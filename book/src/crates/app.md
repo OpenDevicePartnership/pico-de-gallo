@@ -161,6 +161,24 @@ See the [I<sup>2</sup>C chapter](../interfaces/i2c.md) and
 | `get-config` | Show the active SPI configuration |
 | `batch` | Run atomic multi-step SPI transactions under chip-select |
 
+`batch --cs <PIN>` accepts any `u8`. The pin is checked at run time
+against the GPIO count the connected device reports — not against a fixed
+range — before the operations are parsed and before anything is
+transmitted, so an out-of-range chip-select drives no pin:
+
+```text
+invalid SPI chip-select pin 7; device reports 4 GPIOs (valid 0..4)
+device reports num_gpios=0; no SPI chip-select pin is available
+```
+
+Every subcommand except `list` and `version` validates the firmware
+before doing anything else, and that validation supplies the count. If it
+fails — including a `device/info` timeout after 300 seconds — the error
+appears under `firmware validation failed`, never as an invalid
+chip-select. On this branch a successful validation still cannot prove
+wire-*shape* compatibility, because `DeviceInfo` changed while both peers
+report schema 0.6.1.
+
 See the [SPI chapter](../interfaces/spi.md) and
 [Transaction Batching](../interfaces/batching.md).
 
