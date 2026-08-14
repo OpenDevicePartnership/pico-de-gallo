@@ -3801,11 +3801,22 @@ mod tests {
         assert_eq!(out, 0xAB);
     }
 
+    /// Pins the *precedence* of the two null checks in `gallo_num_gpios`:
+    /// the handle check runs first, so when both pointers are NULL the
+    /// result is [`Status::Uninitialized`], **not**
+    /// [`Status::InvalidArgument`]. That ordering is what makes the
+    /// `unsafe { &*gallo }` deref sound, so it is worth pinning.
+    ///
+    /// KNOWN GAP: the `(valid handle, NULL output) -> InvalidArgument`
+    /// branch is **not** covered by any test. Every constructor that
+    /// yields a non-null `*const PicoDeGallo` (`gallo_init`,
+    /// `gallo_init_with_serial_number`, and their `_strict` variants)
+    /// opens USB, and `lib::PicoDeGallo::new_for_test` is
+    /// `#[cfg(test)] pub(crate)` — unreachable from this crate. Covering
+    /// it would require a hardware-free constructor seam exported from
+    /// `pico-de-gallo-lib`, or a hardware-in-the-loop test.
     #[test]
-    fn num_gpios_null_output_returns_invalid_argument() {
-        // A non-null handle would open USB, so this pins the ordering that
-        // is reachable without hardware: the handle check runs first, and a
-        // null handle short-circuits before the output pointer is touched.
+    fn num_gpios_null_handle_takes_precedence_over_null_output() {
         let status = unsafe { gallo_num_gpios(std::ptr::null(), std::ptr::null_mut()) };
         assert_eq!(status, Status::Uninitialized);
     }
