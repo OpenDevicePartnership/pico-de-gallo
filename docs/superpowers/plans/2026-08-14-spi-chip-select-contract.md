@@ -745,3 +745,86 @@ fixed. As written the subcommand cannot set a pin LOW. A correct fix needs both
 M3 owns the `app` crate. This is adjacent rather than in scope for #104, so
 either fix it there or file it separately — but it should not be left silently
 broken, and it invalidates any test procedure that calls `gallo gpio put`.
+### 8.15 M3 outcome, and corrections it supersedes
+
+M3 landed as three commits: `80832cd3810d`
+(`feat(lib,ffi,hal,application,mcp,pyco): Bound SPI chip-select host-side`),
+`c5ac92f80d50` (`fix(application): Make gpio put usable and able to drive a pin
+low`), and `d45bd5517f3f` (`test(ffi): Rename a num_gpios test that never
+reached its branch`). Independently verified: no `Cargo.toml`, `Cargo.lock`,
+`pico-de-gallo-internal` or firmware file touched; no `Signed-off-by`; workspace
+tests green; `gallo gpio put --pin N --level high|low` no longer panics.
+
+**Supersedes §3's M3 inventory and §4's M3 checkbox.** Both still said "append
+three `Status` codes" — M1 had already done that (§8.3). The accurate statement
+is: preserve `-71..-73` unchanged, and append two *new* codes, `SpiNoGpios = -74`
+and `DeviceInfoTimeout = -75`. The book-parity set also grew from 15 files to 17,
+adding `book/src/interfaces/batching.md`, `book/src/interfaces/spi.md`,
+`docs/ai-agents/pico-de-gallo-hal-examples.md` and
+`crates/pico-de-gallo-mcp/README.md`.
+
+**Supersedes spec §3 M3's premise.** The spec said M3 turns a round-trip
+returning `Other` into a local error. After M1 and M2 the firmware returns
+`InvalidCsPin`, so M3's actual benefit is refusing *before* the RPC is sent, not
+improving the error. Accessor distribution, previously ambiguous, resolved as:
+`lib`, `ffi`, `hal` and `pyco` get public accessors; the CLI and MCP reuse
+already-retained metadata.
+
+**How `num_gpios` is obtained.** An `Arc<OnceLock<u8>>` on `PicoDeGallo`, written
+only after a `device/info` that completed, passed schema validation, *and* did so
+within a timeout. Anything less leaves the cell empty so the next call retries
+rather than caching a guess. Where `validate()` was never called — `Hal::new`,
+`gallo_init`, Python `open` — the first bound-checked operation performs that
+validated fetch itself. That is deliberate: a bound check is only as trustworthy
+as the metadata behind it, and metadata decoded from an unvalidated device may
+have been read against the wrong struct shape. Opening stays lax; bound-checking
+cannot.
+
+**The binding constraint holds.** Every surface early-returns the metadata error,
+so the classifier is only ever reached with a bound from an `Ok`. A `device/info`
+failure surfaces as `SpiBatchCallError::DeviceInfo` / FFI `-62`/`-63`/`-64`/`-75`
+/ `SpiHalError::DeviceInfo` / a CLI validation abort / JSON-RPC `-32603` /
+Python `RuntimeError` — never as `InvalidCsPin`. `num_gpios == 0` is its own
+outcome (`SpiNoGpios = -74`), not an ordinary out-of-range index.
+
+**Two blockers were caught in review, both worth recording.**
+
+The first: a draft reordered `mcp/src/spi.rs` to connect-then-parse. `connect()`
+calls `system_reset_subscriptions()`, which tears down **every** GPIO
+subscription on the board including other processes'. That would have made a
+malformed hex argument a destructive cross-process side effect. The current
+source was already correct, so this became a regression guard rather than a fix.
+
+The second: adding a `device/info` RPC to the `spi_batch` path introduced a *new*
+instance of the AGENTS.md §13.17 (2026-06-03) hang class, because postcard-rpc's
+`send_resp` has no timeout. Bounded with `DEVICE_INFO_TIMEOUT = 300 s`,
+`ValidateError::Timeout` and `DeviceInfoTimeout = -75`.
+
+**The CLI's `Debug` rendering was deliberately NOT changed**, so §8.7 and §8.13's
+expected-output strings remain accurate. §8.13 is a historical record of hardware
+observations; rewriting it to match new output would falsify evidence. Worth its
+own issue instead.
+
+### 8.16 Open items carried forward
+
+- **300 s is a long time to hold a USB interface.** It cannot fire on a legal
+  operation — `DelayNs` × 64 ≈ 275 s is legal today — but an operator cannot
+  distinguish a five-minute freeze from a hang. The real fix is bounding total
+  batch duration, which is the wire/API decision already flagged in §8.10.
+- **The branch must not be tagged or released** while the changed wire shape
+  still reports schema 0.6.1. Under D11 `validate()` is a *false negative*:
+  matching version numbers do not prove matching wire shape. The maintainer's
+  lockstep bump resolves it. This is the sharpest argument for doing that bump
+  before any tag.
+- **`book/src/crates/app.md` and `book/src/appendix/endpoints.md` have no
+  trailing newline** — both pre-existing and byte-verified. M5 sweep.
+- **Known coverage gaps, recorded in-code rather than papered over:** Python's
+  `num_gpios()` dispatch ordering (needs `pyo3` `auto-initialize`, a manifest
+  edit); the MCP ordering test is a behavioural discriminator rather than a true
+  connect-counter; `gallo_num_gpios`'s valid-handle/null-out branch needs a
+  public seam from `pico-de-gallo-lib`.
+- **`gallo gpio put` fix explains a months-old CI blind spot:** none of the 51
+  pre-existing CLI tests parsed a `gpio` subcommand, and clap builds a
+  subcommand's arguments only when parsing reaches it. The new
+  `cli_command_builder_is_well_formed` test calls `Cli::command().debug_assert()`
+  recursively, so it now guards **every** subcommand.
