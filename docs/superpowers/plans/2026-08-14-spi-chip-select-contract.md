@@ -35,13 +35,14 @@ M1 (wire) ──┬──> M2 (firmware) ──┐
 
 | Pair | Relationship |
 | --- | --- |
-| M2 ∥ M3 | **Independent.** Both depend only on M1's types. Run their coordinators concurrently. |
-| M4 after M3 | M4 needs the FFI surface M3 adds (`num_gpios` accessor, three new `Status` codes). |
+| M2 **before** M3 | **Revised after M1 — see §8.2.** Originally planned as parallel. Two reasons forced a sequence: they share one working tree, so concurrent `@coder` edits and `git add` would interleave; and M3's host-side bound check would make M2's hardware tests 4 and 5 *unreachable* by rejecting the request locally before it ever reaches the firmware guard. |
+| M4 after M3 | M4 needs the FFI surface M3 adds (`num_gpios` accessor). The three `Status` codes M4 maps to errno already exist — M1 added them; see §8.3. |
 | M4 hardware test after M2 | M4 compiles without M2, but running a sample against a board needs M2's firmware flashed. |
 | M5 last | It records final state. |
 
-**Commits are serialized regardless of parallelism.** If M2 and M3 run
-concurrently, their `@integrator` invocations must not overlap — see §5.
+**Commits are serialized.** With M2→M3→M4→M5 strictly sequential this is
+automatic. Do not reintroduce parallelism without giving each coordinator its own
+git worktree.
 
 ---
 
@@ -50,17 +51,41 @@ concurrently, their `@integrator` invocations must not overlap — see §5.
 These are verified facts about *this* workstation, not hypotheticals. Every
 milestone coordinator must read them.
 
-### 2.1 Flashing M2 firmware breaks the `gallo` MCP tools
+### 2.1 Flashing M2 firmware can HANG the `gallo` MCP tools indefinitely
+
+**Revised after M1.** The original text here said "at best it silently ignores
+the field; at worst `postcard::from_bytes` fails outright," and told readers not
+to *trust* the MCP tools. M1's `@reliability` pass read postcard 1.1.3 and
+postcard-rpc 0.12.1 from source and found the real behaviour is worse and
+asymmetric:
+
+| Direction | Behaviour |
+| --- | --- |
+| new host ← old firmware | `DeserializeUnexpectedEnd` — a clean, loud failure |
+| old host ← new firmware | **silently succeeds**, trailing byte ignored |
+
+Worse: postcard-rpc response keys hash the response *schema*. An old host may
+therefore never match the new response at all, and `send_resp` has **no
+timeout** — it waits forever while holding the USB interface. On Windows, WinUSB
+grants exclusive interface access per session (AGENTS.md §13.17, 2026-07-20),
+so a hung MCP call also locks out the branch-built CLI.
 
 The attached board reports `fw 0.10.1, schema 0.6.1, hw_version 2`. The `gallo`
-MCP server in this environment is a **pre-built binary** compiled against the
-*old* `DeviceInfo` shape (eight fields, no `num_gpios`).
+MCP server here is a pre-built binary compiled against the *old* eight-field
+`DeviceInfo`. Because D11 forbids a version bump, `validate()` cannot catch the
+mismatch — both sides still claim schema 0.6.1.
 
-M1 appends `num_gpios: u8`. Once M2's firmware is flashed, the pre-built MCP
-server decodes a `DeviceInfo` that is one byte longer than it expects. At best
-it silently ignores the field; at worst `postcard::from_bytes` fails outright.
-Because D11 forbids a version bump, `validate()` will **not** catch this — both
-sides still claim schema 0.6.1.
+**Hard rule, from the moment M2 firmware is flashed until the maintainer's
+release bump: do not invoke any `gallo_*` MCP tool.** Not "don't trust it" —
+do not call it. A single call may hang unrecoverably and hold the interface.
+
+Use the branch-built CLI for all verification:
+
+```bash
+cargo run -p gallo --locked -- <subcommand>
+```
+
+That binary carries M1's types and decodes correctly.
 
 **Consequence:** after M2 flashes, do not trust `gallo_*` MCP tools for
 verification. Build the CLI from the branch instead:
@@ -378,6 +403,9 @@ or CS pin level/pull restoration (D3).
 
 ## 7. Definition of done
 
+These are **branch-level** gates, evaluated after M5 — not per-milestone gates.
+M1 in particular cannot satisfy the both-workspaces item on its own; see §8.1.
+
 - [ ] M1–M5 committed on `zephyr`, nothing pushed
 - [ ] `cargo test --locked` green across the host workspace
 - [ ] Firmware builds clean for `hw-rev1` **and** `hw-rev2`
@@ -387,3 +415,92 @@ or CS pin level/pull restoration (D3).
 - [ ] CI `semver` red, with the reason recorded in the M1 commit body — the only
       accepted red check
 - [ ] No `[package].version` modified anywhere
+
+---
+
+## 8. M1 outcome and plan corrections
+
+M1 landed as `8fd06483b206` — `feat(internal,lib,ffi)!: Define the SPI
+chip-select contract`. Independently verified: host workspace green, 159 unit
+tests + 1 doctest pass, clean tree, nothing pushed, no `Cargo.toml` or
+`Cargo.lock` touched, `NUM_GPIOS` still `4`.
+
+The milestone surfaced five things that change what later milestones must do.
+They are recorded here because each coordinator reads only this document.
+
+### 8.1 The firmware workspace does not compile at M1
+
+`crates/pico-de-gallo-firmware/src/handlers/info.rs:42` constructs `DeviceInfo`
+with a struct literal and now fails `E0063: missing field num_gpios`. Confirmed
+by direct build.
+
+This is not a defect in M1 — the firmware is a separate Cargo workspace, M1's
+gate was `cargo check --workspace` (host only), and §3 already assigns that site
+to M2. But it does mean §7's "green in both workspaces" is a branch-level gate,
+not something M1 could ever have met.
+
+**M2's first task is the one-line repair:** add `num_gpios: NUM_GPIOS as u8` to
+that struct literal, before anything else. Everything M2 does afterwards is
+blocked behind a compiling firmware workspace.
+
+### 8.2 M2 and M3 must run in sequence, M2 first
+
+Two independent reasons, either sufficient:
+
+1. **Shared working tree.** Concurrent `@coder` sessions editing and staging in
+   one checkout will interleave; `git add -u` from either would sweep the
+   other's half-finished work into the wrong commit.
+2. **M3 would make M2's tests unreachable.** M3 adds a host-side `cs_pin <
+   num_gpios` pre-flight check. M2's hardware test 4 (`spi/batch{cs:4}` →
+   `InvalidCsPin`) and test 5 depend on the request actually reaching the
+   firmware. If M3 lands first, the CLI rejects `cs=4` locally and the firmware
+   guard is never exercised — the defence-in-depth layer would ship unverified.
+
+M2 therefore verifies its guards against a host that has no bound checks yet
+(the state at `8fd06483b206`), and M3 adds the host layer afterwards.
+
+### 8.3 M3's scope is reduced — M1 already did part of it
+
+Appending to `SpiError` broke two exhaustive matches in the FFI, and repo policy
+requires every commit to build on its own, so M1 carried the minimum repair.
+**Already done, do not redo, do not renumber:**
+
+| Item | State after M1 |
+| --- | --- |
+| `Status::SpiInvalidCsPin = -71` | added |
+| `Status::SpiCsPinUnavailable = -72` | added |
+| `Status::SpiCsPinMonitored = -73` | added |
+| `spi_error_to_status` (`ffi/src/lib.rs:390`) | three explicit arms, no wildcard |
+| `gallo_spi_transfer` (`ffi/src/lib.rs:1092`) | three explicit arms, same mapping |
+| `book/src/appendix/status-codes.md` | three new rows, plus the pre-existing missing `GpioTimeout = -70` |
+| `make_device_info` (`lib/src/lib.rs:1327`) | `num_gpios` added — test helper only |
+
+Status-code injectivity is now test-enforced (`spi_error_to_status_is_injective`).
+
+**M3 still owns:** the `cs_pin` bound checks in `lib`, `ffi`, `hal`, `app`,
+`mcp`, `pyco`; the `num_gpios` accessor; and all book chapters under
+`book/src/crates/`.
+
+**Binding constraint on M3.** When `device/info` fails, the error must stay a
+communications error. Never `unwrap_or(0)`, never `Default`, never silently fall
+back to the compile-time `NUM_GPIOS`. A decode failure must not be reported as
+`InvalidCsPin`. If a device genuinely reports `num_gpios == 0`, rejecting every
+CS is fail-*safe* — no pin is driven — but it must be diagnosable as such.
+
+### 8.4 `book/src/interfaces/spi.md` is contended by three milestones
+
+M1 already edited it, scoped strictly to the error taxonomy; it also removed a
+documented `SpiError::Unsupported` that **does not exist in source** — a
+pre-existing §15.1 violation. Lines 11–18 were deliberately left untouched for
+M5. M2 must edit only the CS side-effect contract. M5 owns lines 11–18.
+
+### 8.5 Pre-existing defects found, for M5
+
+- `> [!CAUTION]` and friends render **literally**: `book.toml` has no admonition
+  preprocessor and CI runs plain mdBook 0.5.2. 46 instances book-wide. M1 used a
+  plain `> **Warning**` to avoid adding a 47th.
+- `book/src/appendix/endpoints.md` has no trailing newline.
+- AGENTS.md §15.1 checklist item 5 wants a `book/src/internals/releases.md`
+  mention for wire changes. D11 forbids the version bump that would give it a
+  number. M1 judged the `wire-protocol.md` warning sufficient; M5 should confirm
+  or add one.
