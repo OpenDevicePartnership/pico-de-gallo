@@ -187,7 +187,7 @@ See the [SPI chapter](../interfaces/spi.md) and
 | Subcommand | Purpose |
 |---|---|
 | `get` | Read the current level of a pin |
-| `put` | Drive a pin high or low |
+| `put` | Drive a pin high or low - `put --pin <PIN> --level <high\|low>` |
 | `set-config` | Set direction and pull resistor |
 | `monitor` | Subscribe to edge events until you stop the process |
 

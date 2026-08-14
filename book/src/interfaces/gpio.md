@@ -87,11 +87,14 @@ gallo gpio get --pin 0
 # Output: Pin 0: High
 
 # Drive pin 2 high
-gallo gpio put --pin 2 --high
+gallo gpio put --pin 2 --level high
 
 # Drive pin 2 low
-gallo gpio put --pin 2 --high false
+gallo gpio put --pin 2 --level low
 ```
+
+`--level` is required and takes `high` or `low`; there is no short option
+for it, because `-h` is `--help`.
 
 ### Rust Library
 
@@ -351,7 +354,7 @@ gallo gpio set-config --pin 2 --direction output --pull none
 
 # Read button, toggle LED manually
 STATE=$(gallo gpio get --pin 0)
-gallo gpio put --pin 2 --high
+gallo gpio put --pin 2 --level high
 
 # Or monitor button presses
 gallo gpio monitor --pin 0 --edge falling
@@ -484,8 +487,8 @@ All functions return `GalloStatus`:
 | Command | Description |
 |---------|-------------|
 | `gallo gpio get --pin N` | Read pin state |
-| `gallo gpio put --pin N --high` | Drive pin high |
-| `gallo gpio put --pin N --high false` | Drive pin low |
+| `gallo gpio put --pin N --level high` | Drive pin high |
+| `gallo gpio put --pin N --level low` | Drive pin low |
 | `gallo gpio set-config --pin N --direction DIR --pull PULL` | Configure pin |
 | `gallo gpio monitor --pin N --edge EDGE` | Stream edge events until Ctrl+C |
 

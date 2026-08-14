@@ -125,6 +125,28 @@ impl From<GpioEdgeArg> for GpioEdge {
     }
 }
 
+/// GPIO output level for CLI argument parsing.
+///
+/// Used by `gallo gpio put --level <high|low>`. This is an explicit value
+/// enum rather than a boolean flag so that both levels are settable and so
+/// that no short option is derived (`-h` belongs to `--help`).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpioLevelArg {
+    /// Drive the pin high
+    High,
+    /// Drive the pin low
+    Low,
+}
+
+impl From<GpioLevelArg> for GpioState {
+    fn from(arg: GpioLevelArg) -> Self {
+        match arg {
+            GpioLevelArg::High => GpioState::High,
+            GpioLevelArg::Low => GpioState::Low,
+        }
+    }
+}
+
 /// Output format for data display.
 #[derive(clap::ValueEnum, Clone, Debug, Default)]
 pub enum OutputFormat {
@@ -387,9 +409,11 @@ enum GpioCommands {
         #[arg(short, long)]
         pin: u8,
 
-        /// Desired level: true = high, false = low
-        #[arg(short, long)]
-        high: bool,
+        /// Desired level: high or low
+        ///
+        /// Deliberately has no short option: `-h` is reserved for `--help`.
+        #[arg(long)]
+        level: GpioLevelArg,
     },
 
     /// Configure a GPIO pin's direction and pull resistor
@@ -691,7 +715,7 @@ impl Cli {
             },
             Commands::Gpio { command } => match command {
                 GpioCommands::Get { pin } => self.gpio_get(&pg, *pin).await,
-                GpioCommands::Put { pin, high } => self.gpio_put(&pg, *pin, *high).await,
+                GpioCommands::Put { pin, level } => self.gpio_put(&pg, *pin, *level).await,
                 GpioCommands::SetConfig { pin, direction, pull } => {
                     self.gpio_set_config(&pg, *pin, *direction, *pull).await
                 }
@@ -1051,13 +1075,19 @@ impl Cli {
         Ok(())
     }
 
-    async fn gpio_put(&self, pg: &PicoDeGallo, pin: u8, high: bool) -> Result<()> {
-        let state = if high { GpioState::High } else { GpioState::Low };
+    async fn gpio_put(&self, pg: &PicoDeGallo, pin: u8, level: GpioLevelArg) -> Result<()> {
+        let state: GpioState = level.into();
         pg.gpio_put(pin, state)
             .await
             .map_err(|e| eyre!("{:?}", e).wrap_err("gpio put failed"))?;
 
-        println!("GPIO pin {pin} set to {}", if high { "HIGH" } else { "LOW" });
+        println!(
+            "GPIO pin {pin} set to {}",
+            match level {
+                GpioLevelArg::High => "HIGH",
+                GpioLevelArg::Low => "LOW",
+            }
+        );
         Ok(())
     }
 
@@ -2199,5 +2229,67 @@ mod tests {
             Cli::try_parse_from(["gallo", "version"]).unwrap().command,
             Commands::Version
         ));
+    }
+
+    /// The bug this fixes: `#[arg(short, long)] high: bool` derived `-h`,
+    /// which collides with clap's auto-generated `-h` for `--help`. That is
+    /// a builder assertion, so it fired before any parsing and made
+    /// `gallo gpio put` unusable. This guards every subcommand, not just it.
+    #[test]
+    fn cli_command_builder_is_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn cli_gpio_put_level_high_parses() {
+        let cli = Cli::try_parse_from(["gallo", "gpio", "put", "--pin", "2", "--level", "high"]).unwrap();
+        match cli.command {
+            Commands::Gpio {
+                command: GpioCommands::Put { pin, level },
+            } => {
+                assert_eq!(pin, 2);
+                assert_eq!(level, GpioLevelArg::High);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_gpio_put_level_low_parses() {
+        let cli = Cli::try_parse_from(["gallo", "gpio", "put", "--pin", "2", "--level", "low"]).unwrap();
+        match cli.command {
+            Commands::Gpio {
+                command: GpioCommands::Put { pin, level },
+            } => {
+                assert_eq!(pin, 2);
+                assert_eq!(level, GpioLevelArg::Low);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_gpio_put_rejects_an_invalid_level() {
+        assert!(Cli::try_parse_from(["gallo", "gpio", "put", "--pin", "2", "--level", "true"]).is_err());
+    }
+
+    #[test]
+    fn cli_gpio_put_requires_level() {
+        // `--level` has no default: omitting it is a parse error, never a
+        // silent "drive it high".
+        assert!(Cli::try_parse_from(["gallo", "gpio", "put", "--pin", "2"]).is_err());
+    }
+
+    #[test]
+    fn cli_gpio_put_short_h_is_help_not_level() {
+        let err = Cli::try_parse_from(["gallo", "gpio", "put", "-h"]).expect_err("-h prints help");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = err.to_string();
+        assert!(help.contains("--level"), "help must list --level:\n{help}");
+        assert!(
+            help.contains("<HIGH|LOW>") || help.contains("high"),
+            "help must list the choices:\n{help}"
+        );
     }
 }
