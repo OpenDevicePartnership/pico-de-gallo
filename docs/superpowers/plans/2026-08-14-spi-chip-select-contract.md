@@ -601,3 +601,74 @@ None are M2 regressions; all were found while reviewing adjacent code.
 - **One `.unwrap()` remains** in `spi_batch_execute` (`spi.rs:209`) plus
   unchecked slicing at `:215`/`:230`. Off the CS path, but the §13.17
   dispatcher-wedge precedent makes it worth a look.
+### 8.11 RP2350 pull-downs are not usable as a test witness
+
+**Third correction to the test design.** §8.6 replaced `Pull::Up` with
+`Pull::Down` plus a jumper witness. That is still not sufficient, for a reason
+that is in the silicon rather than the code.
+
+Measured on board `5256657D8A5D7F03` (hw rev 2, RP2350), same node, controlled
+A/B:
+
+| Starting state | Pull applied | Result |
+| --- | --- | --- |
+| node LOW | pull-**up** | rises to HIGH — pull-up works |
+| node HIGH | pull-**down** | **stays HIGH** — pull-down cannot pull it down |
+| node driven LOW, released to pull-**down** | — | holds LOW correctly |
+| node driven LOW, released to pull-**none** | — | drifts HIGH within seconds |
+
+**An RP2350 internal pull-down can *hold* a low node low, but cannot *pull down*
+a node that is already high, and a floating pad drifts high.** A pad that was
+ever driven high — including by the very #104 bug under test — therefore reads
+HIGH indefinitely regardless of the configured pull.
+
+Consequences:
+
+1. **Any test that configures a pull-down and expects LOW without first forcing
+   the node low is invalid.** Both the original (§4 M2, pre-8.6) and the first
+   correction (§8.6) had this defect.
+2. **GPIO0 and GPIO1 on this board read HIGH against pull-downs** across four
+   independent observations, with and without a jumper. They are almost
+   certainly latched high from earlier work — plausibly by #104 itself, since
+   `spi_nor_id`'s overlay drives CS on index 0. They are unusable as witnesses
+   until a power cycle. GPIO2 and GPIO3 were verified clean and are used instead.
+   The guards are index-generic, so `gpios[2]` exercises the identical path.
+
+**Corrected witness protocol — pre-charge, then hold:**
+
+1. Witness pin → `output`, `put low`. This *forces* the shared node low; driving
+   works even though pulling does not.
+2. Witness pin → `input`, pull **down** (not `none` — `none` drifts high).
+3. Victim pin → `input`, pull **down**. This is the `ExplicitInput` state under
+   test.
+4. **Verify the baseline reads LOW on both pins.** If either reads HIGH, stop —
+   the setup is invalid and any subsequent result is meaningless. Both earlier
+   attempts failed here and would have been reported as passes.
+5. Act (`spi/batch`), then read the **witness** first. The witness is never named
+   as CS, so a LOW→HIGH transition on it is independent evidence that something
+   began driving the node.
+
+Validate the jumper itself before trusting it: drive one pin low and confirm the
+other reads low *against its own pull-up*. Only a driven output can do that.
+
+### 8.12 #104 reproduced on hardware, before the fix
+
+Run against firmware 0.10.1 (pre-M2) using the protocol above, CS index 2,
+witness index 3:
+
+| Step | Action | Observed |
+| --- | --- | --- |
+| 1 | `gpio/set-config{2, Input, Down}` | ok — pin 2 is `ExplicitInput` |
+| 2 | baseline | pin 2 **LOW**, witness **LOW** |
+| 3 | `spi/batch{cs:2, [write 0x00]}` | **succeeded, no error** |
+| 4 | `gpio/get{3}` (witness, never named as CS) | **HIGH** |
+| 5 | `gpio/get{2}` | **HIGH, no error** |
+| 6 | `gpio/put{2}` | **`WrongDirection`** |
+
+Steps 4–6 are the divergence spec §1.2 predicted: the hardware is an output, the
+tracked mode still says input, and no call reports it. Step 4 is the load-bearing
+one — the witness is not the CS pin, so only an external drive explains it.
+
+This is the "before" half of the acceptance evidence. The "after" half re-runs
+the identical sequence on M2 firmware and must show `CsPinUnavailable` at step 3
+with the witness still LOW at step 4.
