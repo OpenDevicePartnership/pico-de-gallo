@@ -1334,6 +1334,7 @@ mod tests {
             schema_patch: 0,
             hw_version: 1,
             capabilities: Capabilities::NONE,
+            num_gpios: NUM_GPIOS as u8,
         }
     }
 

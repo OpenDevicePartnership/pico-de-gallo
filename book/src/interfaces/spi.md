@@ -126,7 +126,12 @@ Read data (3 bytes):
   0000: ef 40 18                                           .@.
 ```
 
-The `--cs` flag picks which user GPIO (0–3) drives chip-select.
+The `--cs` flag picks which user GPIO drives chip-select. The index must be
+inside `0..DeviceInfo::num_gpios`, must not be monitored for GPIO events, and
+must not be explicitly configured as an input. A refusal leaves the pin
+unchanged. An accepted pin is driven as an output and left configured as an
+output, deasserted high — the prior direction is **not** restored. Firmware
+predating this contract may instead reconfigure an input pin.
 See [Transaction Batching](./batching.md).
 
 ## Rust Library
@@ -230,11 +235,13 @@ print("JEDEC:", id_bytes.hex())
 
 ## Error Handling
 
-| Variant         | Meaning                                       |
-|-----------------|-----------------------------------------------|
-| `BufferTooLong` | Request exceeds firmware buffer limit         |
-| `Unsupported`   | Returned by firmware builds without SPI       |
-| `Other`         | Catch-all for firmware-reported SPI failure   |
+| Variant            | Meaning                                              |
+|--------------------|------------------------------------------------------|
+| `BufferTooLong`    | Request exceeds firmware buffer limit                |
+| `Other`            | Catch-all for firmware-reported SPI failure          |
+| `InvalidCsPin`     | Chip-select index outside `0..DeviceInfo::num_gpios` |
+| `CsPinUnavailable` | Chip-select pin is explicitly configured as an input |
+| `CsPinMonitored`   | Chip-select pin is monitored for GPIO events         |
 
 See [`appendix/status-codes.md`](../appendix/status-codes.md) for
 the FFI mapping.

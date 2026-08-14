@@ -95,6 +95,10 @@ that doesn't appear in your header means success.
 | `SpiBatchFailed`           |   −67 | SPI batch transaction failed                             |
 | `SpiTransferFailed`        |   −68 | SPI full-duplex transfer failed                          |
 | `SystemResetSubscriptionsFailed` | −69 | `system/reset-subscriptions` call failed              |
+| `GpioTimeout`              |   −70 | GPIO wait timed out                                      |
+| `SpiInvalidCsPin`          |   −71 | SPI chip-select index is outside the reported GPIO range |
+| `SpiCsPinUnavailable`      |   −72 | SPI chip-select pin is configured as an input            |
+| `SpiCsPinMonitored`        |   −73 | SPI chip-select pin is monitored for GPIO events         |
 
 ## Source of Truth
 

@@ -235,6 +235,12 @@ pub enum Status {
     /// when the host-supplied timeout expired. Available on firmware
     /// schema 0.7+.
     GpioTimeout = -70,
+    /// SPI chip-select pin index is outside the device-reported GPIO range
+    SpiInvalidCsPin = -71,
+    /// SPI chip-select pin is explicitly configured as an input
+    SpiCsPinUnavailable = -72,
+    /// SPI chip-select pin is currently monitored for GPIO events
+    SpiCsPinMonitored = -73,
 }
 
 // ----------------------------- Limits -----------------------------
@@ -391,6 +397,9 @@ fn spi_error_to_status(e: PicoDeGalloError<SpiError>) -> Status {
     match e {
         PicoDeGalloError::Endpoint(SpiError::BufferTooLong) => Status::BufferTooLong,
         PicoDeGalloError::Endpoint(SpiError::Other) => Status::SpiReadFailed,
+        PicoDeGalloError::Endpoint(SpiError::InvalidCsPin) => Status::SpiInvalidCsPin,
+        PicoDeGalloError::Endpoint(SpiError::CsPinUnavailable) => Status::SpiCsPinUnavailable,
+        PicoDeGalloError::Endpoint(SpiError::CsPinMonitored) => Status::SpiCsPinMonitored,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
     }
 }
@@ -1102,6 +1111,9 @@ pub unsafe extern "C" fn gallo_spi_transfer(
         }
         Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong)) => Status::BufferTooLong,
         Err(PicoDeGalloError::Endpoint(SpiError::Other)) => Status::SpiTransferFailed,
+        Err(PicoDeGalloError::Endpoint(SpiError::InvalidCsPin)) => Status::SpiInvalidCsPin,
+        Err(PicoDeGalloError::Endpoint(SpiError::CsPinUnavailable)) => Status::SpiCsPinUnavailable,
+        Err(PicoDeGalloError::Endpoint(SpiError::CsPinMonitored)) => Status::SpiCsPinMonitored,
         Err(PicoDeGalloError::Comms(_)) => Status::CommsFailed,
     }
 }
@@ -3130,6 +3142,10 @@ mod tests {
             Status::SpiBatchFailed as i32,
             Status::SpiTransferFailed as i32,
             Status::SystemResetSubscriptionsFailed as i32,
+            Status::GpioTimeout as i32,
+            Status::SpiInvalidCsPin as i32,
+            Status::SpiCsPinUnavailable as i32,
+            Status::SpiCsPinMonitored as i32,
         ];
         for code in error_codes {
             assert!(code < 0, "error code {code} should be negative");
@@ -3209,9 +3225,68 @@ mod tests {
             Status::SpiBatchFailed as i32,
             Status::SpiTransferFailed as i32,
             Status::SystemResetSubscriptionsFailed as i32,
+            Status::GpioTimeout as i32,
+            Status::SpiInvalidCsPin as i32,
+            Status::SpiCsPinUnavailable as i32,
+            Status::SpiCsPinMonitored as i32,
         ];
         let unique: HashSet<i32> = codes.iter().copied().collect();
         assert_eq!(codes.len(), unique.len(), "duplicate status codes found");
+    }
+
+    #[test]
+    fn spi_chip_select_status_codes_are_stable() {
+        // Status values are stable C ABI (AGENTS.md §8): append-only, never
+        // renumbered. -70 predates this change but was previously unpinned
+        // by any test; pinning it here closes that gap.
+        assert_eq!(Status::GpioTimeout as i32, -70);
+        assert_eq!(Status::SpiInvalidCsPin as i32, -71);
+        assert_eq!(Status::SpiCsPinUnavailable as i32, -72);
+        assert_eq!(Status::SpiCsPinMonitored as i32, -73);
+    }
+
+    #[test]
+    fn spi_error_to_status_maps_chip_select_variants() {
+        assert_eq!(
+            spi_error_to_status(PicoDeGalloError::Endpoint(SpiError::InvalidCsPin)),
+            Status::SpiInvalidCsPin
+        );
+        assert_eq!(
+            spi_error_to_status(PicoDeGalloError::Endpoint(SpiError::CsPinUnavailable)),
+            Status::SpiCsPinUnavailable
+        );
+        assert_eq!(
+            spi_error_to_status(PicoDeGalloError::Endpoint(SpiError::CsPinMonitored)),
+            Status::SpiCsPinMonitored
+        );
+    }
+
+    #[test]
+    fn spi_error_to_status_maps_comms_errors() {
+        // Regression: the new chip-select arms must not displace the
+        // pre-existing Comms mapping.
+        assert_eq!(
+            spi_error_to_status(PicoDeGalloError::Comms(lib::HostErr::Closed)),
+            Status::CommsFailed
+        );
+    }
+
+    #[test]
+    fn spi_error_to_status_is_injective() {
+        let mapped = [
+            spi_error_to_status(PicoDeGalloError::Endpoint(SpiError::BufferTooLong)) as i32,
+            spi_error_to_status(PicoDeGalloError::Endpoint(SpiError::Other)) as i32,
+            spi_error_to_status(PicoDeGalloError::Endpoint(SpiError::InvalidCsPin)) as i32,
+            spi_error_to_status(PicoDeGalloError::Endpoint(SpiError::CsPinUnavailable)) as i32,
+            spi_error_to_status(PicoDeGalloError::Endpoint(SpiError::CsPinMonitored)) as i32,
+            spi_error_to_status(PicoDeGalloError::Comms(lib::HostErr::Closed)) as i32,
+        ];
+        let unique: HashSet<i32> = mapped.iter().copied().collect();
+        assert_eq!(
+            mapped.len(),
+            unique.len(),
+            "spi_error_to_status collapsed two distinct errors onto one status"
+        );
     }
 
     // ----------------------------- Null pointer checks -----------------------------
