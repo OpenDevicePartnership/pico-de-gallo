@@ -155,6 +155,27 @@ The RP2350 pin map matches the hardware docs in
 - ADC reads are single-shot samples on GPIO 26-29 in firmware, with board
   routing exposing ADC0-2 on current hardware.
 
+### SPI chip-select arbitration
+
+`spi/batch` validates the operation count, encoding, declared count, and
+total read size before inspecting its chip-select pin. These checks therefore
+report their batch error before any chip-select error. Once the batch is
+valid, firmware refuses a chip-select index outside
+`0..DeviceInfo::num_gpios`, a pin owned by a GPIO event monitor, or a pin
+explicitly configured as an input. These refusals occur before chip-select
+is driven: an invalid index does not touch any pin, and the other refusals
+leave the selected pin's direction, level, and pull unchanged.
+
+A `LegacyAuto` pin or an explicitly configured output is accepted. Firmware
+configures the pin as an output, drives it high, asserts it low for the batch,
+and deasserts it high after execution even when an SPI operation fails. It
+does not restore the prior direction or level and does not update the tracked
+GPIO mode.
+
+Changing an accepted pin to output does not alter its configured pull:
+firmware changes only the SIO output-enable state, while the pull-up and
+pull-down settings remain in the separate pad-control state.
+
 The shared transfer buffer is 4096 bytes (`MAX_TRANSFER_SIZE`), and handlers
 validate lengths before indexing into it.
 

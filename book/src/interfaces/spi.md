@@ -126,13 +126,19 @@ Read data (3 bytes):
   0000: ef 40 18                                           .@.
 ```
 
-The `--cs` flag picks which user GPIO drives chip-select. The index must be
-inside `0..DeviceInfo::num_gpios`, must not be monitored for GPIO events, and
-must not be explicitly configured as an input. A refusal leaves the pin
-unchanged. An accepted pin is driven as an output and left configured as an
-output, deasserted high — the prior direction is **not** restored. Firmware
-predating this contract may instead reconfigure an input pin.
-See [Transaction Batching](./batching.md).
+The `--cs` flag picks which user GPIO drives chip-select. Firmware validates
+the encoded operations first, then requires the index to be inside
+`0..DeviceInfo::num_gpios`, not monitored for GPIO events, and not explicitly
+configured as an input. These refusals occur before chip-select is driven:
+an invalid index does not touch any pin, and the other refusals leave the
+selected pin's direction, level, and pull unchanged.
+
+For an accepted transaction, firmware configures the pin as an output, drives
+it high, asserts it low for the batch, and deasserts it high after execution
+even when an SPI operation fails. The prior direction and level are **not**
+restored, but a pull configured through `gpio/set-config` is preserved.
+Firmware predating this contract may instead reconfigure an explicit input
+pin. See [Transaction Batching](./batching.md).
 
 ## Rust Library
 

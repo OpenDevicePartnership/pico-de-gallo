@@ -6,7 +6,7 @@ use pico_de_gallo_internal::{
 };
 use postcard_rpc::header::VarHeader;
 
-use crate::context::Context;
+use crate::context::{Context, NUM_GPIOS};
 use crate::{HW_VERSION, VERSION_MAJOR, VERSION_MINOR, VERSION_PATCH};
 
 /// Handler for the `ping` endpoint — echoes back the received `u32`.
@@ -48,5 +48,6 @@ pub(crate) fn device_info_handler(_context: &mut Context, _header: VarHeader, _r
         schema_patch: SCHEMA_VERSION_PATCH,
         hw_version: HW_VERSION,
         capabilities,
+        num_gpios: NUM_GPIOS as u8,
     }
 }
