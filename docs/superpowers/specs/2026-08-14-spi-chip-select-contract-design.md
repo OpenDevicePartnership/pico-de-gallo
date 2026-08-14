@@ -232,17 +232,40 @@ otherwise                   -> set_as_output(); set_high();   (pin_modes untouch
 machinery (D3/D4).
 
 **Tests** — the firmware crate has no unit tests (no_std). Verification is
-hardware-in-the-loop on the attached board, serial `5256657D8A5D7F03`:
+hardware-in-the-loop on the attached board, serial `5256657D8A5D7F03`.
+
+> **Corrected after M2.** The original version of this table specified
+> `gpio/set-config{0, Input, Up}` for test 1 and expected `gpio/get{0}` to
+> "still read the external signal". **That test could not fail.** A healthy
+> pull-up input reads `High`; a *corrupted* pin driven high by
+> `set_as_output(); set_high();` also reads `High`. Worse,
+> `gpio_for_input!` (`handlers/gpio.rs:31-35`) has `PinMode::ExplicitInput => {}`
+> — a genuine no-op that does **not** re-assert `set_as_input()` — so the read
+> genuinely returns the firmware's own stale output drive. The decisive
+> regression test for #104 would therefore have passed against unfixed
+> firmware. Two independent agents found this. Corrected below.
+
+**Required hardware:** a jumper from header **pin 11 (GPIO0, `PIN_8`)** to
+header **pin 12 (GPIO1, `PIN_9`)**. GPIO1 is a *witness*: it observes what GPIO0
+is physically doing, which no software path on GPIO0 itself can report. Pulls
+are `Down`, so a driven-high GPIO0 dominates GPIO1's pull-down and is visible.
 
 | # | Setup | Action | Expected |
 | --- | --- | --- | --- |
-| 1 | `gpio/set-config{0, Input, Up}` | `spi/batch{cs:0}` | `CsPinUnavailable`; `gpio/get{0}` still reads the external signal |
-| 2 | `gpio/set-config{0, Output}` | `spi/batch{cs:0}` | succeeds; pin left high |
-| 3 | fresh boot (`LegacyAuto`) | `spi/batch{cs:0}` | succeeds; `gpio/get{0}` afterwards still works |
-| 4 | — | `spi/batch{cs:4}` | `InvalidCsPin`, not `Other` |
-| 5 | `gpio/subscribe{0}` | `spi/batch{cs:0}` | `CsPinMonitored`, not `Other` |
+| 1 | `gpio/set-config{1, Input, Down}`, `gpio/set-config{0, Input, Down}`, witness reads `Low` | `spi/batch{cs:0}` | `CsPinUnavailable`; **and** `gpio/get{1}` still `Low` — either pin reading `High` is a failure |
+| 2 | `gpio/set-config{1, Input, Down}`, `gpio/set-config{0, Output}`, `gpio/put{0,low}`, witness `Low` | `spi/batch{cs:0}` | succeeds; witness `gpio/get{1}` transitions to `High` |
+| 3 | fresh boot (`LegacyAuto`), `gpio/set-config{1, Input, Down}` | `spi/batch{cs:0}` | succeeds; witness `High`; `gpio/get{0}` returns `Ok`; `gpio/put{0}` still works |
+| 4 | — | `spi/batch{cs:4}` | `InvalidCsPin`, not `Other`, and the device stays responsive |
+| 5 | `gpio/subscribe{0}`, host killed so the subscription is **orphaned** | `spi/batch{cs:0}` | `CsPinMonitored`, not `Other` |
 
-Test 1 is the decisive regression test for #104.
+Test 1 is the decisive regression test for #104. Do not read `gpio/get{0}` in
+test 2 — `ExplicitOutput` correctly returns `WrongDirection` there, which looks
+like a failure but is not.
+
+Test 5 requires the subscription to be **orphaned**: the `gallo` CLI traps
+Ctrl+C and unsubscribes gracefully, so the host must be killed hard. Note also
+that only `gallo-mcp` calls `system/reset-subscriptions` on connect — the CLI
+never does — so an orphaned subscription survives across CLI invocations.
 
 **Book:** `book/src/internals/firmware.md`, `book/src/interfaces/spi.md`.
 

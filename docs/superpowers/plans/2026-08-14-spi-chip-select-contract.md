@@ -229,7 +229,7 @@ mdbook build book
 
 ### M2 — Firmware
 
-Runs concurrently with M3.
+Runs BEFORE M3 — see §8.2. (The original `Runs concurrently` was superseded.)
 
 - [ ] Coordinator dispatched; §6 pipeline run to completion
 - [ ] Guards in `spi_batch_handler`, in this order: `InvalidCsPin`, then
@@ -261,22 +261,27 @@ cargo build --release --locked --target thumbv8m.main-none-eabihf \
 ```
 
 **Hardware verification** on board `5256657D8A5D7F03`. Read §2.1 first — use the
-branch-built CLI, not the MCP tools.
+branch-built CLI, not the MCP tools. **The test table below was rewritten after
+M2 found the original could not fail; see §8.6 for the full corrected procedure
+and the reasoning.**
+
+**Required jumper:** header pin 11 (GPIO0, `PIN_8`) to header pin 12 (GPIO1,
+`PIN_9`). GPIO1 is a witness for what GPIO0 is physically doing.
 
 | # | Setup | Action | Expected |
 | --- | --- | --- | --- |
-| 1 | `gpio/set-config{0, Input, Up}` | `spi/batch{cs:0}` | `CsPinUnavailable`; `gpio/get{0}` still reads the external signal |
-| 2 | `gpio/set-config{0, Output}` | `spi/batch{cs:0}` | succeeds; pin left high |
-| 3 | fresh boot (`LegacyAuto`) | `spi/batch{cs:0}` | succeeds; `gpio/get{0}` afterwards still works |
-| 4 | — | `spi/batch{cs:4}` | `InvalidCsPin`, **not** `Other` |
-| 5 | `gpio/subscribe{0}` | `spi/batch{cs:0}` | `CsPinMonitored`, **not** `Other` |
+| 1 | pins 0 and 1 both `Input`/**`Down`**; witness reads `Low` | `spi/batch{cs:0}` | `CsPinUnavailable` **and** witness still `Low` — either pin `High` is a failure |
+| 2 | pin 1 `Input`/`Down`; pin 0 `Output`, driven low | `spi/batch{cs:0}` | succeeds; witness transitions to `High` |
+| 3 | fresh boot (`LegacyAuto`); pin 1 `Input`/`Down` | `spi/batch{cs:0}` | succeeds; witness `High`; pin 0 still usable both directions |
+| 4 | — | `spi/batch{cs:4}` | `InvalidCsPin`, **not** `Other`; device stays responsive |
+| 5 | `gpio/subscribe{0}`, host killed so the subscription is **orphaned** | `spi/batch{cs:0}` | `CsPinMonitored`, **not** `Other` |
 
 Test 1 is the decisive #104 regression test. A milestone that cannot demonstrate
 test 1 is not complete.
 
 ### M3 — Host surfaces
 
-Runs concurrently with M2.
+Runs AFTER M2 — see §8.2. (The original `Runs concurrently` was superseded.)
 
 - [ ] Coordinator dispatched; §6 pipeline run to completion
 - [ ] `@architect` has decided where `num_gpios` comes from — cached at
@@ -504,3 +509,95 @@ M5. M2 must edit only the CS side-effect contract. M5 owns lines 11–18.
   mention for wire changes. D11 forbids the version bump that would give it a
   number. M1 judged the `wire-protocol.md` warning sufficient; M5 should confirm
   or add one.
+
+### 8.6 M2 outcome — and the test that could not fail
+
+M2 landed as `9b2cdb0fb7c1` — `fix(firmware): Validate the SPI chip-select pin
+before driving it`. Independently verified: guards present in the specified
+order, every accessor fallible, **both pre-existing `.unwrap()` calls on the CS
+path removed**, `SpiError::Other` at the acquisition site replaced with
+`CsPinMonitored`, both revisions build clean, `mdbook build` clean, four files
+changed, no `Cargo.toml`/`Cargo.lock`/`main.rs` touched.
+
+**The most important finding of the milestone is that plan and spec test 1 was
+broken.** It specified `gpio/set-config{0, Input, Up}` and expected `gpio/get{0}`
+to still read the external signal. A healthy pull-up input reads `High`; a pin
+corrupted into a driven output also reads `High`. And `gpio_for_input!`
+(`handlers/gpio.rs:31-35`) has `PinMode::ExplicitInput => {}` — a genuine no-op
+that does not re-assert `set_as_input()` — so the read returns the firmware's own
+stale drive. **The decisive #104 regression test would have passed against
+unfixed firmware.** Corrected in §4 M2 and spec §3 M2: `Pull::Down` plus a
+GPIO0↔GPIO1 jumper witness.
+
+Test 2's original expectation was also unobservable: after `set-config output`
+every read path returns `WrongDirection` (`gpio.rs:34`), so nothing can report an
+`ExplicitOutput` pin's level. The witness solves it.
+
+### 8.7 Executing the hardware tests
+
+- Build once: `cargo build -p gallo --locked`. Never run two `gallo` processes
+  concurrently — WinUSB exclusivity yields `Access is denied`, which is not a
+  test result (AGENTS.md §13.17, 2026-07-20).
+- The CLI renders errors with `{:?}` (`app/src/lib.rs:986`), so expect
+  `Endpoint(SpiBatchError { failed_op: 0, kind: <Variant> })` on stderr, exit 1.
+  Match the payload, not the `color_eyre` framing.
+- Power-cycle between tests 1, 2 and 3 — `pin_modes` has no reset path.
+- Test 4: `--op` is `required = true`, so pass one. `--cs` is an unvalidated
+  `u8` today, which is exactly why test 4 must run **before** M3.
+- Test 5: kill the monitor process hard. Ctrl+C is trapped
+  (`app/src/lib.rs:1063-1071`) and unsubscribes gracefully. Cross-check with
+  `gpio get --pin 0` first — it must return `PinMonitored`; if it prints a level,
+  the subscription was not orphaned and the batch result is meaningless.
+- Worthwhile extras: `--cs 255` (catches future `as u8` truncation — `255 & 3`
+  would drive GPIO3); `--cs 3` on fresh boot (upper boundary, distinguishes `>`
+  from `>=`); re-run test 1's batch (idempotence — a refusal must not mutate
+  `pin_modes`); `gpio put --pin 0` after test 1 (must be `WrongDirection`,
+  proving `pin_modes[0]` untouched, D4).
+
+### 8.8 Corrections to my own briefing, and to AGENTS.md
+
+- **I was wrong about `elf2uf2-rs`.** I told M2 the installed binary was the
+  stale crates.io 2.2.0 with no `--family`. It *reports* 2.2.0 but
+  `cargo install --list` shows `elf2uf2-rs v2.2.0
+  (https://github.com/JoNil/elf2uf2-rs#f14bf2d9)` — the git build AGENTS.md
+  §13.9 prescribes — and it does have `--family rp2350-arm-s`. Version output
+  alone cannot distinguish the two binaries. **AGENTS.md §13.9 should say to
+  check `cargo install --list`.** `picotool` is genuinely absent and was not
+  needed.
+- **AGENTS.md §13.17 (2026-05-29 row) is wrong about `system/reset-subscriptions`.**
+  It says "host calls it after `validate()`". Only `gallo-mcp` does
+  (`mcp/src/lib.rs:435`); `pico-de-gallo-lib` merely exposes it and the `gallo`
+  CLI never calls it. This is load-bearing: it is why an orphaned subscription
+  survives across CLI invocations, and therefore why test 5 is executable.
+
+### 8.9 Additional constraints on M3
+
+- **The CLI prints `Debug`, not `Display`** (`app/src/lib.rs:986` uses
+  `eyre!("{:?}", e)`). M1 wrote three `Display` arms that are unreachable
+  end-to-end. If M3 fixes this, **every expected-output string in §8.7 changes** —
+  land both in the same commit and re-derive the strings.
+- `SpiBatchError::failed_op` overloads two meanings: "refusal, no operation
+  attempted" and "operation 0 failed" are byte-identical on the wire. A rustdoc
+  note costs nothing.
+
+### 8.10 Pre-existing hazards found by M2, for M5 or their own issues
+
+None are M2 regressions; all were found while reviewing adjacent code.
+
+- **`DelayNs` is a stuck-CS amplifier.** `ns` is `u32` (~4.29 s) × `MAX_BATCH_OPS`
+  64 ≈ **275 s of CS held low**, starving every other endpoint under serial
+  dispatch. **The watchdog does not catch it** — `Timer::after` yields, so
+  `watchdog_feeder_task` keeps feeding. A bounded total transaction duration is a
+  wire/API decision, not a drive-by fix.
+- **Cancellation is not CS-safe.** If the handler future is dropped while CS is
+  low, deassertion is ordinary post-await code and never runs. Not reachable
+  today (`Server::run` awaits dispatch directly), but any future
+  `select(handler, disconnect)` makes it live.
+- **A watchdog reset leaves CS floating**, not high: `Flex::new` sets the GPIO
+  function but not output-enable, and clears pulls.
+- **`set_as_output()` before `set_high()` can glitch CS low.** On a `LegacyAuto`
+  pin the remembered level defaults low. Pre-existing and preserved deliberately;
+  a one-line reordering would fix it.
+- **One `.unwrap()` remains** in `spi_batch_execute` (`spi.rs:209`) plus
+  unchecked slicing at `:215`/`:230`. Off the CS path, but the §13.17
+  dispatcher-wedge precedent makes it worth a look.
