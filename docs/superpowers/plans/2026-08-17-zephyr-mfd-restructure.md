@@ -480,3 +480,131 @@ The resolved path moving from `/pdg-spi/is31fl3743b@0` to
   interface release all remain unverified — and M2 makes them *more* load-bearing,
   since one parent now gates both children. M5 is the first milestone that runs
   anything.
+---
+
+## 10. M3 outcome, and a contradiction in the parent design
+
+M3 landed as `56f116828758` (spec) + `c9b4c9d50556` (driver, 13 files).
+
+**Conductor-verified independently:** `pdg_gpio.c` compiles and links under an
+enabling overlay; `CONFIG_GPIO_PICO_DE_GALLO=y` with
+`INIT_PRIORITY=45` (correctly above the parent's 40); `pdg_gpio_bottom.o` is
+linked via the native-simulator path; no SPI file touched; nothing under
+`crates/`; tree clean; nothing pushed.
+
+M3 also found that **`pdg_gpio_bottom.c` can never appear in
+`compile_commands.json`** — it is built by the native-simulator Makefile via
+`target_sources(native_simulator INTERFACE …)`, as `zephyr/drivers/CMakeLists.txt`
+already documents for `common.c`. Verify it by object file and `nm` instead.
+Without that, a correct build looks like a failure.
+
+### 10.1 The M5 acceptance vehicle — my design was wrong, and so was M3's fix
+
+Spec §7.2 nominates `spi_loopback`'s `cs-loopback-gpios` as the chip-select
+witness. M3 reported this fails outright because
+`spi_loopback/src/spi.c:233-240` calls `gpio_pin_interrupt_configure_dt()` and
+`gpio_add_callback()`, which D5 leaves as `-ENOSYS`.
+
+**Both halves of that need correcting.**
+
+1. **M3's conclusion is too strong.** Those calls sit inside
+   `#if DT_NODE_HAS_PROP(DT_PATH(zephyr_user), cs_loopback_gpios)` at
+   `src/spi.c:140`. The witness is **compile-time optional**. Omit the property
+   and the suite needs no interrupts at all — the SPI **data path** is fully
+   verifiable today.
+2. **M3's proposed substitute does not work either.**
+   `gpio_basic_api/CMakeLists.txt` globs `src/test*.c` unconditionally, pulling in
+   `test_callback_manage.c`, `test_callback_trigger.c` and
+   `test_config_trigger.c`. It needs interrupts just as much.
+
+So the honest position: **the data path is verifiable, the CS *edges* are not** —
+by any interrupt-free route M3 or I proposed. And a loopback cannot substitute,
+because it passes regardless of what CS does.
+
+### 10.2 The fix: `SPI_HOLD_ON_CS`
+
+`spi_context.h:396-401` honours `SPI_HOLD_ON_CS` by *skipping* the deassert:
+
+```c
+if (!force_off && ctx->config->operation & SPI_HOLD_ON_CS) {
+        return;
+}
+```
+
+That yields a fully deterministic, polled, interrupt-free CS check:
+
+1. `spi_transceive` with `SPI_HOLD_ON_CS` → CS remains **asserted** afterwards.
+2. Poll the witness pin → must read asserted.
+3. `spi_release()` → forces the deassert.
+4. Poll the witness → must read deasserted.
+
+This tests the exact mechanism, needs no second thread, and has no race.
+
+`pdg_spi.c:241-244` currently rejects `SPI_HOLD_ON_CS` with `-ENOTSUP` — but only
+because the *batch* design could not hold CS across separate calls. Once CS is an
+ordinary GPIO that constraint disappears. **M4 should therefore support
+`SPI_HOLD_ON_CS`**, which is both a capability gain and the enabler for M5's
+acceptance.
+
+### 10.3 M3's other findings, carried forward
+
+- **R4 resolved** by exact-equality check of `ngpios` against the firmware's
+  `num_gpios` at init, `-EINVAL` on mismatch. Clamping was rejected both ways:
+  up exposes pins the firmware refuses, down silently hides valid GPIOs. Crucially
+  the feared 300-second `device/info` round-trip **does not occur** — the parent's
+  strict open already populates the shared `OnceLock`, so `gallo_num_gpios()`
+  reads a warm cache. Verified by two agents independently.
+- **R11 is worsened, not narrowed.** A GPIO child actuates physical pins, so a
+  selector-less parent with two boards attached now drives *the wrong board's
+  hardware*. No FFI accessor reports the serial an existing handle selected, so it
+  cannot be made observable from within M3. Mitigated by a fifth `BUILD_ASSERT`
+  requiring `serial-number` on the parent of any enabled GPIO child. Residual
+  unchanged: presence, not uniqueness.
+- **`port_get_raw` returns bit=0 for an output pin**, matching Zephyr's own
+  reference controller `gpio_emul.c:525`. This is only safe because §4.5 rejects
+  `GPIO_INPUT | GPIO_OUTPUT`, making the confident-lie state unreachable. **The two
+  rules are coupled** — relaxing the flag rejection alone would start returning
+  false levels, and a false logical `1` under `GPIO_ACTIVE_LOW`.
+- **Flag rejection is a positive allow-list plus residual-bit rejection**, so
+  silence is impossible by construction rather than by enumeration. Two corrections
+  landed: `z_impl_gpio_pin_configure` **asserts** on interrupt bits but does not
+  **strip** them, so they reach the driver in a `CONFIG_ASSERT=n` build; and
+  `GPIO_INT_WAKEUP` is bit 6, **outside** `GPIO_INT_MASK`, so it always does.
+
+### 10.4 Corrections to the parent design and this plan
+
+- **Spec §4.4 is wrong twice.** Get-then-set `port_toggle_bits` is infeasible on
+  this hardware, and the `gpio.h:933` citation is stale — that is the
+  *interrupt-wrapper* assertion; the `pin_configure` one is `gpio.h:1040`. **R4
+  repeats the stale citation.**
+- **Plan R7 is stale.** `gallo_system_reset_subscriptions` **does** exist
+  (`ffi/lib.rs:706-748`), documented idempotent and intended for reconnect
+  cleanup, so the orphaned pin-2 subscription is not power-cycle-only. Forward
+  hazard: **M4's CS init on a monitored pin returns `-EBUSY`** and makes the SPI
+  device not ready. Decide before M5 whether to power-cycle or call it once after
+  strict open — do **not** bolt a global reset into an ordinary pin callback.
+- **`gpio/get` on a `LegacyAuto` pin is not state-neutral** — it calls
+  `set_as_input()`, so a whole-port read silently flips every unconfigured pin to
+  hardware input. M4's CS is safe (it will be `ExplicitOutput`, hence skipped),
+  but reads are not queries.
+- **M4 blocker:** `spi_context_cs_control()` returns `void` and **discards** both
+  `gpio_pin_set_dt()` results (`spi_context.h:390-418`). A CS assert failing with
+  `-EIO`/`-EBUSY`/`-EWOULDBLOCK` is silently ignored, so SPI may transfer with CS
+  unasserted or report success with CS still asserted. **M4 must make CS failures
+  observable or fail closed** — calling upstream blindly is insufficient for a
+  USB-backed controller.
+- **§3's M3 inventory was short five files** — third milestone running. §3 should
+  be treated as indicative, not exhaustive.
+- **Documentation sequencing:** AGENTS.md §15.1 requires same-change parity, so
+  each milestone lands its own docs and **M6 is consolidation only**, not the
+  first time docs are written.
+
+### 10.5 Assurance boundary — do not overstate M3
+
+M3's own tester graded the probe suite: **~20% genuinely proved, ~35% source-shape
+only** (catches deletion, blind to present-but-wrong), **~45% zero**. The two
+properties the spec argues hardest for — the `port_get_raw`↔flag-rejection
+coupling, and no-caching — are **both** in the source-shape class.
+
+**Nothing on this branch has ever executed.** M5 remains the first milestone that
+runs anything.
