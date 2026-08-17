@@ -6,6 +6,7 @@
 
 &pdg_spi0 {
 	status = "okay";
+	cs-gpio-indices = <0>;
 
 	led_matrix: is31fl3743b@0 {
 		compatible = "issi,is31fl3743b";

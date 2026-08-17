@@ -140,6 +140,47 @@ restored, but a pull configured through `gpio/set-config` is preserved.
 Firmware predating this contract may instead reconfigure an explicit input
 pin. See [Transaction Batching](./batching.md).
 
+### Zephyr chip-select mapping
+
+The Zephyr SPI controller driver reaches the same batch endpoint, but a child
+node's `reg` is a chip-select *selector*, not a firmware GPIO index. It indexes
+the controller's `cs-gpio-indices` array, whose elements are the firmware GPIO
+indices this page describes:
+
+```dts
+&pdg_spi0 {
+	status = "okay";
+	cs-gpio-indices = <2 0>;
+};
+```
+
+Here a child with `reg = <0>` drives firmware GPIO index 2 and a child with
+`reg = <1>` drives index 0. There is no identity fallback.
+
+The controller validates the mapping *before* it validates transfer buffers, so
+a devicetree mistake never reaches the bus. A controller without
+`cs-gpio-indices`, a selector beyond the array, or a mapped index at or beyond
+the firmware-reported GPIO count each return `-EINVAL`. Firmware reporting zero
+GPIOs returns `-ENODEV`. A mapped pin explicitly configured as an input returns
+`-EACCES`; a pin under a live GPIO event subscription returns `-EBUSY`.
+
+Each refusal is logged with the selector, the mapping length, the mapped index,
+and the reported GPIO count. Stacked drivers collapse these into a generic
+not-ready error — `jedec,spi-nor`, for instance, reports `-ENODEV` for any
+transfer failure — so the controller's own log line is the only authoritative
+diagnosis.
+
+Duplicate indices are permitted, but every child mapped to one index selects
+the same physical line. That is safe only when the hardware intentionally
+shares selection; mapping physically distinct peripherals to one index selects
+them simultaneously, and both may drive MISO, producing bus contention, invalid
+returned bytes, and possible electrical over-drive.
+
+Zephyr `cs-gpios` is rejected with `-ENOTSUP`: driving chip select from the
+Zephyr side would split one atomic firmware batch across multiple USB
+round-trips, losing the chip-select interval guarantee described above.
+`zephyr/README.md` in the repository remains the detailed module guide.
+
 ## Rust Library
 
 ```rust,no_run

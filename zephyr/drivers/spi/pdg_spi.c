@@ -58,11 +58,14 @@ LOG_MODULE_REGISTER(spi_pico_de_gallo, CONFIG_SPI_LOG_LEVEL);
 
 struct pdg_spi_config {
     const char *serial;
+    const uint8_t *cs_indices;
+    size_t cs_indices_len;
 };
 
 struct pdg_spi_data {
 	void *ctx;
 	struct k_mutex lock;
+	uint8_t num_gpios;
 };
 
 // helper to calculate the total byte length of every buffer in a `spi_buf_set`
@@ -137,16 +140,28 @@ static void unflatten_rx_(const struct spi_buf_set *rx_bufs, const uint8_t *flat
 static int pdg_spi_transceive(const struct device *dev, const struct spi_config *config, const struct spi_buf_set *tx_bufs, const struct spi_buf_set *rx_bufs)
 {
     struct pdg_spi_data *data = dev->data;
+    const struct pdg_spi_config *dev_config = dev->config;
     struct pdg_spi_batch_op ops[3] = {0};
     struct pdg_spi_batch_op *transfer_op;
     uint8_t *tx_flat = NULL;
     uint8_t *rx_flat = NULL;
+    uint8_t cs_index;
     size_t tx_len;
     size_t rx_len;
     size_t clock_len;
     size_t ops_count = 0U;
     size_t out_len = 0U;
     int ret;
+
+    /*
+     * Zephyr's spi_transceive() does not check device readiness, so an
+     * application that skips device_is_ready() reaches here on a device whose
+     * init failed. Guard first: every later diagnostic reads data->num_gpios.
+     */
+    if (data->ctx == NULL) {
+        LOG_ERR("SPI bridge context is NULL before chip-select validation; slave selector, cs-gpio-indices length, mapped GPIO index, and firmware GPIO count are unavailable. Check device readiness and the controller's cs-gpio-indices property. Returning -ENODEV.");
+        return -ENODEV;
+    }
 
     if (config == NULL) {
         LOG_ERR("SPI configuration is NULL. Returning -EINVAL.");
@@ -203,14 +218,52 @@ static int pdg_spi_transceive(const struct device *dev, const struct spi_config 
         return -ENOTSUP;
     }
 
-    if(config->slave > 3U) {
-        LOG_ERR("Chip-select index %u is outside the supported range 0-3. Returning -ENOTSUP.", config->slave);
+    /*
+     * The chip-select mapping is validated before the buffers because stacked
+     * drivers hide the reason: jedec,spi-nor collapses any transfer failure to
+     * -ENODEV (drivers/flash/spi_nor.c), so these LOG_ERR lines are the only
+     * authoritative diagnosis of a devicetree error.
+     */
+    if (spi_cs_is_gpio(config)) {
+        LOG_ERR("SPI slave selector %u uses Zephyr GPIO-controlled CS; cs-gpio-indices length is %zu, mapped GPIO index is unavailable, firmware reported %u GPIOs. Remove cs-gpios and configure cs-gpio-indices on the Pico de Gallo SPI controller. Returning -ENOTSUP.",
+                (unsigned int)config->slave,
+                dev_config->cs_indices_len,
+                (unsigned int)data->num_gpios);
         return -ENOTSUP;
     }
 
-    if (spi_cs_is_gpio(config)) {
-        LOG_ERR("GPIO-controlled chip select is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
+    if (dev_config->cs_indices_len == 0U) {
+        LOG_ERR("SPI slave selector %u cannot be mapped: cs-gpio-indices length is 0 (property absent), mapped GPIO index is unavailable, firmware reported %u GPIOs. Add cs-gpio-indices to the Pico de Gallo SPI controller. Returning -EINVAL.",
+                (unsigned int)config->slave,
+                (unsigned int)data->num_gpios);
+        return -EINVAL;
+    }
+
+    if (config->slave >= dev_config->cs_indices_len) {
+        LOG_ERR("SPI slave selector %u is outside cs-gpio-indices length %zu; mapped GPIO index is unavailable, firmware reported %u GPIOs. Extend or correct cs-gpio-indices on the Pico de Gallo SPI controller. Returning -EINVAL.",
+                (unsigned int)config->slave,
+                dev_config->cs_indices_len,
+                (unsigned int)data->num_gpios);
+        return -EINVAL;
+    }
+
+    cs_index = dev_config->cs_indices[config->slave];
+
+    if (data->num_gpios == 0U) {
+        LOG_ERR("SPI slave selector %u maps through cs-gpio-indices length %zu to GPIO index %u, but firmware successfully reported zero GPIOs. Correct the firmware/device pairing or cs-gpio-indices; no chip select is available. Returning -ENODEV.",
+                (unsigned int)config->slave,
+                dev_config->cs_indices_len,
+                (unsigned int)cs_index);
+        return -ENODEV;
+    }
+
+    if (cs_index >= data->num_gpios) {
+        LOG_ERR("SPI slave selector %u maps through cs-gpio-indices length %zu to GPIO index %u, but firmware reported %u GPIOs. Correct cs-gpio-indices on the Pico de Gallo SPI controller. Returning -EINVAL.",
+                (unsigned int)config->slave,
+                dev_config->cs_indices_len,
+                (unsigned int)cs_index,
+                (unsigned int)data->num_gpios);
+        return -EINVAL;
     }
 
     ret = bufset_len_(tx_bufs, &tx_len, "TX");
@@ -277,9 +330,9 @@ static int pdg_spi_transceive(const struct device *dev, const struct spi_config 
     if (ret != 0) {
         LOG_ERR("Failed to configure SPI bus at %u Hz: Errno=%d", config->frequency, ret);
     } else {
-        ret = pdg_spi_bottom_batch(data->ctx, (uint8_t)config->slave, ops, ops_count, rx_flat, rx_len == 0U ? 0U : clock_len, &out_len, NULL);
+        ret = pdg_spi_bottom_batch(data->ctx, (uint8_t)cs_index, ops, ops_count, rx_flat, rx_len == 0U ? 0U : clock_len, &out_len, NULL);
         if (ret != 0) {
-            LOG_ERR("SPI transaction on chip select %u failed: Errno=%d", config->slave, ret);
+            LOG_ERR("SPI transaction for slave selector %u using firmware GPIO index %u failed: Errno=%d", config->slave, cs_index, ret);
         }
     }
 
@@ -316,6 +369,7 @@ static int pdg_spi_init(const struct device *dev)
 {
 	const struct pdg_spi_config *config = dev->config;
 	struct pdg_spi_data *data = dev->data;
+	int ret;
 
 	k_mutex_init(&data->lock);
 
@@ -330,21 +384,57 @@ static int pdg_spi_init(const struct device *dev)
 
         return -ENODEV;
     }
+
+	/*
+	 * pdg_spi_bottom_open() uses gallo_init_strict(), whose successful
+	 * validation populates the shared num_gpios cache. This call is therefore
+	 * a guaranteed warm-cache read with no USB traffic. The failure branch is
+	 * defence-in-depth for an invariant violation, not an expected timeout
+	 * path.
+	 */
+	ret = pdg_spi_bottom_num_gpios(data->ctx, &data->num_gpios);
+	if (ret != 0) {
+		LOG_ERR("Failed to read the cached firmware GPIO count from the validated Pico de Gallo bridge: Errno=%d. Closing the bridge; the SPI device will remain not ready.",
+			ret);
+		pdg_spi_bottom_close(data->ctx);
+		data->ctx = NULL;
+		return ret;
+	}
+
 	LOG_INF("Pico de Gallo SPI bridge ready");
 
 	return 0;
 }
 
-#define PDG_SPI_INIT(inst)                                                \
-	static struct pdg_spi_data pdg_spi_data_##inst;                     \
-	                                                                    \
-	static const struct pdg_spi_config pdg_spi_config_##inst = {        \
-		.serial = DT_INST_PROP_OR(inst, serial_number, NULL),          \
-	};                                                                  \
-	                                                                    \
-	SPI_DEVICE_DT_INST_DEFINE(inst, pdg_spi_init, NULL,                  \
-				  &pdg_spi_data_##inst, &pdg_spi_config_##inst,   \
-				  POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,          \
+/*
+ * The one-element { 0U } sentinel avoids a non-standard zero-length array when
+ * cs-gpio-indices is absent. cs_indices_len stays 0, which is the sole
+ * "property absent" signal (min-len: 1 in the binding makes a generated length
+ * of 0 unambiguous).
+ *
+ * Because the sentinel makes cs_indices[0] == 0, the cs_indices_len == 0 guard
+ * in pdg_spi_transceive() is load-bearing for *safety*, not merely for its
+ * message: removing or reordering it would silently reproduce issue #104 by
+ * driving firmware GPIO 0 as a chip select.
+ */
+#define PDG_SPI_INIT(inst)                                                   \
+	static const uint8_t pdg_spi_cs_indices_##inst[] =                    \
+		COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, cs_gpio_indices),       \
+			    (DT_INST_PROP(inst, cs_gpio_indices)),              \
+			    ({ 0U }));                                          \
+	                                                                         \
+	static struct pdg_spi_data pdg_spi_data_##inst;                        \
+	                                                                         \
+	static const struct pdg_spi_config pdg_spi_config_##inst = {           \
+		.serial = DT_INST_PROP_OR(inst, serial_number, NULL),             \
+		.cs_indices = pdg_spi_cs_indices_##inst,                           \
+		.cs_indices_len = DT_INST_PROP_LEN_OR(inst, cs_gpio_indices, 0),  \
+	};                                                                       \
+	                                                                         \
+	SPI_DEVICE_DT_INST_DEFINE(inst, pdg_spi_init, NULL,                     \
+				  &pdg_spi_data_##inst,                       \
+				  &pdg_spi_config_##inst,                     \
+				  POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,       \
 				  &pdg_spi_api);
 
 DT_INST_FOREACH_STATUS_OKAY(PDG_SPI_INIT)

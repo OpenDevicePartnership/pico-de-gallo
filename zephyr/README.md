@@ -252,6 +252,7 @@ Bus speed comes from the `clock-frequency` property on the controller node
 ```dts
 &pdg_spi0 {
 	status = "okay";
+	cs-gpio-indices = <2 0>;
 
 	my_device: my-device@0 {
 		compatible = "vendor,my-device";
@@ -268,21 +269,56 @@ Bus speed comes from the `clock-frequency` property on the controller node
 CONFIG_SPI=y
 ```
 
-> **`reg` is a chip-select index, not a GPIO number, and not the board's
-> dedicated `SPI_CS` pin.** The driver passes `reg` straight through as the
-> bridge's CS index, which selects one of the four *user* GPIOs:
->
-> | `reg` | Drives |
-> |---|---|
-> | `<0>` | GPIO 8 |
-> | `<1>` | GPIO 9 |
-> | `<2>` | GPIO 10 |
-> | `<3>` | GPIO 11 |
->
-> The `SPI_CS` pin on GPIO 5 in the hardware pinout is **not** driven by the
-> firmware and cannot be used here. Anything outside 0–3 is rejected with
-> `-ENOTSUP`. Do **not** add `cs-gpios` to the controller node either: the
-> driver refuses GPIO-controlled chip select, also with `-ENOTSUP`.
+#### Chip select: `reg` selects, `cs-gpio-indices` maps
+
+A child's `reg` is a chip-select **selector**, not a GPIO number and not the
+board's dedicated `SPI_CS` pin. It indexes the controller's
+`cs-gpio-indices` array, whose elements are **firmware GPIO indices** — the
+same namespace the `gallo` CLI's `spi batch --cs` flag uses, *not* RP2350 pin
+numbers.
+
+With `cs-gpio-indices = <2 0>;` above, the mapping is deliberately not the
+identity:
+
+| Child `reg` | Firmware GPIO index | Board GPIO | Physical RP2350 GPIO |
+|---|---|---|---|
+| `<0>` | 2 | GPIO2 | GPIO10 |
+| `<1>` | 0 | GPIO0 | GPIO8 |
+
+Firmware indices 0–3 correspond to board GPIO0–GPIO3, which are physical
+RP2350 GPIO8–GPIO11. The `SPI_CS` pin on GPIO 5 in the hardware pinout is
+**not** driven by the firmware and cannot be used here.
+
+There is **no identity fallback**. Failure modes:
+
+| Situation | Result |
+|---|---|
+| Controller enabled without `cs-gpio-indices` | `-EINVAL` |
+| `reg` at or beyond the array length | `-EINVAL` |
+| Mapped index at or beyond the firmware-reported GPIO count | `-EINVAL` |
+| Firmware reports zero GPIOs | `-ENODEV` |
+| Mapped pin explicitly configured as an input | `-EACCES` |
+| Mapped pin under a live GPIO event subscription | `-EBUSY` |
+
+Each of these is logged by the controller with the selector, the mapping
+length, the mapped index, and the reported count. That detail matters because
+stacked drivers hide it: `jedec,spi-nor` collapses any transfer failure to
+`-ENODEV`, so the sample prints only *"Flash not ready"*.
+
+The mapped pin is asserted for the complete firmware batch and left
+**deasserted-high** afterwards; the pin's prior direction and level are **not**
+restored.
+
+Duplicate indices are permitted, but every child mapped to one index selects
+the same physical line. That is safe only when the hardware intentionally
+shares selection. Mapping physically distinct peripherals to one index selects
+them simultaneously; both may drive MISO, producing bus contention, invalid
+returned bytes, and possible electrical over-drive.
+
+Do **not** add `cs-gpios` to the controller node: driving chip select from the
+Zephyr side would split one atomic firmware batch across multiple USB
+round-trips, losing the batch's chip-select interval guarantee. It is rejected
+with `-ENOTSUP`.
 
 If you would rather not declare a child node, build the `spi_config` yourself
 and address the controller directly:
@@ -293,7 +329,7 @@ static const struct device *const bus = DEVICE_DT_GET(DT_NODELABEL(pdg_spi0));
 static const struct spi_config cfg = {
 	.frequency = 10000000,
 	.operation = SPI_WORD_SET(8) | SPI_OP_MODE_MASTER | SPI_TRANSFER_MSB,
-	.slave = 0, /* CS index 0 -> GPIO 8 */
+	.slave = 0, /* selector 0 -> cs-gpio-indices[0] */
 };
 ```
 
@@ -319,9 +355,14 @@ the optional `serial-number` property:
 
 Controllers sharing a `serial-number` share one USB connection internally, so
 an I2C and a SPI node on the same board work without your code managing that.
-If omitted, the first matching board is used. **Do not mix omitted and
-explicit selectors for the same board** — use the same value on every node that
-targets it, or omit it on all of them.
+
+If omitted, the first matching board is used. An omitted serial number is
+therefore suitable **only for a single-board setup**: all omitted selectors
+share one registry key and so resolve to one board. A genuine multi-board
+setup needs a unique explicit `serial-number` on every controller targeting
+each board. **Never mix omitted and explicit selectors** — use the same
+explicit value on every node that targets a board, or omit it on all of them
+when there is only one board.
 
 ---
 
@@ -347,8 +388,13 @@ These are enforced in the drivers and reported as errors, not silently ignored.
 | Peripheral mode | `-ENOTSUP`; only `SPI_OP_MODE_MASTER` |
 | Word sizes other than 8-bit | `-ENOTSUP` |
 | `SPI_TRANSFER_LSB`, `SPI_MODE_LOOP`, `SPI_HALF_DUPLEX`, `SPI_HOLD_ON_CS` | `-ENOTSUP` |
-| GPIO-controlled chip select | `-ENOTSUP`; use the hardware CS lines |
-| Chip-select index outside 0–3 | `-ENOTSUP` |
+| Zephyr `cs-gpios` (GPIO-controlled chip select) | `-ENOTSUP`; use `cs-gpio-indices` |
+| Controller enabled without `cs-gpio-indices` | `-EINVAL` |
+| `reg` selector outside the `cs-gpio-indices` array | `-EINVAL` |
+| Mapped GPIO index outside the firmware-reported count | `-EINVAL` |
+| Firmware reports zero GPIOs | `-ENODEV` |
+| Mapped pin explicitly configured as an input | `-EACCES` |
+| Mapped pin under a live GPIO event subscription | `-EBUSY` |
 | Transfers over 4096 bytes | `-EMSGSIZE` |
 
 Every operation is a blocking USB round trip, so the asynchronous and RTIO

@@ -8,6 +8,30 @@ description: |
   connected to the host running native_sim. Devices on the bus are declared as
   ordinary child nodes using their own vendor,device compatible.
 
+  A child node's reg value is a chip-select *selector*, not a GPIO number. It
+  indexes the controller's cs-gpio-indices array, whose elements are firmware
+  GPIO indices. There is no identity fallback: a controller without
+  cs-gpio-indices rejects every transfer with -EINVAL, as does a selector
+  beyond the array or a mapped index at or beyond the firmware-reported GPIO
+  count. Firmware reporting zero GPIOs returns -ENODEV. A mapped pin explicitly
+  configured as an input returns -EACCES; a pin under a live GPIO event
+  subscription returns -EBUSY.
+
+  The mapped chip select is asserted for the complete firmware batch and is
+  left deasserted-high afterwards.
+
+  Zephyr cs-gpios is not supported with this controller and is rejected with
+  -ENOTSUP: driving chip select from the Zephyr side would split one atomic
+  firmware batch across multiple USB round-trips, losing the batch's
+  chip-select interval guarantee.
+
+  Duplicate elements in cs-gpio-indices are permitted, but every child mapped
+  to one index selects the same physical line. That is safe only when the
+  hardware intentionally shares selection. Mapping physically distinct
+  peripherals to one index selects them simultaneously; both may drive MISO,
+  producing bus contention, invalid returned bytes, and possible electrical
+  over-drive.
+
 compatible: "odp,pico-de-gallo-spi"
 
 include: spi-controller.yaml
@@ -25,5 +49,56 @@ properties:
       physical boards.
 
       If omitted, the first matching board is selected. Every controller node
-      intended to share that default board must also omit this property. Do not
-      mix omitted and explicit selectors for the same board.
+      intended to share that default board must also omit this property. An
+      omitted serial number is therefore suitable only for a single-board
+      setup: all omitted selectors share one registry key and so resolve to
+      one board. A genuine multi-board setup needs a unique explicit
+      serial-number on every controller targeting each board. Do not mix
+      omitted and explicit selectors.
+
+  cs-gpio-indices:
+    type: array
+    min: 0
+    max: 255
+    min-len: 1
+    max-len: 256
+    description: |
+      Firmware GPIO indices used as chip selects, indexed by each SPI child
+      node's reg value. For example, cs-gpio-indices = <2 0> maps child reg
+      <0> to firmware GPIO index 2 and child reg <1> to firmware GPIO index 0.
+
+      An element is a *firmware* GPIO index: the same numbering the gallo CLI
+      takes in "spi batch --cs". It is neither an RP2350 GPIO number nor a
+      header pin number. On the current firmware the four user GPIOs map as
+      follows, so a chip select wired to the board pin silkscreened GPIO2 is
+      written as <2>, not <10>:
+
+        firmware index 0 -> board GPIO0 -> RP2350 GPIO8
+        firmware index 1 -> board GPIO1 -> RP2350 GPIO9
+        firmware index 2 -> board GPIO2 -> RP2350 GPIO10
+        firmware index 3 -> board GPIO3 -> RP2350 GPIO11
+
+      The board's separately silkscreened SPI_CS signal (RP2350 GPIO5) is not
+      claimed by the firmware and cannot be selected through this property. The
+      valid range is bounded at runtime by the firmware-reported GPIO count;
+      the mapping above is the current firmware's set.
+
+      The property is optional in the schema, but an enabled controller without
+      it rejects every transfer with -EINVAL and logs the required fix; there
+      is no identity fallback. A selector beyond the array or a mapped index
+      beyond the firmware-reported GPIO count also returns -EINVAL. Firmware
+      reporting zero GPIOs returns -ENODEV. A mapped pin explicitly configured
+      as an input returns -EACCES, while a pin under a live GPIO event
+      subscription returns -EBUSY.
+
+      The mapped pin is asserted for the complete firmware batch and left
+      deasserted-high afterwards. Duplicate indices are permitted, but all
+      children mapped to one index select the same physical line. This is safe
+      only when the hardware intentionally shares selection. Mapping physically
+      distinct peripherals to one index selects them simultaneously; both may
+      drive MISO, producing bus contention, invalid returned bytes, and possible
+      electrical over-drive.
+
+      Do not use Zephyr cs-gpios with this controller. It cannot preserve the
+      Pico de Gallo batch's atomic chip-select interval and is rejected with
+      -ENOTSUP.

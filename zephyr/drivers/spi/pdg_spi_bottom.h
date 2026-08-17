@@ -44,6 +44,14 @@ void *pdg_spi_bottom_open(const char *serial);
 /* Release a context previously returned by pdg_spi_bottom_open(). */
 void pdg_spi_bottom_close(void *ctx);
 
+/* Read how many GPIOs the firmware reports, into *out_num_gpios.
+ *
+ * This is a warm-cache read: pdg_spi_bottom_open() validates the device, and a
+ * successful validation populates the shared count cache, so no USB traffic is
+ * generated here. *out_num_gpios is written only on success.
+ */
+int pdg_spi_bottom_num_gpios(void *ctx, uint8_t *out_num_gpios);
+
 int pdg_spi_bottom_set_config(void *ctx, uint32_t frequency, bool phase, bool polarity);
 
 int pdg_spi_bottom_batch(void *ctx, uint8_t cs_pin,

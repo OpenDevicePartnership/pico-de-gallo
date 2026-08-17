@@ -29,6 +29,12 @@ void pdg_spi_bottom_close(void *ctx)
 	pdg_common_bottom_close(ctx);
 }
 
+int pdg_spi_bottom_num_gpios(void *ctx, uint8_t *out_num_gpios)
+{
+	return pdg_common_status_to_errno(gallo_num_gpios(
+		(const struct PicoDeGallo *)ctx, out_num_gpios));
+}
+
 int pdg_spi_bottom_set_config(void *ctx, uint32_t frequency, bool phase, bool polarity)
 {
 	return pdg_common_status_to_errno(gallo_spi_set_config((const struct PicoDeGallo *)ctx, frequency, phase, polarity));
