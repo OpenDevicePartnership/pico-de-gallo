@@ -256,7 +256,7 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 |---|---|
 | `list_devices` | List connected Pico de Gallo boards |
 | `status` | Which board is reachable, why not when none is, plus firmware/schema version |
-| `device_info` | Firmware version, schema version, capabilities |
+| `device_info` | Firmware version, schema version, capabilities, runtime GPIO count |
 | `version` | Firmware version |
 | `ping` | Echo a value (liveness check) |
 

@@ -33,6 +33,7 @@ Status s = gallo_ping(gallo, &id);
 gallo_free(gallo);
 ```
 
+
 ### Initialization and teardown
 
 | Function | Purpose |

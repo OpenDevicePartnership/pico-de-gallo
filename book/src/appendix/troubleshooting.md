@@ -34,6 +34,8 @@ The host library was built against a different
 `SCHEMA_VERSION_MINOR` than the running firmware. Re-flash the
 matching firmware release, or upgrade/downgrade the host crates
 to match. See [Releases & Compatibility](../internals/releases.md).
+On the `zephyr` branch, matching schema 0.6.1 does not prove wire-shape
+compatibility; see the schema-freeze warning on that page.
 
 ### `LegacyFirmware` (status code −64)
 
@@ -47,6 +49,36 @@ recent firmware build.
 The peripheral exists in the protocol but isn''t wired on this
 hardware revision. Check the capability bitfield from
 `gallo info`. See [Revisions](../hardware/revisions.md).
+
+### `GpioTimeout` (status code −70)
+
+A bounded GPIO wait expired before the requested level or edge arrived.
+Check the wiring and increase the timeout only if the expected event is slow.
+
+### `SpiInvalidCsPin` (status code −71)
+
+The chip-select index is outside `0..num_gpios`. Query the connected device's
+runtime GPIO count and choose an index below it.
+
+### `SpiCsPinUnavailable` (status code −72)
+
+The selected chip-select pin is explicitly configured as an input. Configure
+it as an output, or select another user GPIO.
+
+### `SpiCsPinMonitored` (status code −73)
+
+The selected chip-select pin has an active GPIO event subscription. Unsubscribe
+it before using the pin as chip-select.
+
+### `SpiNoGpios` (status code −74)
+
+The device reports zero user GPIOs, so no firmware-managed SPI chip-select is
+available. Use a device or firmware build that exposes user GPIOs.
+
+### `DeviceInfoTimeout` (status code −75)
+
+The `device/info` query did not complete within 300 seconds. Check the USB
+connection and peer compatibility before retrying.
 
 ### I²C `Nack` (−18)
 

@@ -2,8 +2,12 @@
 
 Every `gallo_*` FFI function (except the lifecycle calls
 `gallo_init`, `gallo_init_with_serial_number`, and `gallo_free`)
-returns a `Status` value. `Status` is a C enum backed by
-`int32_t`.
+returns a `Status` value. For C11/C17, cbindgen emits
+`typedef int32_t Status` together with integer constants, rather than making
+`Status` a true C `enum` type. To catch appended statuses at compile time,
+cast the scrutinee (`switch ((enum Status)x)`), omit any `default:` label
+inside the switch, and build with `-Werror=switch`. A post-switch fallback
+for an unknown numeric value is intentional and correct.
 
 - **`Ok` (0)** — success.
 - **Negative values** — errors, grouped roughly by peripheral.

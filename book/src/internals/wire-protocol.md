@@ -144,8 +144,9 @@ If validation fails, the host returns:
 - `LegacyFirmware` when the firmware is too old to support `device/info`, or
 - `SchemaMismatch` when the host and firmware disagree on the schema version.
 
-This turns an otherwise confusing runtime failure into an explicit compatibility
-error.
+For released components with honest schema versions, this turns an otherwise
+confusing runtime failure into an explicit compatibility error. It cannot detect
+the intentional schema freeze described above.
 
 ## Lockstep releases for protocol changes
 
@@ -158,7 +159,8 @@ cycle must update:
 4. `pico-de-gallo-hal`,
 5. `pico-de-gallo-ffi`,
 6. `pico-de-gallo-app`,
-7. `pyco-de-gallo`.
+7. `pico-de-gallo-mcp`,
+8. `pyco-de-gallo`.
 
 > [!IMPORTANT]
 > Nothing automated knows that the protocol crate and firmware are
