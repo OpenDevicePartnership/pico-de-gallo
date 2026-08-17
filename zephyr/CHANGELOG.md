@@ -59,6 +59,49 @@ The format is based on
 
 ### Added
 
+- Added the `odp,pico-de-gallo-gpio` devicetree compatible and its Zephyr GPIO
+  controller driver. The controller is a direct child of an enabled
+  `odp,pico-de-gallo` parent, borrows the parent's USB connection and never
+  releases it, and initializes at `POST_KERNEL/45` — after the parent (40) and
+  before the I2C and SPI controllers (50). The shield ships one **disabled**
+  `pdg_gpio0` node with `ngpios = <4>`.
+
+  - The parent of every enabled GPIO child **must** define `serial-number`; a
+    missing selector is rejected at build time, because GPIO actuates physical
+    pins and a selector-less connection cannot report which attached board it
+    chose. Presence is not uniqueness — two parents naming the same serial
+    still alias. The configured serial is logged on successful initialization.
+  - `ngpios` is bounded to 1..32 at build time and must equal the
+    firmware-reported `device/info.num_gpios` at initialization; a mismatch is
+    a local devicetree/firmware configuration error and fails with `-EINVAL`.
+  - Six API slots are implemented: `pin_configure`, `port_get_raw`,
+    `port_set_masked_raw`, `port_set_bits_raw`, `port_clear_bits_raw` and
+    `port_toggle_bits`.
+  - Every operation that reaches hardware is a blocking USB round trip. Calls from interrupt context
+    return `-EWOULDBLOCK`; transport failure is reported as `-EIO`.
+  - Flag mapping is a positive allow-list, so no flag is silently ignored.
+    `GPIO_DISCONNECTED`, `GPIO_INPUT | GPIO_OUTPUT`, single-ended /
+    open-source / open-drain, interrupt-mode flags including `GPIO_INT_WAKEUP`,
+    and any unknown bit return `-ENOTSUP`; both pulls, both output init levels,
+    and an init level without `GPIO_OUTPUT` return `-EINVAL`. `GPIO_ACTIVE_LOW`
+    is supported through Zephyr's common GPIO layer.
+  - Multi-pin writes and output initialization are explicitly **non-atomic**.
+    On a partial failure the acknowledged prefix definitely changed, the failed
+    pin is indeterminate because its request may have executed with only the
+    response lost, and later selected pins were never issued. The driver logs
+    the operation, the failed pin, the requested mask and value, and the
+    acknowledged prefix, and never rolls back.
+  - Reads are scoped to input pins: a pin the firmware records as an explicit
+    output contributes a zero bit and the scan continues, matching Zephyr's
+    reference `gpio_emul` controller. This is coupled to the rejection of
+    `GPIO_INPUT | GPIO_OUTPUT` and the two must not be changed independently.
+  - `port_toggle_bits` dispatches but returns `-ENOTSUP`: an explicit output
+    cannot be read back and no pin state is cached. Generic toggle consumers,
+    including blinky, the GPIO shell, the TPS382x watchdog and the LS0xx
+    display, do not work with this controller.
+  - Interrupt configuration, callback management and the pending-interrupt
+    query are deliberately not implemented and return `-ENOSYS`.
+
 - Added the `odp,pico-de-gallo` devicetree compatible: a multi-function
   device parent node representing one physical USB-attached board. It owns
   the host connection for that board and exposes its opaque context to child

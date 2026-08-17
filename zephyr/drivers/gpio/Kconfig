@@ -1,0 +1,29 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+config GPIO_PICO_DE_GALLO
+	bool "Pico de Gallo GPIO controller"
+	default y
+	depends on DT_HAS_ODP_PICO_DE_GALLO_GPIO_ENABLED
+	depends on ARCH_POSIX
+	select GPIO
+	help
+	  Enable the Pico de Gallo GPIO controller driver. This driver forwards
+	  Zephyr GPIO API calls to a Pico de Gallo USB bridge attached to the
+	  host running native_sim via the Pico de Gallo C FFI. Every operation
+	  that reaches hardware is a blocking USB round trip; calls rejected
+	  beforehand (interrupt context, invalid arguments, zero pin masks and
+	  toggle) perform no I/O. Interrupts and toggle are unavailable.
+
+if GPIO_PICO_DE_GALLO
+
+config GPIO_PICO_DE_GALLO_INIT_PRIORITY
+	int "Pico de Gallo GPIO controller initialization priority"
+	default 45
+	help
+	  POST_KERNEL initialization priority of the Pico de Gallo GPIO
+	  controller. It must run after the odp,pico-de-gallo MFD parent
+	  (default 40) and before the I2C and SPI controllers (default 50), so
+	  that a later SPI chip-select consumer finds this port ready.
+
+endif # GPIO_PICO_DE_GALLO

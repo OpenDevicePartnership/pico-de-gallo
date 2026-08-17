@@ -23,8 +23,12 @@ RP2350 **GPIO 8–11**.
 
 ## Pin Configuration
 
-Before using a GPIO pin, configure its direction and pull resistor. Pins
-default to input with no pull resistor after power-on.
+Before using a GPIO pin, configure its direction and pull resistor. After
+power-on a pin is in the firmware's `LegacyAuto` mode: it has no explicit
+direction, and the firmware lazily selects one per operation — a read switches
+the pad to input, a write drives it. An explicit `set-config` leaves that mode
+and pins the direction, after which a write to an explicit input, or a read of
+an explicit output, is rejected.
 
 > **Warning.** Do not use the RP2350 internal pull-down as proof that an
 > input is low. It can hold a node that was previously driven low, but may
@@ -499,6 +503,62 @@ All functions return `GalloStatus`:
 | `gallo gpio put --pin N --level low` | Drive pin low |
 | `gallo gpio set-config --pin N --direction DIR --pull PULL` | Configure pin |
 | `gallo gpio monitor --pin N --edge EDGE` | Stream edge events until Ctrl+C |
+
+## Zephyr
+
+The `pico-de-gallo/zephyr` module ships an `odp,pico-de-gallo-gpio` controller
+so a Zephyr application running on `native_sim` can drive these pins through
+the standard Zephyr GPIO API. Full build instructions live in
+[`zephyr/README.md`](https://github.com/OpenDevicePartnership/pico-de-gallo/blob/main/zephyr/README.md).
+
+**Topology.** The controller is a direct child of the `odp,pico-de-gallo` MFD
+parent, which owns the USB connection. Enable both:
+
+```dts
+&pdg0 {
+	status = "okay";
+	serial-number = "E6614C311B8C9E37";
+};
+
+&pdg_gpio0 {
+	status = "okay";
+};
+```
+
+**`serial-number` on the parent is mandatory** for an enabled GPIO child and is
+enforced at build time. GPIO actuates physical pins, and a connection opened
+without a selector cannot report which attached board it chose. Presence is not
+uniqueness: two parents naming the same serial still alias to one board.
+
+**Pin indices** are the firmware GPIO indices 0–3 above, not RP2350 numbers.
+`ngpios` must equal the firmware-reported GPIO count or initialization fails
+with `-EINVAL`.
+
+**Supported flags:** `GPIO_INPUT`, `GPIO_OUTPUT`, `GPIO_PULL_UP`,
+`GPIO_PULL_DOWN`, `GPIO_OUTPUT_INIT_LOW`, `GPIO_OUTPUT_INIT_HIGH` and
+`GPIO_ACTIVE_LOW`.
+
+**Rejected:** `GPIO_DISCONNECTED` and `GPIO_INPUT | GPIO_OUTPUT` together
+(`-ENOTSUP`); single-ended, open-source and open-drain (`-ENOTSUP`);
+interrupt-mode flags including `GPIO_INT_WAKEUP` (`-ENOTSUP`); any flag bit
+outside the supported set (`-ENOTSUP`); both pulls, both init levels, or an
+init level without `GPIO_OUTPUT` (`-EINVAL`).
+
+**Blocking.** Every operation that reaches hardware is a USB round trip. Calls from interrupt context
+return `-EWOULDBLOCK`; transport failure is `-EIO`.
+
+**Non-atomic.** Multi-pin writes are ascending per-pin round trips with no
+rollback: on failure the acknowledged prefix definitely changed, the failed pin
+is indeterminate, and later pins were never issued. Output initialization is
+two round trips, so the previous level can briefly appear before the requested
+one.
+
+**No toggle, no interrupts.** `gpio_pin_toggle()` returns `-ENOTSUP`, because
+an explicit output cannot be read back and the driver deliberately caches no
+pin state. Interrupt configuration, callback management and the
+pending-interrupt query return `-ENOSYS`. Generic toggle consumers — **blinky**,
+the **GPIO shell**, the **TPS382x watchdog** and the **LS0xx display** —
+therefore do not work with this controller.
 
 ## Limitations
 

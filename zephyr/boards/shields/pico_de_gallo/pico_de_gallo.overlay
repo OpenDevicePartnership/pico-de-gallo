@@ -9,6 +9,14 @@
 		compatible = "odp,pico-de-gallo";
 		status = "disabled";
 
+		pdg_gpio0: gpio {
+			compatible = "odp,pico-de-gallo-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <4>;
+			status = "disabled";
+		};
+
 		pdg_i2c0: i2c {
 			compatible = "odp,pico-de-gallo-i2c";
 			clock-frequency = <400000>;

@@ -5,9 +5,9 @@ to build and run it. It lives here rather than in `pico-de-gallo/book` because
 the module is still work-in-progress (and may not live in this repo long term).
 
 `pico-de-gallo/zephyr` is a Zephyr module that lets Zephyr applications drive
-real I2C and SPI peripherals from `native_sim`. It provides the
+real I2C, SPI and GPIO peripherals from `native_sim`. It provides the
 `pico_de_gallo` [shield](https://docs.zephyrproject.org/latest/hardware/porting/shields.html),
-whose drivers forward Zephyr I2C and SPI API calls through the
+whose drivers forward Zephyr I2C, SPI and GPIO API calls through the
 `pico-de-gallo-ffi` C API to a Pico de Gallo board attached to the host over
 USB.
 
@@ -222,13 +222,77 @@ about, such as an FPGA bitstream.
 ## Using the drivers in your own application
 
 The shield declares a `pdg0` multi-function-device parent node and, as its
-direct children, the `pdg_i2c0` and `pdg_spi0` controller nodes. All three are
-**disabled by default**. Your application enables `pdg0` *and* the controllers
-it needs, then declares its peripherals as ordinary child nodes.
+direct children, the `pdg_gpio0`, `pdg_i2c0` and `pdg_spi0` controller nodes.
+All four are **disabled by default**. Your application enables `pdg0` *and* the
+controllers it needs, then declares its peripherals as ordinary child nodes.
 
 `pdg0` owns the USB connection to one physical board; the controllers borrow
 it. An enabled controller whose parent is missing, disabled, or of the wrong
 compatible is rejected at build time with an explanatory assertion.
+
+### GPIO
+
+`app.overlay`:
+
+```dts
+&pdg0 {
+	status = "okay";
+	serial-number = "E6614C311B8C9E37";
+};
+
+&pdg_gpio0 {
+	status = "okay";
+};
+```
+
+`prj.conf`:
+
+```conf
+CONFIG_GPIO=y
+```
+
+The pins are the board's firmware GPIO indices 0..3, which are RP2350 GPIO
+8..11. `ngpios` must equal the firmware-reported GPIO count; a mismatch is a
+local devicetree/firmware configuration error and fails initialization with
+`-EINVAL`.
+
+**`serial-number` on `&pdg0` is mandatory for an enabled GPIO child**, and the
+build fails with an explanatory assertion without it. GPIO actuates physical
+pins, and a selector-less connection cannot report which attached board it
+selected, so an unpinned parent would drive unidentifiable hardware. Presence
+is not uniqueness: two parents carrying the same explicit serial still alias to
+one board. The configured serial is logged when the controller initializes
+successfully.
+
+Every operation that reaches hardware is a blocking USB round trip. Calls from interrupt context
+return `-EWOULDBLOCK`; a transport failure is `-EIO`.
+
+Multi-pin writes are **not atomic**: they are deterministic ascending, per-pin
+round trips. If one fails, the acknowledged prefix definitely changed, the
+failed pin is indeterminate because its request may have executed with only the
+response lost, and later selected pins were never issued. The driver logs the
+operation, the failed pin, the requested mask and value, and the acknowledged
+prefix, and does not roll back. Output initialization is likewise two round
+trips — configure, then level — so the pin becomes an output before the
+requested level arrives and the previous or HAL-defined level may briefly
+appear. After a failed `gpio_pin_configure()` the requested direction and pull
+may nevertheless have been applied, and logical polarity is unreliable until a
+successful reconfiguration.
+
+Reads are scoped to input pins, as Zephyr specifies and as the reference
+`gpio_emul` controller behaves: a pin the firmware records as an explicit
+output reports a zero bit and the scan continues. That is only sound because
+`GPIO_INPUT | GPIO_OUTPUT` is rejected, so a reported zero is provably not an
+input pin. `gpio_pin_get()` is not a direction oracle. Direction-query APIs are
+also unavailable on this controller (`gpio_pin_is_input()` and
+`gpio_pin_is_output()` return `-ENOSYS`).
+
+**Toggle and interrupts are unavailable.** `gpio_pin_toggle()` returns
+`-ENOTSUP`, because an explicit output cannot be read back and this driver
+deliberately caches no pin state. Interrupt configuration, callback management
+and the pending-interrupt query return `-ENOSYS`. Generic toggle consumers,
+including blinky, the GPIO shell, the TPS382x watchdog and the LS0xx display,
+therefore do not work with this controller.
 
 ### I2C
 
@@ -392,6 +456,30 @@ one board.
 
 These are enforced in the drivers and reported as errors, not silently ignored.
 
+### GPIO
+
+| Limitation | Result |
+|---|---|
+| Enabled GPIO child whose parent has no `serial-number` | **Build fails** with an explanatory assertion |
+| `ngpios` outside 1..32 | **Build fails** with an explanatory assertion |
+| `ngpios` not equal to the firmware-reported GPIO count | `-EINVAL` at init |
+| Any call from interrupt context | `-EWOULDBLOCK` |
+| `GPIO_DISCONNECTED` (neither input nor output) | `-ENOTSUP` |
+| `GPIO_INPUT \| GPIO_OUTPUT` together | `-ENOTSUP` |
+| Single-ended, open-source, open-drain | `-ENOTSUP` |
+| Interrupt-mode flags, including `GPIO_INT_WAKEUP` | `-ENOTSUP` |
+| Any flag bit outside the supported set | `-ENOTSUP` |
+| Both pull-up and pull-down | `-EINVAL` |
+| Both output init levels, or an init level without `GPIO_OUTPUT` | `-EINVAL` |
+| Mask or pins outside the `ngpios`-derived port mask | `-EINVAL` |
+| `gpio_pin_toggle()` / `gpio_port_toggle_bits()` | `-ENOTSUP` |
+| Interrupt configure, callback management, pending interrupt | `-ENOSYS` |
+| `gpio_pin_get_config()`, `gpio_port_get_direction()` | `-ENOSYS` |
+| Reading a pin configured as an explicit output | reports `0`; reads are scoped to input pins |
+| Transport failure | `-EIO` |
+
+`GPIO_ACTIVE_LOW` is supported and handled by Zephyr's common GPIO layer.
+
 ### I2C
 
 | Limitation | Result |
@@ -449,6 +537,15 @@ Turn it off; this driver cannot support it. The same applies to
 **`undefined reference to k_malloc`**
 An older checkout of this module, before the SPI driver declared its heap
 requirement. Update, or set `CONFIG_HEAP_MEM_POOL_SIZE=8192` as a stopgap.
+
+**Build fails with `odp,pico-de-gallo-gpio parent must define serial-number`**
+An enabled `pdg_gpio0` requires an explicit `serial-number` on `&pdg0`. See
+*GPIO* above for why: GPIO drives physical pins, and an unpinned parent cannot
+report which attached board it selected.
+
+**`gpio_pin_toggle()` returns `-ENOTSUP`, or blinky does not work**
+Expected. Toggle is unavailable on this controller; use `gpio_pin_set()` with
+the level you want. Interrupt-driven GPIO consumers get `-ENOSYS`.
 
 **Devicetree errors about `pdg_i2c0` / `pdg_spi0`**
 `-DSHIELD=pico_de_gallo` was not passed, so the nodes do not exist. It is

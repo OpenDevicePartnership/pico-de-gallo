@@ -4,7 +4,7 @@ config PICO_DE_GALLO
     bool "Pico de Gallo host bridge"
     depends on ARCH_POSIX
     depends on 64BIT
-    default y if DT_HAS_ODP_PICO_DE_GALLO_ENABLED || DT_HAS_ODP_PICO_DE_GALLO_I2C_ENABLED || DT_HAS_ODP_PICO_DE_GALLO_SPI_ENABLED
+    default y if DT_HAS_ODP_PICO_DE_GALLO_ENABLED || DT_HAS_ODP_PICO_DE_GALLO_GPIO_ENABLED || DT_HAS_ODP_PICO_DE_GALLO_I2C_ENABLED || DT_HAS_ODP_PICO_DE_GALLO_SPI_ENABLED
     help
       Enable support for Pico de Gallo host peripheral bridges.
 
