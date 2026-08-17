@@ -8,14 +8,17 @@ DMA-backed full-duplex mode.
 | SCK        | GPIO 6      | v1.0+        |
 | MOSI (TX)  | GPIO 7      | v1.0+        |
 | MISO (RX)  | GPIO 4      | v1.0+        |
-| CS         | GPIO 5      | v1.1+        |
+| SPI_CS net | GPIO 5      | v1.1+        |
 
-> [!NOTE]
->
-> On v1.0 the dedicated CS line isn't routed to any header. You
-> can still drive chip-select from any of the user GPIO pins
-> (0–3) via the `spi_device(cs_pin)` HAL accessor or by toggling
-> a GPIO manually around the SPI ops.
+> **Note.** GPIO 5 is physically routed as SPI_CS on v1.1, but firmware
+> never claims or drives it on either revision. The only firmware-managed
+> chip-select mechanism uses user GPIO indices in `0..num_gpios`, where
+> `num_gpios` is device-reported and currently 4. Those indices map to
+> RP2350 GPIO 8–11 and work with `spi/batch`, the fallible
+> `spi_device(cs_pin)` HAL accessor, and equivalent host surfaces. Manually
+> toggling a GPIO around separate SPI operations is also possible, but it
+> does not hold chip-select atomically across the sequence as `spi/batch`
+> does.
 
 ## Operations
 
@@ -46,7 +49,7 @@ The firmware defaults to mode 0.
 ## CLI
 
 ```console
-$ gallo spi help
+$ gallo spi --help
 SPI access methods
 
 Usage: gallo spi <COMMAND>

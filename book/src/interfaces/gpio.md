@@ -26,6 +26,14 @@ RP2350 **GPIO 8–11**.
 Before using a GPIO pin, configure its direction and pull resistor. Pins
 default to input with no pull resistor after power-on.
 
+> **Warning.** Do not use the RP2350 internal pull-down as proof that an
+> input is low. It can hold a node that was previously driven low, but may
+> not discharge a node that is already high; an unpulled floating input can
+> also drift high within seconds. For a deterministic low state, drive the
+> node low first and verify it before releasing it to pull-down, or use an
+> external pull-down. Configuring pull-down alone does not guarantee that
+> `gpio/get` returns Low.
+
 ### CLI
 
 ```bash

@@ -41,7 +41,8 @@ Or simply drag `firmware.uf2` onto the `RP2350` USB mass storage drive.
 | SPI0 SCK | GPIO 6      | DMA-backed full-duplex       |
 | SPI0 TX  | GPIO 7      |                              |
 | SPI0 RX  | GPIO 4      |                              |
-| GPIO 0–7 | GPIO 8–15   | Input/output/edge-wait       |
+| GPIO 0–3 | GPIO 8–11   | Input/output/edge-wait       |
+| PWM 0–3  | GPIO 12–15  | PWM slices 6–7               |
 | USB      | Native USB  | postcard-rpc transport       |
 
 ## License
