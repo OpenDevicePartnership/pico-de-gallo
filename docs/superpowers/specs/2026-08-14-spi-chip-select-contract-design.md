@@ -129,16 +129,30 @@ technically non-breaking on the wire, host validation is strict)."* Every
 appended variant is therefore a breaking release in this project regardless of
 the attribute. It saves nothing that is actually available to be saved.
 
-**It would make this codebase measurably worse.** Without the attribute,
-appending a variant *breaks the build* at `pico-de-gallo-ffi`'s `SpiError`→`Status`
-mapping and at Zephyr's status→errno mapping (`zephyr/drivers/common/common.c`)
-— loudly, at compile time, forcing a deliberate decision about how the new error
-surfaces to C and to Zephyr callers. With the attribute, both sites silently fall
-into `_ =>` and collapse a new, specific error into a generic one. That is the
-same class of defect this very issue is about: `SpiError::Other` swallowing three
-distinct failures (§1.3). Trading a compile error for silent degradation, in a
-project whose recurring failure mode per AGENTS.md §13.17 is precisely "silent
-mismatch nobody notices," is a bad trade.
+**It would make this codebase measurably worse — but only on the Rust side.**
+Without the attribute, appending a variant *breaks the build* at
+`pico-de-gallo-ffi`'s `SpiError`→`Status` mapping — loudly, at compile time,
+forcing a deliberate decision about how the new error surfaces. With the
+attribute, that site would silently fall into `_ =>` and collapse a new,
+specific error into a generic one. That is the same class of defect this issue
+is about: `SpiError::Other` swallowing three distinct failures (§1.3).
+
+> **Corrected during M4.** An earlier version of this paragraph also claimed the
+> breakage reaches "Zephyr's status→errno mapping
+> (`zephyr/drivers/common/common.c`)". **That was false, and the truth is worse
+> than the claim.** C does not fail a `switch` when an enum grows; `common.c`
+> already ended in `default: return -EIO;`; and cbindgen emits
+> `typedef int32_t Status`, so the switch is integer-typed and `-Wswitch` never
+> fires even with the `default:` removed. All five new status codes were
+> therefore silently mapping to `-EIO` on `main` — the precise failure mode this
+> section warns against was already happening on the C side, unnoticed.
+>
+> M4 closed it with three individually necessary changes: cast the scrutinee
+> (`switch ((enum Status)status)`), delete `default:` in favour of a post-switch
+> `return -EIO;`, and enable `-Werror=switch`. Note this makes exhaustiveness a
+> property of *that translation unit*, not an inherent guarantee of the wire
+> crate. Any new C consumer must opt in the same way.
+
 
 The exhaustive-match requirement is therefore treated as a **feature** of the
 wire crate, not a wart: it is the mechanism that keeps the eight lockstep-coupled

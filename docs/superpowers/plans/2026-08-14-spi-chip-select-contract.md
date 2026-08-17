@@ -828,3 +828,82 @@ own issue instead.
   subcommand's arguments only when parsing reaches it. The new
   `cli_command_builder_is_well_formed` test calls `Cli::command().debug_assert()`
   recursively, so it now guards **every** subcommand.
+### 8.17 M4 outcome
+
+M4 landed as `fde02d042364` — `fix(zephyr): Map SPI child reg to a firmware GPIO
+chip-select index`. Independently verified: the `3U` literal is gone,
+`pdg_spi.c:250` computes `cs_index` from the DT array and `:333` passes **that**
+to `pdg_spi_bottom_batch` rather than `config->slave`, all five statuses are
+mapped, every committed blob is LF-clean, and nothing outside `zephyr/` and
+`book/` was touched.
+
+**The Zephyr half of #104 is now closed:** `reg` recovers its correct Zephyr
+meaning as a slave selector, and the firmware GPIO index is declared explicitly
+by the board author.
+
+**Errno mapping,** all five explicit, with `-Werror=switch` enforcing it:
+
+| Status | errno | Rationale |
+| --- | --- | --- |
+| `SpiInvalidCsPin` −71 | `-EINVAL` | bad argument; the caller fixes the mapping |
+| `SpiCsPinUnavailable` −72 | `-EACCES` | mirrors existing `GpioWrongDirection` |
+| `SpiCsPinMonitored` −73 | `-EBUSY` | mirrors existing `GpioPinMonitored` |
+| `SpiNoGpios` −74 | `-ENODEV` | the resource does not exist |
+| `DeviceInfoTimeout` −75 | `-ETIMEDOUT` | bounded request still outstanding |
+
+**Corrections M4 forced elsewhere:**
+
+- **Spec §2.1 was factually wrong about C** and has been corrected in place. See
+  that section — the short version is that all five statuses were silently
+  mapping to `-EIO` on `main`, because C does not fail a `switch` when an enum
+  grows and cbindgen's `int32_t` typedef defeats `-Wswitch` regardless.
+- **§3's M4 inventory was short by two files** — `zephyr/drivers/CMakeLists.txt`
+  and `book/src/interfaces/spi.md`.
+- **My "removing the property must fail the build" instruction was wrong.** D6
+  requires a *runtime* `-EINVAL`, which requires the binding property to stay
+  optional; a `required: true` or `BUILD_ASSERT` would make the specified error
+  unreachable. M4 substituted stronger evidence: preprocessing the production
+  translation unit shows `<2 0>` propagating as `{2, 0}` while a deleted property
+  yields length 0 and routes to the refusal guard — where a silent identity
+  fallback would have produced `{0, 1}` in both cases.
+
+**Duplicate CS indices are permitted, deliberately.** Upstream Zephyr does not
+validate `cs-gpios` uniqueness either, and rejecting duplicates would forbid
+legitimate shared-select wiring. The hazard — two distinct peripherals selected
+simultaneously, both driving MISO, returned bytes being contention rather than
+data — is documented in the binding, the README and the book instead.
+
+### 8.18 Two samples cannot link, and never could
+
+`spi_bridge` and `combined_i2c_spi_bridge` fail to link at `main`, before any
+#104 work. Their overlays instantiate `issi,is31fl3743b`, and **that driver
+exists nowhere** — not in Zephyr v4.4.99 (`drivers/led/` ships `is31fl319x`,
+`is31fl3216a`, `is31fl3733` only) and not in this repo. Confirmed independently:
+the compatible string appears solely in those two overlay files.
+
+Devicetree accepts the node, so everything including `pdg_spi.c` compiles; only
+the final executable link fails on `__device_dts_ord_43` / `__device_dts_ord_44`.
+
+M4's gate was therefore made falsifiable rather than aspirational: `spi_nor_id`
+must build **and link**, while the other two must reach *exactly* the
+pre-existing ordinal with zero non-link errors and exactly one undefined symbol.
+All three passed on that basis.
+
+**Two of the four samples are unbuildable end-to-end and CI does not build them.
+This deserves its own issue.** M5 should not silently absorb it.
+
+### 8.19 Build environment notes
+
+For anyone repeating the Zephyr builds:
+
+- WSL **Ubuntu-26.04**; repo visible at `/mnt/d/workspace/pico-de-gallo`;
+  Zephyr `~/zephyrproject/zephyr` at **v4.4.0-6123-g26f811ee9d0**.
+- Samples are `native_sim` (`zephyr/drivers/spi/Kconfig` has
+  `depends on ARCH_POSIX`), so host gcc suffices — no Zephyr SDK needed.
+- **`~/zephyrproject/.venv` must be activated**; WSL's system python lacks
+  `pyelftools` and the build dies in `gen_kobject_list.py`.
+- GitHub intermittently rate-limits the corrosion tarball;
+  `-DFETCHCONTENT_SOURCE_DIR_CORROSION` sidesteps it.
+- `[Console]::OutputEncoding` is `ibm437` here, which mojibakes UTF-8 (`§`, em
+  dashes) when capturing commit messages into PowerShell strings. Set it to UTF8
+  before scripting message rewrites.
