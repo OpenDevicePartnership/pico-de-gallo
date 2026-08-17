@@ -5,6 +5,18 @@ All notable changes to `gallo-mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `spi_batch` validates `cs` against retained, already-validated
+  `DeviceInfo::num_gpios` before it transmits, and reports invalid
+  parameters distinctly. Payload parsing deliberately precedes `connect()`:
+  connecting calls `system_reset_subscriptions()`, which tears down every
+  GPIO subscription on the board, including subscriptions owned by other
+  processes, so malformed hex cannot cause that destructive cross-process
+  side effect. Closes #104.
+
 ## [0.2.0] — 2026-08-05
 
 ### Added

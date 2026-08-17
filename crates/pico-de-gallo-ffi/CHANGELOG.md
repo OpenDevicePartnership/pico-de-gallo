@@ -5,6 +5,22 @@ All notable changes to `pico-de-gallo-ffi` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added `gallo_num_gpios` and the coherent #104 status set:
+  `SpiInvalidCsPin = -71`, `SpiCsPinUnavailable = -72`,
+  `SpiCsPinMonitored = -73`, `SpiNoGpios = -74`, and
+  `DeviceInfoTimeout = -75`. Existing C ABI status codes remain stable
+  and are never renumbered.
+
+### Changed
+
+- SPI batch calls now bound-check chip-select against device-reported
+  metadata on the host, keeping an invalid pin, zero GPIOs, and metadata
+  failure as distinct outcomes. Closes #104.
+
 ## [0.7.1] — 2026-08-03
 
 ### Changed

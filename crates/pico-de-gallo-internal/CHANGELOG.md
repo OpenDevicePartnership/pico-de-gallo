@@ -5,6 +5,17 @@ All notable changes to `pico-de-gallo-internal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- Appended `SpiError::InvalidCsPin`, `SpiError::CsPinUnavailable`, and
+  `SpiError::CsPinMonitored`, in that order after `Other`, and added
+  `DeviceInfo::num_gpios: u8` as the final field. Both are append-only
+  wire changes, but AGENTS.md §6.2 still requires a lockstep schema
+  bump. That bump has not happened yet; no future version is assigned.
+  Closes #104.
+
 ## [0.6.0] — 2026-06-22
 
 ### Breaking Changes (2026-06-03 — Category A hotfix)

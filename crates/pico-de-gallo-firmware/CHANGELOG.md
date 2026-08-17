@@ -5,6 +5,18 @@ All notable changes to `pico-de-gallo-firmware` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `spi/batch` now applies three ordered refusals before touching the
+  chip-select pin: invalid index, monitored pin, then `ExplicitInput`.
+  Only `ExplicitInput` would corrupt tracked state, so `LegacyAuto` and
+  `ExplicitOutput` remain accepted. An accepted pin is parked high; its
+  prior level is not restored, and `pin_modes` is not written. Removed
+  both pre-existing `.unwrap()` calls from the chip-select path. Closes
+  #104.
+
 ## [0.10.1] — 2026-08-04
 
 ### Added

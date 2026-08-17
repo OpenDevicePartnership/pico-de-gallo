@@ -5,6 +5,18 @@ All notable changes to `pico-de-gallo-hal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- `Hal::spi_device(cs_pin)` is now fallible because it validates the
+  index against the device-reported GPIO count. Metadata failure, zero
+  GPIOs, and an invalid index remain distinct errors. Closes #104.
+
+### Added
+
+- Added public, runtime-authoritative `Hal::num_gpios()`. Closes #104.
+
 ## [0.6.0] — 2026-06-22
 
 ### Added (2026-06-04 — Category A hotfix host-only PR)
