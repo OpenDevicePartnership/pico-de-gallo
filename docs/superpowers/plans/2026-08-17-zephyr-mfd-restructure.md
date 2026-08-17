@@ -186,7 +186,7 @@ Each element is load-bearing:
 in `<build>/compile_commands.json`:
 
 ```bash
-grep -o 'pdg_[a-z_]*\.c' <build>/compile_commands.json | sort -u
+grep -o 'pdg_[a-z0-9_]*\.c' <build>/compile_commands.json | sort -u
 ```
 
 A driver whose devicetree node is `status = "disabled"` will **not** appear. To
@@ -364,3 +364,119 @@ signature or M2's callers.
   behaviour, interface release. M1's assurance is compile-time only; nothing has
   executed. Init can block up to **five minutes** on strict validation, and
   registry/FFI diagnostics go to host `stderr` and may never reach the Zephyr log.
+### R9 — A child under a ready non-PDG parent reinterprets foreign driver data
+
+**Found by M2's `@reliability` pass. Closed by M2.**
+
+The M2 draft claimed a child placed outside a PDG parent has no device object and
+fails at link. That is false when the child sits under an enabled, *ready*, but
+**unrelated** device: `device_is_ready()` passes, and `pdg_mfd_ctx()` then casts
+that foreign driver's `dev->data` to `struct pdg_mfd_data`, yielding an arbitrary
+non-NULL pointer the FFI's NULL checks cannot catch.
+
+Closed with structural `BUILD_ASSERT`s on both children, in the fixed order
+**compatible → status → Kconfig**. The order matters: disabling the parent also
+disables the Kconfig, so without a fixed order the status assertion might never
+be independently reachable.
+
+The assertion block must sit **above** the `pdg_mfd.h` include —
+`add_subdirectory_ifdef` removes that header from the include path when the
+Kconfig is off, and a fatal include error would otherwise mask the readable
+assertion.
+
+### R10 — Failed I2C devices had no direct-call context guard
+
+**Found in M2 review. Closed by M2.**
+
+`pdg_spi_transceive` carried a load-bearing NULL guard; **I2C had none**, and
+`z_impl_i2c_transfer()` dispatches without checking readiness, so `get_config`
+could return zero-initialised state as a false success. Pre-existed M2; the
+ownership migration is what made the claimed invalidation guarantee false.
+
+**M3 must copy the child pattern exactly** or it inherits R9 with actuation
+consequences: mutex init before every early return; the three assertions in
+order; assertion block above the include; readiness → accessor → invariant-NULL;
+callback NULL guards before locks; clear-never-close on failure.
+
+### R11 — One selector-less parent is still ambiguous with multiple boards attached
+
+**Open. Not closable in M2.**
+
+M1's `BUILD_ASSERT` constrains *devicetree parents*, not *attached USB devices*.
+A single selector-less parent with two boards plugged in resolves through
+`gallo_init_strict()`, which **cannot report which serial it chose**. Silent
+wrong-target — the same class as AGENTS.md §13.17's 2026-07-29 `gallo-mcp`
+incident, and **actuation-unsafe once M3's GPIO child exists**.
+
+Recorded in the parent binding and the M2 spec. Revisit in M3.
+
+### R12 — `/tmp` exhaustion from accumulated build directories
+
+WSL `/tmp` is a **16 GB tmpfs**. Zephyr build directories are ~200 MB each and
+milestones had left ~35 behind, reaching 91% and killing one build with
+`No space left on device`.
+
+**Conductor owns this**: sweep stale `/tmp` build directories between
+milestones. Agents delete only their own (tree/resource protection, §5). Reclaimed
+to 53% after M2.
+
+---
+
+## 9. M2 outcome and corrections
+
+M2 landed as `6f006658bcab` (spec) + `592f725a7681` (implementation, 14 files).
+
+**Conductor-verified independently:**
+
+- `i2c_bridge` and `spi_nor_id` both build clean, `CONFIG_PICO_DE_GALLO=y` **and**
+  `CONFIG_MFD_PICO_DE_GALLO=y`.
+- **`pdg_mfd.c` now compiles into both samples** — it was absent from all four at
+  baseline. That is positive evidence the migration took effect, not merely that
+  nothing broke.
+- M1's `BUILD_ASSERT` still fires after nesting.
+- Nothing under `crates/`; tree clean; nothing pushed.
+
+### 9.1 Two errors of mine that M2 caught
+
+1. **Plan §4's TU grep was broken.** `pdg_[a-z_]*\.c` excludes digits, so it can
+   **never** match `pdg_i2c.c` and reported zero PDG translation units for
+   `i2c_bridge` — a false negative on the very check meant to prove non-vacuity.
+   Corrected throughout to `pdg_[a-z0-9_]*\.c`.
+2. **§1's M2 row calling this a "pure refactor" is wrong.** Physical USB opens
+   were *already* one — the registry's extra hits only incremented `rc` — so only
+   the call count changes, 3 → 1. But **failure coupling** changes (a parent
+   failure now hard-fails both children), failure **location** moves earlier
+   (priority 40, not 50), and worst-case boot latency changes (previously up to
+   three independent ~5-minute strict opens, now one). Judged a net reliability
+   improvement — coherent fail-closed identity — at a small availability cost.
+   The commit correctly carries a `BREAKING CHANGE:` footer.
+
+### 9.2 Ordinal comparison must be structural, never literal
+
+The two baseline ordinals **already differed from each other at the same commit**
+(44 vs 45), before nesting renumbered them to 48/49. The two failures also differ
+in enclosing function (`.text.main` vs `.text.spi_worker`).
+
+Compare on **symbol + resolved node path + count**, resolved from each build's own
+`devicetree_generated.h`. A literal string comparison produces a false regression.
+The resolved path moving from `/pdg-spi/is31fl3743b@0` to
+`/pico-de-gallo/spi/is31fl3743b@0` is itself confirmation the nesting took.
+
+### 9.3 Other corrections
+
+- **§3's M2 inventory was short five files**: the parent binding,
+  `zephyr/README.md`, `book/src/interfaces/spi.md`, `zephyr/CHANGELOG.md`, and the
+  M2 spec.
+- **§8.3's request to strengthen T10 is resolved as unactionable** — M1's harness
+  was ephemeral; `zephyr/tests` does not exist and `git ls-files` matches nothing.
+  No framework was invented, correctly, since that is outside the inventory.
+- A **stale child `serial-number` fails loudly**, not silently — `edtlib.py`'s
+  `_check_undeclared_props()` errors naming both node and binding. Verified by
+  probe. Reassuring: a silently-ignored selector would have meant stale
+  multi-board overlays quietly targeting the wrong board.
+- **Assurance boundary unchanged**: everything on this branch is compile-time
+  only. **Nothing has ever executed.** Runtime open, schema validation, refcount
+  transitions, multi-board selection, the five-minute strict-open timeout and USB
+  interface release all remain unverified — and M2 makes them *more* load-bearing,
+  since one parent now gates both children. M5 is the first milestone that runs
+  anything.
