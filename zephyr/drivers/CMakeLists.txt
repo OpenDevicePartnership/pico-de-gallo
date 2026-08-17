@@ -1,6 +1,7 @@
 # Copyright (c) 2026 Open Device Partnership and Contributors
 # SPDX-License-Identifier: MIT
 
+add_subdirectory_ifdef(CONFIG_MFD_PICO_DE_GALLO mfd)
 add_subdirectory_ifdef(CONFIG_I2C_PICO_DE_GALLO i2c)
 add_subdirectory_ifdef(CONFIG_SPI_PICO_DE_GALLO spi)
 
@@ -17,7 +18,8 @@ add_subdirectory_ifdef(CONFIG_SPI_PICO_DE_GALLO spi)
 # coverage at all.
 #
 # Note this applies native-simulator-wide, not per file (verified clean today).
-if(CONFIG_I2C_PICO_DE_GALLO OR CONFIG_SPI_PICO_DE_GALLO)
+if(CONFIG_MFD_PICO_DE_GALLO OR CONFIG_I2C_PICO_DE_GALLO OR
+   CONFIG_SPI_PICO_DE_GALLO)
 	target_sources(native_simulator INTERFACE
 		${CMAKE_CURRENT_LIST_DIR}/common/common.c
 		${CMAKE_CURRENT_LIST_DIR}/common/gallo_registry.c)

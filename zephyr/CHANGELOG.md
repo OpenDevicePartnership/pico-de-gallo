@@ -22,6 +22,14 @@ The format is based on
 
 ### Added
 
+- Added the `odp,pico-de-gallo` devicetree compatible: a multi-function
+  device parent node representing one physical USB-attached board. It owns
+  the host connection for that board and exposes its opaque context to child
+  peripheral controller drivers. The shield ships one disabled `pdg0` node;
+  I2C and SPI controllers remain independent root siblings for now. At most
+  one enabled parent may omit `serial-number`; multiple enabled parents
+  without it are rejected at build time.
+
 - Added validation against the firmware-reported GPIO count and explicit
   mappings for all #104 statuses: `-71` to `-EINVAL`, `-72` to `-EACCES`,
   `-73` to `-EBUSY`, `-74` to `-ENODEV`, and `-75` to `-ETIMEDOUT`. The

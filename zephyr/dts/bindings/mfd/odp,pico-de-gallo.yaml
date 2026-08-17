@@ -1,0 +1,46 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Pico de Gallo USB-attached multi-function device.
+
+  This node represents one physical USB-attached Pico de Gallo board. It owns
+  the host connection to that board and exposes the peripheral controllers it
+  provides, such as I2C, SPI and GPIO, as children.
+
+compatible: "odp,pico-de-gallo"
+
+include: base.yaml
+
+properties:
+  serial-number:
+    type: string
+    description: |
+      Optional USB serial number selecting the physical Pico de Gallo board
+      that this node represents. Different values select different physical
+      boards, so every parent in a multi-board devicetree needs its own
+      distinct value. Two parents carrying the same explicit serial number
+      resolve to one board and silently alias; the build-time check on
+      multiple parents only verifies that the property is present, never that
+      the values differ.
+
+      If omitted, the first matching board is selected. All omitted selectors
+      share one registry key and so resolve to that same first board, which
+      makes an omitted serial number suitable only for a single-board setup.
+      A genuine multi-board setup needs a unique explicit serial-number on
+      every node targeting each board. Do not mix omitted and explicit
+      selectors for one board: the differing open is rejected and that
+      device's initialization fails with -ENODEV.
+
+      Transitional rule, until the I2C and SPI controllers move under this
+      parent: the parent node and the odp,pico-de-gallo-i2c and
+      odp,pico-de-gallo-spi controller nodes each open the board
+      independently, so all three must be given identical selector treatment.
+      For the shipped shield that means pdg0, pdg_i2c0 and pdg_spi0 must
+      either all omit serial-number, or all carry the same explicit value.
+      Giving the parent a serial number while leaving a controller serial-less
+      makes whichever opens second fail with -ENODEV, and the explanatory
+      diagnostic is written to host stderr rather than the Zephyr log. This
+      three-node requirement disappears once the controllers become children
+      of the parent and stop carrying their own selectors; the rule against
+      mixing omitted and explicit selectors does not.
