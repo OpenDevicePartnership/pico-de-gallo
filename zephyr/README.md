@@ -119,11 +119,16 @@ looks when the bridge is missing:
 
 ```text
 gallo_init_strict: device not reachable: Failed to find matching nusb device!
-<err> i2c_pico_de_gallo: Failed to open a Pico de Gallo bridge. Returning -ENODEV.
-<err> TMP11X: pdg-i2c device not ready
+<err> mfd_pico_de_gallo: pico-de-gallo: failed to open a Pico de Gallo bridge (default selector). Returning -ENODEV.
+<err> i2c_pico_de_gallo: i2c: Pico de Gallo parent pico-de-gallo is not ready. Returning -ENODEV.
+<err> TMP11X: i2c device not ready
 *** Booting Zephyr OS build v4.4.0-... ***
 TMP117 not ready (Pico de Gallo bridge connected?)
 ```
+
+The MFD parent owns the USB connection, so it is the node that reports the
+open failure. Each controller then fails fast against the parent rather than
+retrying the open itself.
 
 The sample loops forever. `native_sim` accepts runner arguments directly, so
 bound the run or slow it to wall-clock time:
@@ -216,15 +221,24 @@ about, such as an FPGA bitstream.
 
 ## Using the drivers in your own application
 
-Both controller nodes are declared by the shield and are **disabled by
-default**. Your application enables the ones it needs and declares its
-peripherals as ordinary child nodes.
+The shield declares a `pdg0` multi-function-device parent node and, as its
+direct children, the `pdg_i2c0` and `pdg_spi0` controller nodes. All three are
+**disabled by default**. Your application enables `pdg0` *and* the controllers
+it needs, then declares its peripherals as ordinary child nodes.
+
+`pdg0` owns the USB connection to one physical board; the controllers borrow
+it. An enabled controller whose parent is missing, disabled, or of the wrong
+compatible is rejected at build time with an explanatory assertion.
 
 ### I2C
 
 `app.overlay`:
 
 ```dts
+&pdg0 {
+	status = "okay";
+};
+
 &pdg_i2c0 {
 	status = "okay";
 
@@ -250,6 +264,10 @@ Bus speed comes from the `clock-frequency` property on the controller node
 `app.overlay`:
 
 ```dts
+&pdg0 {
+	status = "okay";
+};
+
 &pdg_spi0 {
 	status = "okay";
 	cs-gpio-indices = <2 0>;
@@ -343,26 +361,30 @@ small.
 
 ### Selecting a specific board
 
-With more than one Pico de Gallo attached, pin each controller to a board with
-the optional `serial-number` property:
+Board selection lives on the `pdg0` parent, not on the controllers. With more
+than one Pico de Gallo attached, pin each parent to a board with the optional
+`serial-number` property:
 
 ```dts
-&pdg_i2c0 {
+&pdg0 {
 	status = "okay";
 	serial-number = "E6614C311B8C9E37";
 };
 ```
 
-Controllers sharing a `serial-number` share one USB connection internally, so
-an I2C and a SPI node on the same board work without your code managing that.
+Every controller under that parent inherits the selection and shares the one
+USB connection, so an I2C and a SPI child on the same board work without your
+code managing that. `serial-number` is **not** accepted on a controller node;
+a leftover one fails devicetree processing with an undeclared-property error
+naming the node and the binding.
 
-If omitted, the first matching board is used. An omitted serial number is
-therefore suitable **only for a single-board setup**: all omitted selectors
-share one registry key and so resolve to one board. A genuine multi-board
-setup needs a unique explicit `serial-number` on every controller targeting
-each board. **Never mix omitted and explicit selectors** — use the same
-explicit value on every node that targets a board, or omit it on all of them
-when there is only one board.
+If omitted, the first matching board is used, and the host API cannot report
+which one it chose. An omitted serial number is therefore safe **only when
+exactly one matching board is attached**. A genuine multi-board setup needs a
+unique explicit `serial-number` on every enabled parent; the build-time check
+rejects two enabled parents that both omit it, but it verifies presence, not
+uniqueness, so two parents sharing one explicit value still silently alias to
+one board.
 
 ---
 
@@ -413,9 +435,11 @@ for it.
 Set `ZEPHYR_TOOLCHAIN_VARIANT=host`. `native_sim` does not need the SDK.
 
 **`Failed to find matching nusb device!` / `Returning -ENODEV`**
-No board found. Check it is attached and that you have permission to open it
-(on Linux, a udev rule or membership of the right group). If several boards are
-attached, see *Selecting a specific board*.
+No board found. The `pdg0` parent reports this; its controllers then fail with
+`Pico de Gallo parent ... is not ready`. Check the board is attached and that
+you have permission to open it (on Linux, a udev rule or membership of the
+right group). If several boards are attached, see *Selecting a specific
+board* — the `serial-number` goes on `&pdg0`.
 
 **Build fails with `does not implement iodev_submit()`**
 Something enabled `CONFIG_SPI_RTIO`, very likely `CONFIG_SENSOR_ASYNC_API`.
@@ -431,8 +455,10 @@ requirement. Update, or set `CONFIG_HEAP_MEM_POOL_SIZE=8192` as a stopgap.
 required on the first build of a clean tree.
 
 **The application builds but the device is never ready**
-Check the node is `status = "okay"` in your overlay. Both controllers ship
-disabled.
+Check that **both** `&pdg0` and the controller node are `status = "okay"` in
+your overlay. The parent and both controllers ship disabled, and a controller
+whose parent failed to open reports `Pico de Gallo parent ... is not ready`
+rather than a connection error of its own.
 
 **Corrosion or crates.io is unreachable**
 The FFI itself builds from this repository and needs no network. Corrosion is

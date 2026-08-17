@@ -8,6 +8,12 @@ description: |
   connected to the host running native_sim. Devices on the bus are declared as
   ordinary child nodes using their own vendor,device compatible.
 
+  This controller must be a direct child of an enabled odp,pico-de-gallo MFD
+  parent. It borrows the parent's host connection and inherits the parent's
+  serial-number board selection; serial-number is not valid on the child
+  controller. A controller that is not a direct child of an enabled
+  odp,pico-de-gallo node is rejected at build time.
+
   A child node's reg value is a chip-select *selector*, not a GPIO number. It
   indexes the controller's cs-gpio-indices array, whose elements are firmware
   GPIO indices. There is no identity fallback: a controller without
@@ -37,25 +43,6 @@ compatible: "odp,pico-de-gallo-spi"
 include: spi-controller.yaml
 
 properties:
-  serial-number:
-    type: string
-    description: |
-      Optional USB serial number selecting the physical Pico de Gallo board
-      that backs this controller. Devicetree authors must use the same value
-      on every Pico de Gallo controller node, such as I2C and SPI, that accesses
-      the same board. Those controllers then share one USB connection
-      internally; application code can use the normal Zephyr controller APIs
-      without managing that connection. Different values select different
-      physical boards.
-
-      If omitted, the first matching board is selected. Every controller node
-      intended to share that default board must also omit this property. An
-      omitted serial number is therefore suitable only for a single-board
-      setup: all omitted selectors share one registry key and so resolve to
-      one board. A genuine multi-board setup needs a unique explicit
-      serial-number on every controller targeting each board. Do not mix
-      omitted and explicit selectors.
-
   cs-gpio-indices:
     type: array
     min: 0

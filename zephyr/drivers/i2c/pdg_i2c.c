@@ -23,13 +23,60 @@
 
 #include "pdg_i2c_bottom.h"
 
+/*
+ * Structural topology enforcement.
+ *
+ * This controller borrows its host connection from an odp,pico-de-gallo MFD
+ * parent reached through DT_INST_PARENT(). Runtime readiness alone cannot
+ * prove that the parent is the *right kind* of device: a child placed under an
+ * unrelated but enabled and ready device would pass device_is_ready(), and
+ * pdg_mfd_ctx() would then reinterpret that foreign driver's dev->data as
+ * struct pdg_mfd_data and hand back an arbitrary pointer that no NULL check
+ * can catch. DT_INST_PARENT() on a stale root-level child yields `/`, so
+ * asserting status alone is likewise insufficient; the compatible must be
+ * checked in its own right.
+ *
+ * The three assertions are deliberately ordered compatible -> parent status ->
+ * Kconfig. Disabling the parent also drops DT_HAS_ODP_PICO_DE_GALLO_ENABLED,
+ * which makes CONFIG_MFD_PICO_DE_GALLO `n`, so the third assertion would be
+ * true at the same time as the second; emitting the most specific structural
+ * diagnostic first keeps the message that names the actual topology error at
+ * the top. (_Static_assert is not fatal, so GCC reports every failing
+ * assertion in one pass.)
+ *
+ * They also precede the "pdg_mfd.h" include on purpose: when
+ * CONFIG_MFD_PICO_DE_GALLO is `n` the MFD driver subdirectory is not added to
+ * the build at all, so pdg_mfd.h is not on the include path. Asserting first
+ * guarantees the readable configuration error is emitted before the include
+ * failure, instead of an opaque "no such file" or an unresolved
+ * __device_dts_ord_N at link time. This follows the same policy as the
+ * CONFIG_SPI_ASYNC/CONFIG_SPI_RTIO assertions in pdg_spi.c.
+ */
+#define PDG_I2C_PARENT_ASSERTS(inst)						\
+	BUILD_ASSERT(								\
+		DT_NODE_HAS_COMPAT(DT_INST_PARENT(inst), odp_pico_de_gallo),	\
+		"Enabled odp,pico-de-gallo-i2c controllers must be direct "	\
+		"children of an odp,pico-de-gallo parent");			\
+	BUILD_ASSERT(								\
+		DT_NODE_HAS_STATUS_OKAY(DT_INST_PARENT(inst)),			\
+		"Enabled odp,pico-de-gallo-i2c controllers require their "	\
+		"odp,pico-de-gallo parent to have status okay");			\
+	BUILD_ASSERT(								\
+		IS_ENABLED(CONFIG_MFD_PICO_DE_GALLO),				\
+		"Enabled Pico de Gallo child controllers require "		\
+		"CONFIG_MFD_PICO_DE_GALLO=y");
+
+DT_INST_FOREACH_STATUS_OKAY(PDG_I2C_PARENT_ASSERTS)
+
+#include "pdg_mfd.h"
+
 LOG_MODULE_REGISTER(i2c_pico_de_gallo, CONFIG_I2C_LOG_LEVEL);
 
 // Firmware single-transfer limit (pico_de_gallo_internal::MAX_TRANSFER_SIZE).
 #define PDG_I2C_MAX_BUFFER 4096U
 
 struct pdg_i2c_config {
-	const char *serial;
+	const struct device *mfd;
 	uint32_t clock_frequency;
 };
 
@@ -132,6 +179,29 @@ static int pdg_i2c_configure(const struct device *dev, uint32_t dev_config)
 	struct pdg_i2c_data *data = dev->data;
 	int ret;
 
+	/*
+	 * Zephyr's z_impl_i2c_transfer(), and the configure/get-config entry
+	 * points, dispatch straight into the driver without checking device
+	 * readiness -- exactly as spi_transceive() does, which is why
+	 * pdg_spi_transceive() already carries this guard. An application that
+	 * skips device_is_ready() therefore reaches here on a device whose init
+	 * failed. Guarding before the lock or any cached state is read keeps a
+	 * failed child from locking an uninitialized mutex, issuing an RPC
+	 * through a stale borrow, or returning zero-initialized configuration as
+	 * a false success.
+	 *
+	 * This hole predates the MFD migration. It is closed here because the
+	 * migration's cache-invalidation property (a failed child clears its
+	 * borrowed pointer, so direct calls fail safely) is not actually true
+	 * without it, and because the GPIO child added in a later milestone
+	 * copies this child-driver pattern.
+	 */
+	if (data->ctx == NULL) {
+		LOG_ERR("%s: Pico de Gallo I2C bridge context is NULL; check device readiness. Returning -ENODEV.",
+			dev->name);
+		return -ENODEV;
+	}
+
 	if ((dev_config & I2C_ADDR_10_BITS) != 0U) {
 		LOG_ERR("10-bit I2C addressing (I2C_ADDR_10_BITS) is not supported. Returning -ENOTSUP.");
 		return -ENOTSUP;
@@ -162,6 +232,13 @@ static int pdg_i2c_get_config(const struct device *dev, uint32_t *dev_config)
 {
 	struct pdg_i2c_data *data = dev->data;
 
+	/* See pdg_i2c_configure(): direct API dispatch does not check readiness. */
+	if (data->ctx == NULL) {
+		LOG_ERR("%s: Pico de Gallo I2C bridge context is NULL; check device readiness. Returning -ENODEV.",
+			dev->name);
+		return -ENODEV;
+	}
+
 	k_mutex_lock(&data->lock, K_FOREVER);
 	*dev_config = data->dev_config;
 	k_mutex_unlock(&data->lock);
@@ -174,6 +251,13 @@ static int pdg_i2c_transfer(const struct device *dev, struct i2c_msg *msgs, uint
 	struct pdg_i2c_data *data = dev->data;
 	uint8_t group_start = 0U;
 	int ret;
+
+	/* See pdg_i2c_configure(): direct API dispatch does not check readiness. */
+	if (data->ctx == NULL) {
+		LOG_ERR("%s: Pico de Gallo I2C bridge context is NULL; check device readiness. Returning -ENODEV.",
+			dev->name);
+		return -ENODEV;
+	}
 
 	if (addr > 0x7fU) {
 		LOG_ERR("I2C address 0x%04x exceeds the 7-bit address range. Returning -EINVAL.", addr);
@@ -289,22 +373,50 @@ static int pdg_i2c_init(const struct device *dev)
 	const struct pdg_i2c_config *config = dev->config;
 	struct pdg_i2c_data *data = dev->data;
 
-	uint32_t speed = 0;
-	ret = freq_to_speed_(config->clock_frequency, &speed);
-	if(ret < 0) {
-		return ret;
-	}
-
+	/*
+	 * The mutex is initialized before any early return so that every device
+	 * object that exists at all has a usable lock. Zephyr's I2C API
+	 * dispatches directly into the driver without a readiness check, so a
+	 * direct call on a failed device must find an initialized mutex; the
+	 * data->ctx == NULL guards at the top of each callback then turn that
+	 * call into -ENODEV.
+	 */
 	k_mutex_init(&data->lock);
 
-	data->ctx = pdg_i2c_bottom_open(config->serial);
-	if (data->ctx == NULL) {
-		if (config->serial != NULL) {
-    		LOG_ERR("Failed to open Pico de Gallo bridge with serial number %s. Returning -ENODEV.", config->serial);
-		} else {
-    		LOG_ERR("Failed to open a Pico de Gallo bridge. Returning -ENODEV.");
-		}
+	/*
+	 * Mandatory MFD child sequence (pdg_mfd.h): require parent readiness
+	 * first, then borrow the context. A NULL context *after* a passing
+	 * readiness check is an ownership invariant failure, not an expected
+	 * case, so it is logged distinctly. The context is borrowed: this driver
+	 * must never close or free it.
+	 */
+	if (!device_is_ready(config->mfd)) {
+		LOG_ERR("%s: Pico de Gallo parent %s is not ready. Returning -ENODEV.",
+			dev->name, config->mfd->name);
 		return -ENODEV;
+	}
+
+	data->ctx = pdg_mfd_ctx(config->mfd);
+	if (data->ctx == NULL) {
+		LOG_ERR("%s: Pico de Gallo parent %s is ready but returned a NULL context; "
+			"this is an MFD ownership invariant failure. Returning -ENODEV.",
+			dev->name, config->mfd->name);
+		return -ENODEV;
+	}
+
+	uint32_t speed = 0;
+	ret = freq_to_speed_(config->clock_frequency, &speed);
+	if (ret < 0) {
+		/*
+		 * Defensive invalidation of this child's cached borrow -- never
+		 * a reference release. The parent holds the sole registry
+		 * reference; closing here would drop it and leave the parent and
+		 * the SPI sibling holding a freed pointer. NULL is guardable and
+		 * becomes -ENODEV; a valid-looking unowned pointer would bypass
+		 * every NULL check.
+		 */
+		data->ctx = NULL;
+		return ret;
 	}
 
 	uint32_t dev_config_ = I2C_MODE_CONTROLLER | I2C_SPEED_SET(speed);
@@ -312,7 +424,6 @@ static int pdg_i2c_init(const struct device *dev)
 	uint8_t code = 0;
 	ret = speed_to_code_(speed, &code);
 	if(ret < 0) {
-		pdg_i2c_bottom_close(data->ctx); 
 		data->ctx = NULL;
 		return ret; 
 	}
@@ -320,7 +431,6 @@ static int pdg_i2c_init(const struct device *dev)
 	ret = pdg_i2c_bottom_set_config(data->ctx, code);
 	if (ret < 0) {
 		LOG_ERR("Failed to set I2C config: errno=%d", ret);
-		pdg_i2c_bottom_close(data->ctx);
 		data->ctx = NULL;
 		return ret;
 	}
@@ -333,7 +443,7 @@ static int pdg_i2c_init(const struct device *dev)
 	static struct pdg_i2c_data pdg_i2c_data_##inst;				\
 										\
 	static const struct pdg_i2c_config pdg_i2c_config_##inst = {		\
-		.serial = DT_INST_PROP_OR(inst, serial_number, NULL),		\
+		.mfd = DEVICE_DT_GET(DT_INST_PARENT(inst)),			\
 		.clock_frequency = DT_INST_PROP_OR(inst, clock_frequency,	\
 						   I2C_BITRATE_STANDARD),	\
 	};									\

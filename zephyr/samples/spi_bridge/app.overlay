@@ -4,6 +4,10 @@
  * SPDX-License-Identifier: MIT
  */
 
+&pdg0 {
+	status = "okay";
+};
+
 &pdg_spi0 {
 	status = "okay";
 	cs-gpio-indices = <0>;

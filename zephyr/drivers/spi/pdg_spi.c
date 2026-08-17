@@ -51,13 +51,58 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
 	     "The Pico de Gallo SPI driver does not implement iodev_submit(); "
 	     "disable CONFIG_SPI_RTIO (CONFIG_SENSOR_ASYNC_API selects it).");
 
+/*
+ * Structural topology enforcement, by the same reasoning as the assertions
+ * above: an explicit BUILD_ASSERT that names the problem beats an unresolved
+ * __device_dts_ord_N at link time.
+ *
+ * This controller borrows its host connection from an odp,pico-de-gallo MFD
+ * parent reached through DT_INST_PARENT(). Runtime readiness alone cannot
+ * prove the parent's *type*: a child under an unrelated but enabled and ready
+ * device would pass device_is_ready(), and pdg_mfd_ctx() would then
+ * reinterpret that foreign driver's dev->data as struct pdg_mfd_data and
+ * return an arbitrary pointer no NULL check can catch. DT_INST_PARENT() on a
+ * stale root-level child yields `/`, so status alone is not sufficient either;
+ * the compatible must be asserted separately.
+ *
+ * The order compatible -> parent status -> Kconfig is deliberate. Disabling
+ * the parent also drops DT_HAS_ODP_PICO_DE_GALLO_ENABLED and therefore makes
+ * CONFIG_MFD_PICO_DE_GALLO `n`, so the third assertion would be true
+ * simultaneously with the second; emitting the most specific structural
+ * diagnostic first keeps the message naming the actual topology error at the
+ * top. (_Static_assert is not fatal, so GCC reports all failing assertions in
+ * one pass.)
+ *
+ * They also precede the "pdg_mfd.h" include on purpose: with
+ * CONFIG_MFD_PICO_DE_GALLO=n the MFD driver subdirectory is not added to the
+ * build, so pdg_mfd.h is not on the include path. Asserting first guarantees
+ * the readable configuration error appears before the include failure.
+ */
+#define PDG_SPI_PARENT_ASSERTS(inst)						\
+	BUILD_ASSERT(								\
+		DT_NODE_HAS_COMPAT(DT_INST_PARENT(inst), odp_pico_de_gallo),	\
+		"Enabled odp,pico-de-gallo-spi controllers must be direct "	\
+		"children of an odp,pico-de-gallo parent");			\
+	BUILD_ASSERT(								\
+		DT_NODE_HAS_STATUS_OKAY(DT_INST_PARENT(inst)),			\
+		"Enabled odp,pico-de-gallo-spi controllers require their "	\
+		"odp,pico-de-gallo parent to have status okay");			\
+	BUILD_ASSERT(								\
+		IS_ENABLED(CONFIG_MFD_PICO_DE_GALLO),				\
+		"Enabled Pico de Gallo child controllers require "		\
+		"CONFIG_MFD_PICO_DE_GALLO=y");
+
+DT_INST_FOREACH_STATUS_OKAY(PDG_SPI_PARENT_ASSERTS)
+
+#include "pdg_mfd.h"
+
 LOG_MODULE_REGISTER(spi_pico_de_gallo, CONFIG_SPI_LOG_LEVEL);
 
 // Firmware single-transfer limit (pico_de_gallo_internal::MAX_TRANSFER_SIZE).
 #define PDG_SPI_MAX_BUFFER 4096U
 
 struct pdg_spi_config {
-    const char *serial;
+    const struct device *mfd;
     const uint8_t *cs_indices;
     size_t cs_indices_len;
 };
@@ -371,32 +416,58 @@ static int pdg_spi_init(const struct device *dev)
 	struct pdg_spi_data *data = dev->data;
 	int ret;
 
+	/*
+	 * The mutex is initialized before any early return so that every device
+	 * object that exists at all has a usable lock. Zephyr's spi_transceive()
+	 * dispatches into the driver without checking readiness, so a direct
+	 * call on a failed device must find an initialized mutex; the
+	 * data->ctx == NULL guard at the top of pdg_spi_transceive() then turns
+	 * that call into -ENODEV.
+	 */
 	k_mutex_init(&data->lock);
 
-    LOG_INF("Opening Pico de Gallo SPI bridge");
-	data->ctx = pdg_spi_bottom_open(config->serial);
-    if (data->ctx == NULL) {
-        if (config->serial != NULL) {
-            LOG_ERR("Failed to open Pico de Gallo bridge with serial number %s. Returning -ENODEV.", config->serial);
-        } else {
-            LOG_ERR("Failed to open a Pico de Gallo bridge. Returning -ENODEV.");
-        }
+	/*
+	 * Mandatory MFD child sequence (pdg_mfd.h): require parent readiness
+	 * first, then borrow the context. A NULL context *after* a passing
+	 * readiness check is an ownership invariant failure, not an expected
+	 * case, so it is logged distinctly. The context is borrowed: this driver
+	 * must never close or free it.
+	 */
+	if (!device_is_ready(config->mfd)) {
+		LOG_ERR("%s: Pico de Gallo parent %s is not ready. Returning -ENODEV.",
+			dev->name, config->mfd->name);
+		return -ENODEV;
+	}
 
-        return -ENODEV;
-    }
+	data->ctx = pdg_mfd_ctx(config->mfd);
+	if (data->ctx == NULL) {
+		LOG_ERR("%s: Pico de Gallo parent %s is ready but returned a NULL context; "
+			"this is an MFD ownership invariant failure. Returning -ENODEV.",
+			dev->name, config->mfd->name);
+		return -ENODEV;
+	}
 
 	/*
-	 * pdg_spi_bottom_open() uses gallo_init_strict(), whose successful
-	 * validation populates the shared num_gpios cache. This call is therefore
-	 * a guaranteed warm-cache read with no USB traffic. The failure branch is
+	 * The MFD parent's open uses gallo_init_strict(), whose successful
+	 * validation populates the shared num_gpios cache. By the time this
+	 * child runs, the parent has already validated, so this call is a
+	 * guaranteed warm-cache read with no USB traffic. The failure branch is
 	 * defence-in-depth for an invariant violation, not an expected timeout
-	 * path.
+	 * path. Reading the firmware GPIO count is validated device metadata,
+	 * not chip-select logic, so it stays here.
 	 */
 	ret = pdg_spi_bottom_num_gpios(data->ctx, &data->num_gpios);
 	if (ret != 0) {
-		LOG_ERR("Failed to read the cached firmware GPIO count from the validated Pico de Gallo bridge: Errno=%d. Closing the bridge; the SPI device will remain not ready.",
+		LOG_ERR("Failed to read the cached firmware GPIO count from the validated Pico de Gallo bridge: Errno=%d. The SPI device will remain not ready.",
 			ret);
-		pdg_spi_bottom_close(data->ctx);
+		/*
+		 * Defensive invalidation of this child's cached borrow -- never
+		 * a reference release. The parent holds the sole registry
+		 * reference; closing here would drop it and leave the parent and
+		 * the I2C sibling holding a freed pointer. NULL is guardable and
+		 * becomes -ENODEV; a valid-looking unowned pointer would bypass
+		 * every NULL check.
+		 */
 		data->ctx = NULL;
 		return ret;
 	}
@@ -426,7 +497,7 @@ static int pdg_spi_init(const struct device *dev)
 	static struct pdg_spi_data pdg_spi_data_##inst;                        \
 	                                                                         \
 	static const struct pdg_spi_config pdg_spi_config_##inst = {           \
-		.serial = DT_INST_PROP_OR(inst, serial_number, NULL),             \
+		.mfd = DEVICE_DT_GET(DT_INST_PARENT(inst)),                       \
 		.cs_indices = pdg_spi_cs_indices_##inst,                           \
 		.cs_indices_len = DT_INST_PROP_LEN_OR(inst, cs_gpio_indices, 0),  \
 	};                                                                       \

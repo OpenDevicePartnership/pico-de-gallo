@@ -17,30 +17,23 @@ properties:
     type: string
     description: |
       Optional USB serial number selecting the physical Pico de Gallo board
-      that this node represents. Different values select different physical
-      boards, so every parent in a multi-board devicetree needs its own
-      distinct value. Two parents carrying the same explicit serial number
-      resolve to one board and silently alias; the build-time check on
-      multiple parents only verifies that the property is present, never that
-      the values differ.
+      that this parent represents. The selection applies to all child
+      peripheral controllers, which borrow this parent's host connection and
+      must not carry a selector of their own.
 
-      If omitted, the first matching board is selected. All omitted selectors
-      share one registry key and so resolve to that same first board, which
-      makes an omitted serial number suitable only for a single-board setup.
-      A genuine multi-board setup needs a unique explicit serial-number on
-      every node targeting each board. Do not mix omitted and explicit
-      selectors for one board: the differing open is rejected and that
-      device's initialization fails with -ENODEV.
+      If omitted, the first matching board is selected, but the host API
+      cannot report which serial number it chose. Omission is therefore safe
+      only when exactly one matching Pico de Gallo board is physically
+      attached. With multiple matching boards attached, a selector-less parent
+      and all of its children can become ready against the wrong board without
+      any diagnostic; the build-time check below counts devicetree parents, not
+      attached USB devices, so it cannot detect this. Any multi-board host
+      environment must set an explicit serial-number on every enabled parent.
 
-      Transitional rule, until the I2C and SPI controllers move under this
-      parent: the parent node and the odp,pico-de-gallo-i2c and
-      odp,pico-de-gallo-spi controller nodes each open the board
-      independently, so all three must be given identical selector treatment.
-      For the shipped shield that means pdg0, pdg_i2c0 and pdg_spi0 must
-      either all omit serial-number, or all carry the same explicit value.
-      Giving the parent a serial number while leaving a controller serial-less
-      makes whichever opens second fail with -ENODEV, and the explanatory
-      diagnostic is written to host stderr rather than the Zephyr log. This
-      three-node requirement disappears once the controllers become children
-      of the parent and stop carrying their own selectors; the rule against
-      mixing omitted and explicit selectors does not.
+      At most one enabled parent may omit this property; a build-time
+      assertion rejects multiple enabled selector-less parents, because they
+      all normalise to the same registry key and would silently alias to one
+      board. That check verifies property presence, not value uniqueness: two
+      parents carrying the same explicit value still resolve to one board and
+      silently alias. Devicetree authors must ensure explicit values are
+      distinct.

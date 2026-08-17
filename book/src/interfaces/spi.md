@@ -151,11 +151,19 @@ the controller's `cs-gpio-indices` array, whose elements are the firmware GPIO
 indices this page describes:
 
 ```dts
+&pdg0 {
+	status = "okay";
+};
+
 &pdg_spi0 {
 	status = "okay";
 	cs-gpio-indices = <2 0>;
 };
 ```
+
+The SPI controller is a direct child of the `pdg0` multi-function-device
+parent: `pdg0` owns the board selection and the USB connection, and the SPI
+controller borrows that connection rather than opening its own.
 
 Here a child with `reg = <0>` drives firmware GPIO index 2 and a child with
 `reg = <1>` drives index 0. There is no identity fallback.
