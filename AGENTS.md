@@ -243,14 +243,13 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 
 ### 5.5 Test baseline
 
-About **438 unit tests + 7 doctests** across the host workspace,
-concentrated in `pico-de-gallo-internal` (149), `pico-de-gallo-mcp`
-(104), and `pico-de-gallo-ffi` (84). Seven of the `pico-de-gallo-mcp`
+About **561 unit tests + 7 doctests** across the host workspace,
+concentrated in `pico-de-gallo-internal` (159), `pico-de-gallo-ffi`
+(116), and `pico-de-gallo-mcp` (114). Seven of the `pico-de-gallo-mcp`
 tests are `#[ignore]`d because they need two boards attached; run
 them with `cargo test -p gallo-mcp -- --ignored`.
-`pyco-de-gallo` currently has no Rust-side tests. If you add code,
-add tests next to it; round-trip serialization tests are the norm
-for wire types.
+`pyco-de-gallo` has 8 Rust-side unit tests. If you add code, add tests
+next to it; round-trip serialization tests are the norm for wire types.
 
 > **Trap:** `pico-de-gallo-internal` without the `use-std` feature
 > fails on the `vec!` macro. Test it via the workspace or with
@@ -301,7 +300,7 @@ same commit**.
 |--------------------------|---------------------------------------------------------|
 | `"ping"`                 | Echo a u32 (testing)                                    |
 | `"version"`              | Get firmware version                                    |
-| `"device/info"`          | Get firmware version, schema version, capabilities      |
+| `"device/info"`          | Get firmware version, schema version, capabilities, runtime GPIO count |
 | `"i2c/read"`             | I²C read                                                |
 | `"i2c/write"`            | I²C write                                               |
 | `"i2c/write-read"`       | I²C write-then-read                                     |
@@ -700,8 +699,13 @@ crate's `[package].version`. **Fix:** bump the crate version.
 
 The release CI installs from git or uses picotool. Don't "fix" a
 build by pinning to the crates.io version — it doesn't have
-`--family`. See `.github/copilot-instructions.md` "Known traps" for
-the gory details.
+`--family`. `elf2uf2-rs --version` cannot distinguish the two builds:
+both report `2.2.0`. Use `cargo install --list`; a correct installation
+currently shows `elf2uf2-rs v2.2.0
+(https://github.com/JoNil/elf2uf2-rs#f14bf2d9)`. Confirm that
+`elf2uf2-rs --help` contains `--family` before relying on it for a
+release. See `.github/copilot-instructions.md` "Known traps" for the
+gory details.
 
 ### 13.10 `embassy-usb` bumped to 0.6
 
@@ -761,7 +765,7 @@ next agent doesn't repeat it.
 | 2026-05-04 | `embassy-usb-driver 0.2.1` (transitive)        | `EndpointError: embedded_io_async::Error` trait bound fails on firmware build. | Pin `embassy-usb-driver = "=0.2.0"` in firmware Cargo.toml; commit firmware `Cargo.lock`. |
 | 2026-05-04 | `elf2uf2-rs 2.2.0` on crates.io is stale       | Release CI fails: `--family` flag does not exist in published binary.          | Install elf2uf2-rs from git (`cargo install --git … --locked`) or revert to picotool.     |
 | 2026-05-04 | Tag-triggered workflow uses tagged-commit YAML | After force-pushing the release commit, GitHub still ran the old workflow.     | Always re-tag after rewriting a release commit; verify with `git show <tag>:<workflow>`.  |
-| 2026-05-29 | Host crash/kill while a GPIO subscription was active | Pin permanently owned by firmware monitor task until power cycle; new host got `PinMonitored`. | Added `system/reset-subscriptions` endpoint; host calls it after `validate()`. Lockstep schema bump (internal 0.5→0.6, lib 0.5→0.6, hal 0.5→0.6, ffi 0.6→0.7, app 0.6→0.7, pyco 0.2→0.3, firmware 0.9→0.10). |
+| 2026-05-29 | Host crash/kill while a GPIO subscription was active | Pin permanently owned by firmware monitor task until power cycle; new host got `PinMonitored`. An orphaned subscription survives across CLI invocations until an MCP reset or a power-cycle. | Added `system/reset-subscriptions` endpoint. `pico-de-gallo-lib` exposes it and `gallo-mcp` calls it after `validate()`; the `gallo` CLI never calls it. Lockstep schema bump (internal 0.5→0.6, lib 0.5→0.6, hal 0.5→0.6, ffi 0.6→0.7, app 0.6→0.7, pyco 0.2→0.3, firmware 0.9→0.10). |
 | 2026-05-29 | release-please defaults (missing `bump-minor-pre-major`) | `feat!` on the 0.x `internal` crate caused release-please to propose `internal 1.0.0` (plus six sibling 1.0.0 release PRs). PR #48 was merged before the trap was spotted; only a repo ruleset blocking `Cannot create ref` prevented the `internal-v1.0.0` tag, GitHub Release, and crates.io publish from going out. | Reverted the version bump on `main` (54573fa); added `bump-minor-pre-major: true` and `bump-patch-for-minor-pre-major: true` to `.github/release-please-config.json` so `feat!` on a 0.x crate bumps the minor and `feat:` bumps the patch. Closed the stale 1.0.0 release PRs so release-please regenerates them at the correct minor bumps. |
 | 2026-06-03 | `gpio_wait_for_*` on a never-transitioning pin after host crash | Firmware dispatcher wedged device-wide; every other endpoint queued behind the stuck handler until power-cycle (worse than the 2026-05-29 row — that one blocked one pin, this one bricks the device). Postcard-rpc 0.12 dispatches handlers serially on a shared `&mut Context`, so any `await` inside a handler blocks the whole `server.run()` loop. embassy-usb-driver 0.2.0 does NOT expose `wait_disconnected`, so a `select(edge, disconnect)` fix is not viable on the host-process-death path. | Appended `timeout_ms: u32` to `GpioWaitRequest` (shared by all five `gpio/wait-*` endpoints) and `GpioError::Timeout` variant. Firmware `gpio_wait_for_*` handlers wrap `flex.wait_for_*_edge()` in `embassy_time::with_timeout` when `timeout_ms != 0`. Also enabled the embassy-rp watchdog at 2 s, fed by a dedicated `watchdog_feeder_task` (defense-in-depth against any future infinite-await). Lockstep schema bump (internal 0.6→0.7, lib 0.6→0.7, hal 0.6→0.7, ffi 0.7→0.8, application 0.7→0.8, pyco 0.3→0.4, firmware 0.10→0.11). |
 | 2026-06-03 | `PicoDeGallo::validate()` only checked `schema_minor`, not `schema_major` | A firmware reporting a bumped major with matching minor would silently pass validation; the host would then mis-decode subsequent RPC responses (postcard happily decodes whatever bytes come back into the *host's* enum layout, so e.g. `NoAcknowledge` could be read as `Bus`). Failure mode is silent garbage out, no error to the caller. | Fixed `validate()` at `lib.rs:667` to check both major and minor, extended `ValidateError::SchemaMismatch` payload with `expected_major`/`actual_major`. Extracted the policy into a private `check_schema_compatible(&DeviceInfo)` helper with four regression tests. Also enforced validation up-front in `Hal::new_validated` (new), `gallo_init_strict` (new), `PycoDeGallo.open_strict` (new), and `gallo` CLI `Cli::run` (every subcommand except `list`/`version`). Closes Category A finding #1; host crates: lib 0.6.0→0.6.1, hal 0.6.0→0.7.0, ffi 0.7.0→0.7.1, application 0.7.0→0.7.1, pyco 0.3.0→0.3.1. |
@@ -770,6 +774,7 @@ next agent doesn't repeat it.
 | 2026-07-20 | `gallo` CLI opened a throwaway USB connection for the up-front `validate()` added 2026-06-04 (Category A #4), then opened a *second* connection for the actual subcommand (`spi write-read` opened a third). | On Windows every validated subcommand (`i2c scan`, `i2c get-config`, `adc info`, …) panicked at `postcard-rpc raw_nusb.rs:330` with `Failed claiming interface: … Access is denied` (`ACCESS_DENIED`). WinUSB grants exclusive access to one session per interface, and the first connection's background `nusb` worker had not released the handle before the second `claim_interface`. `version`/`list` (single/zero connections) always worked, so it looked like a driver/permissions problem; Linux/macOS release the interface synchronously on drop, so CI (Linux-only) never caught it. | Refactored `Cli::run` (approach A) to open exactly one `PicoDeGallo` per invocation, validate on it, and thread `&pg` into every device handler. `list` returns before connecting; `version` shares the one connection but skips validation. Verified on hardware (Windows, usbipd/VBoxUSBMon present): `i2c scan`/`i2c get-config`/`adc info` now succeed. Also corrected the book USB PID (`ffff`/`B33C` → `067d`) in `getting-started/usb.md` + `appendix/troubleshooting.md`. Host-only (`gallo`/application); no wire-protocol or CLI-surface change. |
 | 2026-07-23 | release-please retired (issue #83) after the recurring pain in the 2026-05-29 / 2026-06-11 rows (version↔manifest drift silently disabling releases, seven-PR fan-out, plugin collisions). | Not a regression — a deliberate policy change. Removed `.github/workflows/release-please.yml`, `.github/release-please-config.json`, `.github/.release-please-manifest.json`, and `.github/RELEASE-PLEASE.md`. | Releases are now **manual** (§12, `.github/RELEASE.md`): a maintainer hand-bumps every released crate's `[package].version` **and** the cross-crate `version = "..."` dep specs, hand-writes `CHANGELOG.md`, regenerates both `Cargo.lock`s, commits `chore(release): …`, merges, then pushes per-component tags (`internal-v*`, `library-v*`, `hal-v*`, `ffi-v*`, `application-v*`, `pyco-v*`, `firmware-v*`) that fire the unchanged `release-*.yml` publish workflows. §4 rule #12 flipped from "never hand-edit versions" to "hand-edit them, but only as a complete release commit". The old release-please rows above are kept as history; they describe tooling that no longer exists. |
 | 2026-07-29 | Two boards attached; `gallo-mcp` running unpinned, so `connect()` fell back to `PicoDeGallo::try_new()` ("first match"). | An agent asked to find which board carried a temperature sensor saw `list_devices` report **both** serials, `i2c_scan` report an **empty** bus, and `device_info`/`status` give no indication of which board answered. The only conclusion the evidence supported — "neither board has a sensor" — was wrong: the server was bound to the empty board and the sensor board was unreachable. Two independently configured server instances returned byte-identical `device_info`, so nothing revealed they had both grabbed the same board. Caught only because an unrelated `gallo` CLI result contradicted the MCP scan. Worse than one bad read: `i2c_set_config`→`i2c_write`, `gpio_set_config`→`gpio_put`, and `onewire_search`→`onewire_search(continue)` are stateful across calls, so an ambiguous target can drive the wrong pins on the wrong board. | Added a pure `select::resolve_target` deciding the target from the attached serials, the `--serial-number` pin, and a new per-call `serial_number` argument on every device tool. Fallback is now conditional: kept at N==1 (frictionless single-board path), an **error** at N>=2 that names the available serials so the agent self-corrects. Every device response is wrapped as `{serial_number, result}`, making the binding observable on every call (`list_devices` and `status` excepted — one opens no board, the other already carries its own serial). `--serial-number` became a hard pin that refuses any other board. `status` never errors and reports ambiguity explicitly instead of `attached:false`. The connection lock was re-keyed from the server to the board, so a `gpio_wait_*` on one board no longer stalls calls to another. Verified on two boards, including a mutation control that reintroducing "first match" fails 3 of the 7 hardware tests. Host-only, `gallo-mcp` only; no wire-protocol or firmware change. Issue #89. |
+| 2026-08-17 | `spi/batch` accepted a user GPIO explicitly configured as an input and unconditionally ran `set_as_output(); set_high()` on it. | The pad became a driven output-high while tracked `pin_modes` still said input. `gpio/get` returned the firmware's own drive, `gpio/put` returned `WrongDirection`, and nothing reported the divergence. Hardware reproduction showed a witness pin never named as CS going LOW→HIGH, which only an external drive explains. Two test traps also surfaced: RP2350 pull-downs can hold a low node but cannot reliably pull down an already-high node, while a floating pad drifts high within seconds, so tests must pre-drive low, release to pull-down, and verify the baseline; and cbindgen emits `typedef int32_t Status`, so C consumers need `switch ((enum Status)x)` with no `default:` inside the switch plus `-Werror=switch`, otherwise new enum values silently fall through. | Added three ordered firmware refusals before touching the pin: invalid index → monitored slot → `ExplicitInput`. Only `ExplicitInput` corrupts, so `LegacyAuto` and `ExplicitOutput` remain accepted. Deliberately do not restore the prior level because deasserted-high is the correct terminal chip-select state, and do not write `pin_modes` because both accepted modes are already self-consistent. Host surfaces validate `cs_pin < num_gpios` from validated `device/info`. Zephyr child `reg` is now a selector into `cs-gpio-indices`. A post-switch unknown-value fallback to `-EIO` remains intentional. Issue #104. |
 
 ---
 
@@ -785,9 +790,10 @@ next agent doesn't repeat it.
 - FFI tests check null pointers, status-code invariants, and
   argument validation.
 - CLI tests verify clap argument parsing.
-- `pyco-de-gallo` has no Rust-side unit tests yet — behavior is
-  covered transitively by `pico-de-gallo-lib` tests and exercised by
-  hand from Python. Adding tests is welcome.
+- `pyco-de-gallo` has Rust-side unit tests for its conversion and
+  chip-select validation surface; broader behavior is also covered
+  transitively by `pico-de-gallo-lib` tests and exercised from Python.
+  Adding tests is welcome.
 
 ## 15. Documentation requirements
 
@@ -883,10 +889,16 @@ you push any `*-v*` tag:
      cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings && \
      cargo build --release --locked --target thumbv8m.main-none-eabihf
    ```
-2. Confirm `git tag --points-at HEAD` matches expectation **and**
+2. Do not create or push any component tag while this branch's
+   `SpiError` / `DeviceInfo` wire shape is new but
+   `pico-de-gallo-internal` still reports the old schema version.
+   `PicoDeGallo::validate()` cannot detect that mismatch. Land the
+   lockstep version bump, dep-spec rewrites, and both lockfiles first;
+   build every host and firmware artifact from that bumped commit.
+3. Confirm `git tag --points-at HEAD` matches expectation **and**
    that the workflow YAML at HEAD is the version you want CI to run
    (see §13.13).
-3. Push the commit first; wait for CI green; **then** push tags.
+4. Push the commit first; wait for CI green; **then** push tags.
 
 Verify the tagged-commit workflow with:
 
