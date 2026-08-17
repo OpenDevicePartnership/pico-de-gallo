@@ -153,10 +153,47 @@ Anything not listed is out of scope; adding a file requires the milestone
 
 ## 4. Verification
 
+> **Corrected after M1 — the original command in this section was defective and
+> every gate run with it was vacuous.** `zephyr/Kconfig:6` has `depends on
+> 64BIT`, and plain `native_sim` is the **32-bit** variant, so
+> `CONFIG_PICO_DE_GALLO=n`. `zephyr/CMakeLists.txt:4` then wraps all
+> corrosion/FFI setup in `if(CONFIG_PICO_DE_GALLO)` and `zephyr/Kconfig:11-19`
+> sources the drivers only inside `if PICO_DE_GALLO`. The result builds
+> cleanly **with the entire module absent**. Verified by the conductor.
+
 Per milestone, minimum:
 
 ```bash
-wsl -e bash -lc 'cd /mnt/d/workspace/pico-de-gallo && source ~/zephyrproject/.venv/bin/activate && west build -p always -b native_sim zephyr/samples/<name>'
+wsl -e bash -lc 'cd /mnt/d/workspace/pico-de-gallo \
+  && source ~/zephyrproject/.venv/bin/activate \
+  && source ~/zephyrproject/zephyr/zephyr-env.sh \
+  && export ZEPHYR_TOOLCHAIN_VARIANT=host \
+  && west build -p always -d /tmp/<DIR> -b native_sim/native/64 zephyr/samples/<NAME>'
+```
+
+Each element is load-bearing:
+
+| Element | Why |
+| --- | --- |
+| `native_sim/native/64` | 32-bit `native_sim` silently disables the whole module |
+| `zephyr-env.sh` | the repo root is not a west workspace |
+| `ZEPHYR_TOOLCHAIN_VARIANT=host` | no Zephyr SDK is installed; these are `ARCH_POSIX` builds |
+| `.venv` | system python lacks `pyelftools`; the build dies in `gen_kobject_list.py` |
+| `-d /tmp/<DIR>` | the default lands a **non-gitignored** `build/` at the repo root (`zephyr/.gitignore` covers only `zephyr/build/`) |
+
+**Prove the build is not vacuous.** Confirm `CONFIG_PICO_DE_GALLO=y` in
+`<build>/zephyr/.config` and that the driver translation units you changed appear
+in `<build>/compile_commands.json`:
+
+```bash
+grep -o 'pdg_[a-z_]*\.c' <build>/compile_commands.json | sort -u
+```
+
+A driver whose devicetree node is `status = "disabled"` will **not** appear. To
+exercise it, enable the node with an extra overlay:
+
+```bash
+west build ... -- -DEXTRA_DTC_OVERLAY_FILE=/tmp/enable.overlay
 ```
 
 All four samples must build. Plus, unchanged from #104:
@@ -231,3 +268,99 @@ register.
 - [ ] `cargo test --workspace --locked` still green (host crates untouched)
 - [ ] `mdbook build book` clean
 - [ ] No `[package].version`, `Cargo.lock`, wire-protocol or firmware change
+
+### R8 — Two selector-less parents silently alias to one board
+
+**Found by M1's `@reliability` pass; missed by both the design and this plan.**
+
+`gallo_registry.c:152-158` early-returns on a lookup hit **before** the
+mixed-selector guard at `:164-171` is ever consulted. Two parent nodes that both
+*omit* `serial-number` therefore both normalise to `""`, and the second silently
+receives the **first board's handle**. Two devicetree devices, one physical
+board, no diagnostic.
+
+That is the same silent-wrong-target class as AGENTS.md §13.17 (2026-07-29,
+`gallo-mcp`), and it becomes actuation-unsafe the moment M3's GPIO child exists —
+a `gpio_pin_set_dt` on what the tree calls board B would drive board A.
+
+M1 mitigated it with a **compile-time** `BUILD_ASSERT` in `pdg_mfd.c`, chosen
+over a runtime check because a build-time failure is provable by exactly the gate
+these milestones have. Conductor-verified: two enabled selector-less parents fail
+with *"Multiple enabled odp,pico-de-gallo parents require serial-number on every
+parent"*.
+
+**Residual, deliberately not closed:** the assert checks *presence*, not
+*uniqueness*. Two parents sharing one explicit serial still alias. Documented in
+the binding and the source.
+
+---
+
+## 8. M1 outcome and corrections
+
+M1 landed as `a17b997749aa` (spec) + `e7087bdc4eee` (driver, 12 files, +288/−11).
+
+**Conductor-verified independently**, not on self-report:
+
+- `zephyr/Kconfig:6` does gate on `64BIT`; `zephyr/CMakeLists.txt:4` wraps
+  everything in `if(CONFIG_PICO_DE_GALLO)` — §4's original command was vacuous.
+- With the corrected command, `spi_nor_id` builds 117/117 clean, cbindgen runs,
+  and `CONFIG_PICO_DE_GALLO=y`.
+- With the parent enabled, **`pdg_mfd.c` and `pdg_spi.c` both compile**;
+  `CONFIG_MFD_PICO_DE_GALLO_INIT_PRIORITY=40` as claimed.
+- The `BUILD_ASSERT` fires on two selector-less parents (R8).
+- **#104's M4 work is genuinely compiled** — `pdg_spi.c` is in
+  `compile_commands.json` and `cs_index` appears 7× in the source. Its
+  verification was not vacuous.
+
+### 8.1 Corrections this plan and the spec required
+
+1. **§4's verification command** — fixed above. This was the most consequential
+   finding; it would have made every remaining gate meaningless.
+2. **§1's M1 gate ("4 samples build; parent initialises") was unachievable.** Two
+   samples cannot link (R5, pre-existing), and the parent ships `disabled` so no
+   sample compiles it. The real gate is: two clean, two failing *identically to a
+   measured baseline*, plus an enabled-parent probe.
+3. **§3's inventory was short four files**: `zephyr/Kconfig`,
+   `zephyr/drivers/common/common_bottom.h`, `zephyr/drivers/common/common.h`,
+   `zephyr/CHANGELOG.md`.
+4. **Spec §4.3 said the parent calls `pdg_registry_open` directly.** It must call
+   `pdg_common_bottom_open` — calling the registry directly would type-couple the
+   embedded translation unit to the host-only FFI.
+5. **Spec §4.6's "Kconfig priority defaults" was insufficient.** Upstream's
+   `MFD_INIT_PRIORITY = 80` is *backwards* for this topology: measured,
+   `CONFIG_I2C_INIT_PRIORITY` and `CONFIG_SPI_INIT_PRIORITY` are both **50**, so
+   the parent must be lower. M1 chose **40**, which also sits after libc at 35 —
+   necessary because the registry mallocs and uses pthreads.
+
+### 8.2 The `pdg_mfd.h` contract M2 and M3 must honour
+
+```c
+void *pdg_mfd_ctx(const struct device *dev);
+```
+
+Borrowed opaque handle; NULL on a NULL device or a failed open. The documented
+sequence is mandatory: `device_is_ready(parent)` first → child logs and returns
+`-ENODEV` if false → only then call the accessor. A NULL **after** a passing
+readiness check is an invariant failure, not an expected case. Children must
+never close or free it.
+
+`void *` matches the `void *ctx` idiom the children already use. Note the
+architect's original claim that a typed pointer was *technically impossible* was
+**refuted** in review — an incomplete `struct PicoDeGallo;` needs no FFI header.
+The honest rationale is consistency, not necessity.
+
+M3 may add a separate accessor for `num_gpios` (R4) without disturbing this
+signature or M2's callers.
+
+### 8.3 Carried into M2
+
+- **Delete the transitional three-node selector warning from the parent binding
+  in the same change** that removes the child `serial-number` properties.
+- M1's harness test **T10 is weak** — it greps for the string "mix", which is how
+  an under-documented binding initially passed. Strengthen it to assert the three
+  node names.
+- **Unverified by M1, and still unverified:** USB open, schema validation,
+  failure logging, refcount transitions, multi-board selection, timeout
+  behaviour, interface release. M1's assurance is compile-time only; nothing has
+  executed. Init can block up to **five minutes** on strict validation, and
+  registry/FFI diagnostics go to host `stderr` and may never reach the Zephyr log.
