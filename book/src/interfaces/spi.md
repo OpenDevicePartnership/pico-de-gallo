@@ -82,38 +82,39 @@ clocks in the same number of bytes on MISO — true full-duplex.
 
 ### Config
 
-Mode is selected by two independent flags, and **both are opt-in**:
+Mode is selected with a single `--mode` flag, defaulting to 0:
 
 ```console
-$ gallo spi set-config --help
+$ gallo spi set-config -h
 Set SPI bus parameters
 
 Usage: gallo spi set-config [OPTIONS] --frequency <FREQUENCY>
 
 Options:
       --frequency <FREQUENCY>  SPI frequency in Hz
-      --first-transition       SPI phase first transition (CPHA=0)
-      --idle-low               SPI polarity idle low (CPOL=0)
-  -h, --help                   Print help
+      --mode <MODE>            SPI mode 0-3, the conventional (CPOL, CPHA) pairing [default: 0]
+  -h, --help                   Print help (see more with '--help')
 ```
 
-Omitting `--first-transition` gives CPHA=1 and omitting `--idle-low`
-gives CPOL=1, so passing neither selects **mode 3**. Mode 0 needs both:
+The default matches the firmware's power-on configuration, so setting
+only the clock leaves the mode alone:
 
 ```console
-$ gallo spi set-config --frequency 1000000 --first-transition --idle-low
+$ gallo spi set-config --frequency 1000000
 $ gallo spi get-config
 SPI frequency: 1000000 Hz
 SPI phase:     CaptureOnFirstTransition (CPHA=0)
 SPI polarity:  IdleLow (CPOL=0)
 ```
 
-> [!WARNING]
->
-> The firmware boots in mode 0, but `set-config` defaults to mode 3.
-> `gallo spi set-config --frequency 1000000` therefore changes the mode
-> as a side effect of setting the clock. Pass the mode flags explicitly
-> whenever you call `set-config`.
+Any other mode is one flag away, and out-of-range values are rejected
+rather than silently masked:
+
+```console
+$ gallo spi set-config --frequency 1000000 --mode 3
+$ gallo spi set-config --frequency 1000000 --mode 4
+error: invalid value '4' for '--mode <MODE>': 4 is not in 0..=3
+```
 
 ### Batch (Atomic Under CS)
 

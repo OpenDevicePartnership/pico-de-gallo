@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `gallo spi set-config` now takes `--mode <0|1|2|3>` in place of the
+  `--first-transition` and `--idle-low` boolean flags. See the entry
+  under **Fixed** for why the old flags could not simply be given
+  correct defaults. Values outside 0–3 are rejected by the argument
+  parser rather than masked. The old flags were never documented in the
+  book — it described a `--phase` / `--polarity` pair that never
+  existed — so no working documented invocation changes meaning.
+
 ### Added
 
 - `gallo ping` is now implemented. It round-trips a random `u32`
@@ -33,6 +43,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `gallo spi set-config` no longer changes the SPI mode as a side
+  effect of setting the clock. `--first-transition` and `--idle-low`
+  were opt-in flags defaulting to `false`, which the handler mapped to
+  `CaptureOnSecondTransition` and `IdleHigh` — so a bare
+  `gallo spi set-config --frequency 1000000` silently selected **mode
+  3**, while the firmware boots in **mode 0**. Selecting mode 0 required
+  passing both flags, the exact inverse of what their names suggest.
+  Giving the flags a `true` default does not fix this: `clap` derives
+  `ArgAction::SetTrue` for a bare `bool`, so `false` becomes
+  unreachable (`--idle-low=false` errors with *"unexpected value for an
+  argument found"*) and modes 1–3 would be impossible to select. The
+  flags are therefore replaced by `--mode`, which defaults to 0 and
+  matches the firmware's power-on configuration. The previous
+  regression test asserted the parsed flag values rather than the
+  resulting bus configuration, which is why it never caught this; the
+  replacement asserts the `(SpiPhase, SpiPolarity)` pair.
 - `gallo --help` no longer prints the crate's internal API
   documentation. `clap` derives `long_about` from the `Cli` struct's
   rustdoc when one is present, so long help rendered *"Top-level CLI

@@ -157,7 +157,7 @@ See the [I<sup>2</sup>C chapter](../interfaces/i2c.md) and
 | `write` | Clock out bytes |
 | `transfer` | Full-duplex SPI transfer |
 | `write-read` | Half-duplex write followed by read |
-| `set-config` | Set frequency, phase, and polarity |
+| `set-config` | Set frequency and SPI mode (0–3) |
 | `get-config` | Show the active SPI configuration |
 | `batch` | Run atomic multi-step SPI transactions under chip-select |
 

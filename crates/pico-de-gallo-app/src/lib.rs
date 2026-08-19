@@ -338,13 +338,13 @@ enum SpiCommands {
         #[arg(long)]
         frequency: u32,
 
-        /// SPI phase first transition (CPHA=0)
-        #[arg(long, default_value_t)]
-        first_transition: bool,
-
-        /// SPI polarity idle low (CPOL=0)
-        #[arg(long, default_value_t)]
-        idle_low: bool,
+        /// SPI mode 0-3, the conventional (CPOL, CPHA) pairing.
+        ///
+        /// 0 = CPOL 0 / CPHA 0, 1 = CPOL 0 / CPHA 1,
+        /// 2 = CPOL 1 / CPHA 0, 3 = CPOL 1 / CPHA 1.
+        /// Defaults to 0, matching the firmware's power-on configuration.
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=3))]
+        mode: u8,
     },
 
     /// Query the current SPI bus configuration
@@ -668,11 +668,7 @@ impl Cli {
                 SpiCommands::Write { bytes } => self.spi_write(&pg, bytes).await,
                 SpiCommands::Transfer { bytes } => self.spi_transfer(&pg, bytes).await,
                 SpiCommands::WriteRead { count, bytes } => self.spi_write_then_read(&pg, bytes, count).await,
-                SpiCommands::SetConfig {
-                    frequency,
-                    first_transition,
-                    idle_low,
-                } => self.spi_set_config(&pg, *frequency, *first_transition, *idle_low).await,
+                SpiCommands::SetConfig { frequency, mode } => self.spi_set_config(&pg, *frequency, *mode).await,
                 SpiCommands::GetConfig => self.spi_get_config(&pg).await,
                 SpiCommands::Batch { cs, op } => self.spi_batch(&pg, *cs, op).await,
             },
@@ -932,24 +928,8 @@ impl Cli {
         Ok(())
     }
 
-    async fn spi_set_config(
-        &self,
-        pg: &PicoDeGallo,
-        frequency: u32,
-        first_transition: bool,
-        idle_low: bool,
-    ) -> Result<()> {
-        let spi_polarity = if idle_low {
-            SpiPolarity::IdleLow
-        } else {
-            SpiPolarity::IdleHigh
-        };
-
-        let spi_phase = if first_transition {
-            SpiPhase::CaptureOnFirstTransition
-        } else {
-            SpiPhase::CaptureOnSecondTransition
-        };
+    async fn spi_set_config(&self, pg: &PicoDeGallo, frequency: u32, mode: u8) -> Result<()> {
+        let (spi_phase, spi_polarity) = spi_mode(mode)?;
 
         pg.spi_set_config(frequency, spi_phase, spi_polarity)
             .await
@@ -1330,6 +1310,34 @@ impl Cli {
     }
 }
 
+/// Decode an SPI mode number into the `(phase, polarity)` pair the wire
+/// protocol carries.
+///
+/// SPI mode is the conventional encoding of the `(CPOL, CPHA)` tuple, with
+/// CPOL in bit 1 and CPHA in bit 0:
+///
+/// | Mode | CPOL | CPHA | Idle clock | Sample edge |
+/// |------|------|------|------------|-------------|
+/// | 0    | 0    | 0    | low        | first       |
+/// | 1    | 0    | 1    | low        | second      |
+/// | 2    | 1    | 0    | high       | first       |
+/// | 3    | 1    | 1    | high       | second      |
+///
+/// Returns an error rather than masking to `mode & 0b11`, so an
+/// out-of-range value can never be silently reinterpreted as a valid but
+/// different bus configuration. The CLI's own range validator makes that
+/// path unreachable in practice; the check exists so the function is total
+/// without a panic.
+fn spi_mode(mode: u8) -> Result<(SpiPhase, SpiPolarity)> {
+    match mode {
+        0 => Ok((SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleLow)),
+        1 => Ok((SpiPhase::CaptureOnSecondTransition, SpiPolarity::IdleLow)),
+        2 => Ok((SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleHigh)),
+        3 => Ok((SpiPhase::CaptureOnSecondTransition, SpiPolarity::IdleHigh)),
+        _ => Err(eyre!("invalid SPI mode {mode}: expected 0–3")),
+    }
+}
+
 /// Compare a `ping` echo against the payload that was sent.
 ///
 /// Split out of [`Cli::ping`] so the comparison policy is unit-testable
@@ -1686,47 +1694,13 @@ mod tests {
 
     #[test]
     fn cli_spi_set_config() {
-        let cli = Cli::try_parse_from([
-            "gallo",
-            "spi",
-            "set-config",
-            "--frequency",
-            "1000000",
-            "--first-transition",
-            "--idle-low",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["gallo", "spi", "set-config", "--frequency", "1000000", "--mode", "3"]).unwrap();
         match cli.command {
             Commands::Spi {
-                command:
-                    SpiCommands::SetConfig {
-                        frequency,
-                        first_transition,
-                        idle_low,
-                    },
+                command: SpiCommands::SetConfig { frequency, mode },
             } => {
                 assert_eq!(frequency, 1_000_000);
-                assert!(first_transition);
-                assert!(idle_low);
-            }
-            _ => panic!("expected Spi SetConfig command"),
-        }
-    }
-
-    #[test]
-    fn cli_spi_set_config_defaults() {
-        let cli = Cli::try_parse_from(["gallo", "spi", "set-config", "--frequency", "500000"]).unwrap();
-        match cli.command {
-            Commands::Spi {
-                command:
-                    SpiCommands::SetConfig {
-                        first_transition,
-                        idle_low,
-                        ..
-                    },
-            } => {
-                assert!(!first_transition);
-                assert!(!idle_low);
+                assert_eq!(mode, 3);
             }
             _ => panic!("expected Spi SetConfig command"),
         }
@@ -1963,5 +1937,93 @@ mod tests {
         // A firmware that answers with a default-initialised buffer is the
         // most likely real-world mismatch, so pin it explicitly.
         assert!(check_ping_echo(0x1234_5678, 0).is_err());
+    }
+
+    // ----------------------------- SPI mode tests -----------------------------
+
+    #[test]
+    fn spi_mode_decodes_the_four_standard_modes() {
+        // (CPOL, CPHA) per the conventional numbering: CPOL is bit 1,
+        // CPHA is bit 0.
+        assert_eq!(
+            spi_mode(0).unwrap(),
+            (SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleLow)
+        );
+        assert_eq!(
+            spi_mode(1).unwrap(),
+            (SpiPhase::CaptureOnSecondTransition, SpiPolarity::IdleLow)
+        );
+        assert_eq!(
+            spi_mode(2).unwrap(),
+            (SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleHigh)
+        );
+        assert_eq!(
+            spi_mode(3).unwrap(),
+            (SpiPhase::CaptureOnSecondTransition, SpiPolarity::IdleHigh)
+        );
+    }
+
+    #[test]
+    fn spi_mode_rejects_out_of_range_values() {
+        // Unreachable through clap's range validator, but a silent
+        // truncation to `mode & 0b11` would be a nasty way to find out.
+        assert!(spi_mode(4).is_err());
+        assert!(spi_mode(u8::MAX).is_err());
+    }
+
+    #[test]
+    fn cli_spi_set_config_defaults_to_mode_0() {
+        // Regression test for the CLI defaulting to mode 3 while the
+        // firmware booted in mode 0, so setting the clock silently
+        // changed the mode. Asserts the resulting wire values, not just
+        // the parsed flag: the previous test pinned the flags and so
+        // never noticed the mode was wrong.
+        let cli = Cli::try_parse_from(["gallo", "spi", "set-config", "--frequency", "500000"]).unwrap();
+        match cli.command {
+            Commands::Spi {
+                command: SpiCommands::SetConfig { frequency, mode },
+            } => {
+                assert_eq!(frequency, 500_000);
+                assert_eq!(mode, 0);
+                assert_eq!(
+                    spi_mode(mode).unwrap(),
+                    (SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleLow),
+                    "a bare set-config must select mode 0, matching the firmware default"
+                );
+            }
+            _ => panic!("expected Spi SetConfig command"),
+        }
+    }
+
+    #[test]
+    fn cli_spi_set_config_accepts_every_mode() {
+        for m in 0u8..=3 {
+            let cli = Cli::try_parse_from([
+                "gallo",
+                "spi",
+                "set-config",
+                "--frequency",
+                "1000000",
+                "--mode",
+                &m.to_string(),
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Spi {
+                    command: SpiCommands::SetConfig { mode, .. },
+                } => assert_eq!(mode, m),
+                _ => panic!("expected Spi SetConfig command"),
+            }
+        }
+    }
+
+    #[test]
+    fn cli_spi_set_config_rejects_an_invalid_mode() {
+        for bad in ["4", "255", "-1"] {
+            assert!(
+                Cli::try_parse_from(["gallo", "spi", "set-config", "--frequency", "1000000", "--mode", bad]).is_err(),
+                "--mode {bad} should be rejected"
+            );
+        }
     }
 }
