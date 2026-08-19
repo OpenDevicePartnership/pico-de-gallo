@@ -2,19 +2,35 @@ version: 2
 
 # Dependabot configuration.
 #
-# Pre-1.0 the wire-protocol-critical crates (internal, lib, hal,
-# ffi, application, pyco, firmware) are version-bumped by hand at
-# release time (see .github/RELEASE.md); Dependabot here only updates
-# *transitive* Cargo.lock entries and our GitHub Actions pins, which is
-# exactly the class of update that surprised us on the
+# Pre-1.0 the wire-protocol-critical crates (internal, lib, hal, ffi,
+# application, mcp, pyco, firmware) are version-bumped by hand at release
+# time (see .github/RELEASE.md). Dependabot never touches those in-repo
+# path dependencies on each other; it updates our third-party crates, the
+# transitive Cargo.lock entries behind them, and our GitHub Actions pins
+# — exactly the class of update that surprised us on the
 # embassy-usb-driver 0.2.1 break.
 #
-# Lockfile-only updates land as boring weekly PRs that CI's lockfile-guard
-# job validates end-to-end before review.
+# These land as boring weekly PRs that CI's lockfile-guard job validates
+# end-to-end before review.
+#
+# WARNING: each cargo entry's `directory` must name the directory holding
+# the Cargo.toml, and there are two independent workspaces here — the host
+# workspace at the repository root and the no_std firmware workspace under
+# crates/pico-de-gallo-firmware. If a manifest moves, the matching
+# `directory` must move with it.
+#
+# This has already broken silently once. 268a33ed hoisted the host
+# workspace manifest from crates/Cargo.toml to the repository root, but
+# this file kept pointing at /crates. Dependabot found no manifest there,
+# reported nothing, and stopped opening host-workspace PRs entirely: the
+# last one was #55 on 2026-06-01, and pyo3 sat at 0.29.0 while 0.29.1 and
+# 0.29.2 shipped. Only the firmware and github-actions entries, whose
+# directories still existed, kept working.
 
 updates:
+  # Host workspace — manifest is at the repository root, not /crates.
   - package-ecosystem: cargo
-    directory: /crates
+    directory: /
     schedule:
       interval: weekly
       day: monday
@@ -26,6 +42,8 @@ updates:
       prefix: "chore(deps)"
       include: scope
 
+  # Firmware — a separate workspace, excluded from the host one because it
+  # targets thumbv8m.main-none-eabihf and is no_std.
   - package-ecosystem: cargo
     directory: /crates/pico-de-gallo-firmware
     schedule:
