@@ -5,6 +5,41 @@ All notable changes to `gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `gallo ping` is now implemented. It round-trips a random `u32`
+  through the firmware's `ping` endpoint and prints `Ping OK` when the
+  echo matches. The subcommand was already documented in the book
+  (`getting-started/verify.md`, `appendix/troubleshooting.md`) but had
+  never been implemented, so `gallo 0.7.1` answered with
+  `error: unrecognized subcommand 'ping'`. The payload is randomised
+  per invocation so a stale, duplicated, or default-initialised
+  response cannot pass as a healthy round trip; a completed round trip
+  carrying the wrong value is reported as
+  `ping echo mismatch: sent 0x…, received 0x…` rather than as a generic
+  transport error, because the two failures have different causes.
+  Fixes [#113](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/113).
+- `-s, --serial-number` now has help text. The flag previously rendered
+  with an empty description column in `gallo -h`.
+
+### Changed
+
+- `ping` and `version` are now the only device subcommands exempt from
+  the up-front schema-version check. `ping` is the transport-level
+  liveness probe, so validating first would report a schema error on a
+  board whose USB path is precisely what the operator is trying to test.
+
+### Fixed
+
+- `gallo --help` no longer prints the crate's internal API
+  documentation. `clap` derives `long_about` from the `Cli` struct's
+  rustdoc when one is present, so long help rendered *"Top-level CLI
+  argument parser. Parse with [`clap::Parser::parse`] and execute with
+  [`Cli::run`]."* in place of the configured `about` string. `-h` was
+  unaffected. Now pinned with `long_about = None`.
+
 ## [0.7.1] — 2026-07-20
 
 ### Fixed

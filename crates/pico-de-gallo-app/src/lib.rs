@@ -143,10 +143,15 @@ pub enum OutputFormat {
     name = "Pico De Gallo",
     author = "Felipe Balbi <febalbi@microsoft.com>",
     about = "Access I2C/SPI devices through Pico De Gallo",
+    // Without this, clap derives `long_about` from this struct's rustdoc and
+    // `gallo --help` shows the internal API documentation above instead of
+    // `about`. The rustdoc is for `docs.rs` readers; `about` is for users.
+    long_about = None,
     arg_required_else_help = true,
     version
 )]
 pub struct Cli {
+    /// Select a specific board by USB serial number
     #[arg(short, long)]
     serial_number: Option<String>,
 
@@ -162,6 +167,9 @@ pub struct Cli {
 enum Commands {
     /// List all connected Pico de Gallo devices
     List,
+
+    /// Check device liveness with a round-trip echo
+    Ping,
 
     /// Get firmware version
     Version,
@@ -590,9 +598,10 @@ impl Cli {
     /// rather than as a confusing `CommsFailed` on the first RPC.
     ///
     /// Validation runs on the shared connection opened by [`Cli::run`],
-    /// for every subcommand except `list` (no device needed) and
-    /// `version` (the diagnostic subcommand that explicitly reports the
-    /// schema skew).
+    /// for every subcommand except `list` (no device needed), `version`
+    /// (the diagnostic subcommand that explicitly reports the schema
+    /// skew), and `ping` (the transport-level liveness check, which must
+    /// stay answerable on a board whose schema does not match).
     ///
     /// Closes Category A finding #4 (reviewer R4) at the CLI layer.
     async fn validate_firmware(&self, pg: &PicoDeGallo) -> Result<()> {
@@ -630,15 +639,18 @@ impl Cli {
 
         // Validate the firmware schema up-front for every subcommand that
         // touches the device, except `version` (the diagnostic subcommand
-        // that reports schema skew itself). Without this, a schema mismatch
-        // would manifest as a confusing CommsFailed on the first RPC.
-        // See Category A finding #4.
-        if !matches!(self.command, Commands::Version) {
+        // that reports schema skew itself) and `ping` (the transport-level
+        // liveness check — validating first would report a schema error on
+        // a board whose USB path is exactly what the operator is trying to
+        // test). Without this, a schema mismatch would manifest as a
+        // confusing CommsFailed on the first RPC. See Category A finding #4.
+        if !matches!(self.command, Commands::Version | Commands::Ping) {
             self.validate_firmware(&pg).await?;
         }
 
         match &self.command {
             Commands::List => unreachable!("handled before connecting"),
+            Commands::Ping => self.ping(&pg).await,
             Commands::Version => self.version(&pg).await,
             Commands::I2c { command } => match command {
                 I2cCommands::Scan { reserved } => self.i2c_scan(&pg, *reserved).await,
@@ -768,6 +780,30 @@ impl Cli {
                 }
             }
         }
+    }
+
+    /// Round-trip a random nonce through the firmware's `ping` endpoint.
+    ///
+    /// This is the lowest-level liveness check `gallo` offers: it exercises
+    /// USB enumeration, postcard-rpc framing, and the firmware dispatch loop
+    /// without touching a peripheral. Like `version`, it deliberately runs
+    /// without the up-front schema validation [`Cli::run`] applies to the
+    /// other device subcommands, so a schema-skewed board still reports
+    /// whether the transport itself works.
+    ///
+    /// The payload is randomised so that a stale, duplicated, or
+    /// default-initialised response cannot pass as a healthy round trip.
+    async fn ping(&self, pg: &PicoDeGallo) -> Result<()> {
+        let sent = rand::random::<u32>();
+        let echoed = pg
+            .ping(sent)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("ping failed"))?;
+
+        check_ping_echo(sent, echoed)?;
+
+        println!("Ping OK");
+        Ok(())
     }
 
     async fn i2c_scan(&self, pg: &PicoDeGallo, reserved: bool) -> Result<()> {
@@ -1292,6 +1328,24 @@ impl Cli {
         }
         Ok(())
     }
+}
+
+/// Compare a `ping` echo against the payload that was sent.
+///
+/// Split out of [`Cli::ping`] so the comparison policy is unit-testable
+/// without a board attached, mirroring the `check_schema_compatible` split
+/// in `pico-de-gallo-lib`.
+///
+/// A mismatch is a protocol-integrity failure rather than a transport
+/// failure — the round trip completed, but the firmware answered with the
+/// wrong bytes — so it is reported separately from `CommsFailed` and names
+/// both values, which are the only evidence available for diagnosing a
+/// framing or dispatch fault.
+fn check_ping_echo(sent: u32, echoed: u32) -> Result<()> {
+    if echoed != sent {
+        return Err(eyre!("ping echo mismatch: sent 0x{sent:08x}, received 0x{echoed:08x}"));
+    }
+    Ok(())
 }
 
 fn parse_byte(s: &str) -> Result<u8, ParseIntError> {
@@ -1862,5 +1916,52 @@ mod tests {
     #[test]
     fn print_hex_dump_does_not_panic() {
         print_hex_dump(&[0x00, 0x41, 0x42, 0x7F, 0x80, 0xFF]);
+    }
+
+    // ----------------------------- ping tests -----------------------------
+
+    #[test]
+    fn cli_ping_subcommand() {
+        let cli = Cli::try_parse_from(["gallo", "ping"]).unwrap();
+        assert!(matches!(cli.command, Commands::Ping));
+    }
+
+    #[test]
+    fn cli_ping_with_serial() {
+        let cli = Cli::try_parse_from(["gallo", "-s", "E6633861A34B8C24", "ping"]).unwrap();
+        assert_eq!(cli.serial_number.as_deref(), Some("E6633861A34B8C24"));
+        assert!(matches!(cli.command, Commands::Ping));
+    }
+
+    #[test]
+    fn cli_ping_rejects_arguments() {
+        // The documented surface is a bare `gallo ping` (book/src/getting-started/verify.md).
+        // Lock it so a payload flag cannot be added without also updating the book.
+        assert!(Cli::try_parse_from(["gallo", "ping", "--id", "7"]).is_err());
+        assert!(Cli::try_parse_from(["gallo", "ping", "7"]).is_err());
+    }
+
+    #[test]
+    fn check_ping_echo_accepts_a_matching_echo() {
+        assert!(check_ping_echo(0xDEAD_BEEF, 0xDEAD_BEEF).is_ok());
+        assert!(check_ping_echo(0, 0).is_ok());
+        assert!(check_ping_echo(u32::MAX, u32::MAX).is_ok());
+    }
+
+    #[test]
+    fn check_ping_echo_rejects_a_mismatched_echo() {
+        let err = check_ping_echo(0xDEAD_BEEF, 0x0BAD_F00D).unwrap_err();
+        let msg = format!("{err}");
+        // Both values must appear: the difference between them is the only
+        // evidence available for diagnosing a framing or dispatch fault.
+        assert!(msg.contains("deadbeef"), "sent value missing from {msg:?}");
+        assert!(msg.contains("0badf00d"), "echoed value missing from {msg:?}");
+    }
+
+    #[test]
+    fn check_ping_echo_rejects_a_zero_echo_of_a_nonzero_nonce() {
+        // A firmware that answers with a default-initialised buffer is the
+        // most likely real-world mismatch, so pin it explicitly.
+        assert!(check_ping_echo(0x1234_5678, 0).is_err());
     }
 }

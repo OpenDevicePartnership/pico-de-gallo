@@ -15,13 +15,14 @@ Use it for:
 ## Top-level Help
 
 ```console
-$ gallo --help
+$ gallo -h
 Access I2C/SPI devices through Pico De Gallo
 
 Usage: gallo [OPTIONS] <COMMAND>
 
 Commands:
-  list     List connected Pico de Gallo devices
+  list     List all connected Pico de Gallo devices
+  ping     Check device liveness with a round-trip echo
   version  Get firmware version
   i2c      I2C access methods
   spi      SPI access methods
@@ -33,12 +34,15 @@ Commands:
   help     Print this message or the help of the given subcommand(s)
 
 Options:
-  -s, --serial-number <SERIAL_NUMBER>  Select a specific board by USB serial
-  -f, --format <FORMAT>                Read output format [default: hex]
-                                       [possible values: hex, binary, ascii]
-  -h, --help                           Print help
+  -s, --serial-number <SERIAL_NUMBER>  Select a specific board by USB serial number
+  -f, --format <FORMAT>                Output format for read data [default: hex] [possible values: hex, binary, ascii]
+  -h, --help                           Print help (see more with '--help')
   -V, --version                        Print version
 ```
+
+> [!TIP]
+> `--help` prints the same thing with each option expanded — including the
+> per-value descriptions for `--format`.
 
 ## Global Options
 
@@ -95,6 +99,38 @@ Queries the connected board for its firmware version.
 $ gallo version
 Firmware version: 0.1.0
 ```
+
+### `ping`
+
+Round-trips a random `u32` through the firmware's `ping` endpoint and
+checks that the same value comes back.
+
+```console
+$ gallo ping
+Ping OK
+```
+
+This is the lowest-level check `gallo` offers. It exercises USB
+enumeration, the postcard-rpc framing, and the firmware dispatch loop
+without touching a peripheral, so it is the right first move when a
+board enumerates but a peripheral command misbehaves.
+
+The payload is randomised per invocation so that a stale, duplicated, or
+default-initialised response cannot pass as a healthy round trip. If the
+round trip completes but the value comes back wrong, `gallo` reports the
+mismatch with both values rather than a generic transport error:
+
+```console
+$ gallo ping
+Error: ping echo mismatch: sent 0x9f2c41ab, received 0x00000000
+```
+
+> [!NOTE]
+> `ping` and `version` are the only device subcommands that skip the
+> up-front schema-version check. A board whose schema does not match this
+> `gallo` build should still be able to prove its USB path works — that is
+> exactly the situation `ping` exists to diagnose. See
+> [Verifying Your Device](../getting-started/verify.md).
 
 ## Peripheral Command Groups
 
@@ -188,6 +224,7 @@ See the [1-Wire chapter](../interfaces/onewire.md).
 ## A Few Crisp Examples
 
 ```console
+$ gallo ping
 $ gallo i2c get-config
 $ gallo spi get-config
 $ gallo uart set-config --baud-rate 115200
