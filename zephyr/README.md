@@ -579,7 +579,7 @@ These are enforced in the drivers and reported as errors, not silently ignored.
 | `SPI_HOLD_ON_CS` without `SPI_LOCK_ON` | `-ENOTSUP` |
 | Chip-select pin explicitly configured as an input | `-EACCES` |
 | Chip-select pin under a live GPIO event subscription | `-EBUSY` |
-| Transfers over 4096 bytes | `-EMSGSIZE` |
+| Transfers over 1013 bytes | `-EMSGSIZE` |
 | Controller latched by an unacknowledged chip-select deassert | `-EHOSTDOWN` until a successful `spi_release()` |
 
 Every operation is a blocking USB round trip, so the asynchronous and RTIO

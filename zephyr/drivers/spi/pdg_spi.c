@@ -162,8 +162,68 @@ LOG_MODULE_REGISTER(spi_pico_de_gallo, CONFIG_SPI_LOG_LEVEL);
  */
 #include "spi_context.h"
 
-// Firmware single-transfer limit (pico_de_gallo_internal::MAX_TRANSFER_SIZE).
-#define PDG_SPI_MAX_BUFFER 4096U
+/*
+ * Measured usable payload ceiling for one SPI transfer.
+ *
+ * SAFETY FIRST, SIZE SECOND. The strongest argument for this specific number is
+ * not capacity, it is containment: a 1015-byte TX-only spi/transfer NEVER
+ * RETURNS and wedges the firmware dispatcher device-wide (see below).
+ * Rejecting 1014 and above locally, with -EMSGSIZE, before any allocation,
+ * lock, set-config, chip-select edge or transport call, puts that hang out of
+ * reach through this driver. That containment argument holds regardless of how
+ * the size question is eventually resolved.
+ *
+ * MODEL. This is a packet-buffer budget, NOT the usable payload size. The
+ * firmware's per-packet buffer has to hold the payload PLUS the postcard-rpc
+ * header, the length varint and the COBS framing, so usable payload must sit
+ * strictly below the budget and the difference is not a round number. Two
+ * earlier values were set from that model without measuring it, and both were
+ * wrong:
+ *
+ *   4096  was pico_de_gallo_internal::MAX_TRANSFER_SIZE, commented as the
+ *         "firmware single-transfer limit". 4096 TX-only reaches the transport
+ *         and fails -ECOMM.
+ *   3072  was a "conservative" guess reasoned from the firmware's
+ *         PacketBuffers<MAX_TRANSFER_SIZE + 1024> headroom. 3072 full duplex
+ *         also fails -ECOMM. That reasoning considered ONE direction; the
+ *         budget must cover the request frame AND the response frame.
+ *
+ * MEASURED, NOT DERIVED. 1013 is the largest length observed to work on
+ * hardware on the M5 acceptance fixture board, across two byte-identical
+ * consecutive runs. Every observed failure was -ECOMM and never -EMSGSIZE, so
+ * the transport was always the limiter and the compiled constant never was.
+ *
+ * WHAT IS STILL UNKNOWN, stated plainly so nobody mistakes this for a solved
+ * problem:
+ *
+ *   - The true ceiling is unresolved between 1013 and 1015. 1014 and 1016 were
+ *     never probed, and 1015 hangs, so the boundary cannot currently be
+ *     narrowed by bisection without stepping into the hang.
+ *   - FULL DUPLEX WAS NEVER MEASURED. 1013 is a TX-only result. 3072 duplex is
+ *     known to fail, so duplex at 1013 is UNVERIFIED, not established.
+ *   - A lower constant reduces exposure to the known hang. It does NOT prove
+ *     that no other hang window exists below it.
+ *   - 1013 is close to 1024, which would be consistent with a ~1 KiB budget and
+ *     about 11 bytes of framing. That is SUGGESTIVE ONLY: there is no evidence
+ *     for that decomposition and it must not be relied on.
+ *
+ * KNOWN FIRMWARE HANG (root cause is in crates/, out of scope here). A
+ * 1015-byte TX-only spi/transfer never returns and wedges the dispatcher for
+ * every subsequent RPC, including from a fresh host process and including
+ * system/reset-subscriptions. The 2 s watchdog does not catch it, because the
+ * dedicated feeder task keeps feeding while a handler blocks. Recovery does NOT
+ * require a power cycle: a USB detach and re-attach (re-enumeration) clears it,
+ * verified twice.
+ *
+ * FOLLOW-UP (do not just raise this number, and do not lower it by guesswork
+ * either): derive the usable spi/transfer payload ceiling from the worst-case
+ * request and response framing, express it as one generated or shared contract
+ * rather than a constant duplicated per consumer, and pin limit and limit+1
+ * tests against it. That remains the only defensible long-term route, and it
+ * needs a wire-crate change with schema and lockstep-release implications,
+ * which is out of scope for this module.
+ */
+#define PDG_SPI_MAX_BUFFER 1013U
 
 struct pdg_spi_config {
 	const struct device *mfd;

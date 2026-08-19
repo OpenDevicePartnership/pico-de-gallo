@@ -97,9 +97,26 @@ collisions). Try a slower clock with `gallo i2c set-config --frequency standard`
 
 ### `BufferTooLong` (−22)
 
-The firmware caps a single transfer at 4096 bytes. Split larger
-transfers, or use batch operations to keep them in one USB
+Two different limits are involved here, and conflating them is a common
+source of confusion:
+
+- **The protocol constant, 4096 bytes** (`MAX_TRANSFER_SIZE`). This is the
+  firmware's per-packet **buffer budget**, not a usable payload size — the
+  same buffer must also hold the postcard-rpc header, the length varint and
+  the COBS framing, and it covers the request frame *and* the response
+  frame.
+- **The usable payload, which is smaller and must be measured.** For the
+  Zephyr SPI driver it is **1013 bytes**, established on hardware: 4096 and
+  3072 both pass the local check, reach the transport and fail `-ECOMM`.
+  Transfers above 1013 are rejected locally with `-EMSGSIZE`.
+
+Split larger transfers, or use batch operations to keep them in one USB
 round-trip even when broken into smaller chunks.
+
+Two caveats on the 1013 figure: the exact boundary is unresolved between
+1013 and 1015, and the **full-duplex** ceiling has never been measured —
+full duplex is only known to work at 512 bytes. Treat 1013 as a measured
+lower bound, not a located boundary.
 
 ### GPIO `WrongDirection` (−28)
 

@@ -238,7 +238,13 @@ returns `-EHOSTDOWN` before issuing any configuration, chip-select edge or
 clocking. Only a `spi_release()` whose checked deassert succeeds clears it.
 
 Other errors a caller can see: `-ENODEV`, `-EINVAL`, `-ENOTSUP`, `-EMSGSIZE`
-(over 4096 bytes), `-ENOMEM`, `-EIO` / `-ECOMM` / `-EPROTO`, `-EACCES` (a
+(over **1013 bytes** — a measured ceiling, not a derived one, and roughly 75%
+below the 4096 this bridge originally advertised. 1013 is simply the largest
+length observed to work on hardware; the packet buffer covers payload plus
+postcard-rpc header and COBS framing, so usable payload sits strictly below it.
+Full duplex has not been measured at any working length. If you are designing
+around large SPI transfers through this bridge, plan to split them),
+`-ENOMEM`, `-EIO` / `-ECOMM` / `-EPROTO`, `-EACCES` (a
 chip-select pin the firmware records as an explicit input) and `-EBUSY` (a
 chip-select pin under a live firmware GPIO event subscription). Stacked drivers
 collapse these into a generic not-ready error — `jedec,spi-nor`, for instance,

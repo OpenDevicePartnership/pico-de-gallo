@@ -71,7 +71,13 @@ description: |
 
   Read-only and write-only transfers become full-duplex transfers of
   max(tx_len, rx_len) bytes with zero-filled TX or discarded RX respectively.
-  Transfers over 4096 bytes return -EMSGSIZE.
+  Transfers over 1013 bytes return -EMSGSIZE. That ceiling is a MEASURED value,
+  not a derived one: 1013 is the largest length observed to work on hardware.
+  The packet buffer covers payload plus postcard-rpc header and COBS framing,
+  so usable payload sits strictly below it. Full duplex has NOT been measured
+  at any working length, and a 1015-byte transfer is known to hang the firmware
+  dispatcher device-wide, which this ceiling puts out of reach through this
+  driver. See PDG_SPI_MAX_BUFFER in pdg_spi.c.
 
   SPI_HOLD_ON_CS requires SPI_LOCK_ON and returns -ENOTSUP without it: holding
   chip select while another configuration could select a second slave would
@@ -82,7 +88,7 @@ description: |
   Errors a caller can see: -ENODEV (device not ready), -EINVAL (NULL or
   unretained configuration, malformed buffer set), -ENOTSUP (unsupported
   operation flag, including SPI_HOLD_ON_CS without SPI_LOCK_ON),
-  -EMSGSIZE (over 4096 bytes), -ENOMEM (scratch allocation), -EIO / -ECOMM /
+  -EMSGSIZE (over 1013 bytes), -ENOMEM (scratch allocation), -EIO / -ECOMM /
   -EPROTO (transport and firmware failures), -EACCES (a chip-select pin the
   firmware records as an explicit input), -EBUSY (a chip-select pin under a
   live firmware GPIO event subscription), and -EHOSTDOWN.

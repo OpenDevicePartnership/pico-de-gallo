@@ -39,8 +39,11 @@ config HEAP_MEM_POOL_ADD_SIZE_PDG_SPI
 	help
 	  pdg_spi_transceive() flattens the caller's scatter-gather buffers into
 	  contiguous ones with k_malloc(), one per direction, each at most
-	  PDG_SPI_MAX_BUFFER (4096) bytes. A full-size duplex transfer therefore
-	  needs about 8 KiB live at once.
+	  PDG_SPI_MAX_BUFFER (1013) bytes. A full-size duplex transfer therefore
+	  needs about 2 KiB live at once, plus sys_heap per-chunk metadata, the
+	  heap header and alignment padding. 8192 leaves a large margin over
+	  that; it is kept rather than trimmed because the ceiling is a measured
+	  value that may move once the framing overhead is derived properly.
 
 	  This has to be declared rather than assumed: k_malloc() lives in
 	  kernel/mempool.c, which Zephyr only compiles when the system heap is

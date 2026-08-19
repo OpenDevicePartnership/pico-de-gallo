@@ -8,7 +8,94 @@ The format is based on
 
 ## [Unreleased]
 
+### Verification
+
+- **Upstream `tests/drivers/spi/spi_loopback` on `native_sim/native/64`:
+  41 PASS / 12 SKIP / 1 FAIL / 2 NOT BUILT.** This is **not** a clean upstream
+  pass, and must not be read as one.
+
+  The single FAIL is upstream's own `test_spi_complete_multiple_timed`. It is
+  **unrunnable on this target rather than a driver defect**: `spi.c:406` asserts
+  `time_spent_us >= minimum_transfer_time_us`, a **lower** bound, measured with
+  the Zephyr clock — which on `native_sim` does not advance while the host
+  thread is blocked inside a USB call, so every transfer measures 0 µs.
+  `CONFIG_SPI_IDEAL_TRANSFER_DURATION_SCALING` bounds only the **upper** limit,
+  so **no multiplier value can affect this assertion**. It fails on SLOW and
+  passes on FAST purely because SLOW's theoretical minimum (432 µs) is larger;
+  that is structural, not flaky.
+
+  The 12 SKIPs are all expected and were verified exactly: five word sizes
+  rejected by the driver with `-ENOTSUP`, `test_spi_deinit` (no
+  `miso-gpios`/`mosi-gpios` on `zephyr,user`) and `test_spi_hold_on_cs`
+  (HOLD without LOCK is unsupported), across two spec iterations. The 2 NOT
+  BUILT are the async cases, which require `CONFIG_SPI_ASYNC=y`; this driver
+  `BUILD_ASSERT`s that off.
+
+### Known Issues
+
+- **A 1015-byte TX-only `spi/transfer` never returns and wedges the firmware
+  dispatcher device-wide.** Deterministic, reproduced across two byte-identical
+  consecutive runs on board `5256657D8A5D7F03`.
+
+  Once triggered, **every** subsequent RPC hangs — including from a freshly
+  started host process, and including `system/reset-subscriptions`, which is
+  the endpoint that exists to recover orphaned state. The condition therefore
+  survives host process death entirely.
+
+  The 2 s watchdog does **not** catch it: the dedicated feeder task keeps
+  feeding while a request handler blocks, which is precisely the gap left open
+  by the serial-dispatch hazard recorded in AGENTS.md §13.17 (2026-06-03).
+
+  **Recovery does not require a power cycle.** A USB detach and re-attach —
+  `usbipd detach` followed by re-attach, i.e. bus re-enumeration — clears it,
+  verified twice. Earlier guidance implying power-cycle-only recovery is too
+  pessimistic.
+
+  Root cause is in the firmware/wire layer (`crates/`) and is out of scope for
+  this module. `PDG_SPI_MAX_BUFFER = 1013` puts the hang out of reach *through
+  this driver* by rejecting 1014 and above locally with `-EMSGSIZE` before any
+  transport call, but that is containment, not a fix, and it does not prove
+  that no other hang window exists below 1013.
+
 ### Breaking Changes
+
+- **The SPI single-transfer ceiling is 1013 bytes — roughly 75% below the 4096
+  this module originally advertised.** Transfers above it return `-EMSGSIZE`
+  locally, before any allocation, controller lock, set-config or chip-select
+  edge. Applications transferring more than 1013 bytes in one call must split.
+  If you are designing around large SPI transfers through this bridge, plan for
+  this.
+
+  `PDG_SPI_MAX_BUFFER` was previously documented as
+  `pico_de_gallo_internal::MAX_TRANSFER_SIZE`, the "firmware single-transfer
+  limit". That was wrong, and the wrong mental model produced two wrong values
+  in succession. The constant is a **packet-buffer budget** that must hold the
+  payload *plus* the postcard-rpc header, the length varint and the COBS
+  framing, and it must cover the **request** frame *and* the **response**
+  frame, so usable payload sits strictly below it:
+
+  - **4096** (`MAX_TRANSFER_SIZE`) — 4096 TX-only passes the local check,
+    reaches the transport and fails `-ECOMM`.
+  - **3072** — a "conservative" guess reasoned from the firmware's
+    `PacketBuffers<MAX_TRANSFER_SIZE + 1024>` headroom. 3072 **full duplex**
+    also fails `-ECOMM`. That reasoning considered only one direction.
+  - **1013** — the largest length *measured* to work on hardware.
+
+  Every observed failure was `-ECOMM` and never `-EMSGSIZE`, so the transport
+  was always the limiter and the compiled constant never was.
+
+  **1013 is measured, not derived, and the picture is incomplete:** the true
+  ceiling is unresolved between 1013 and 1015 (1014 and 1016 were never probed,
+  and 1015 hangs); **full duplex was never measured at any working length**, so
+  duplex at 1013 is unverified; and while 1013 sits just under 1024 in a way
+  that would be consistent with a ~1 KiB budget and ~11 bytes of framing, there
+  is no evidence for that decomposition and it must not be relied on.
+
+  Still owed: derive the usable `spi/transfer` payload ceiling from the
+  worst-case request and response framing, express it as one generated or
+  shared contract instead of a constant duplicated per consumer, and pin limit
+  and limit+1 tests against it. That requires a wire-crate change with schema
+  and lockstep-release implications, so it is out of scope for this module.
 
 - The `odp,pico-de-gallo-i2c` and `odp,pico-de-gallo-spi` controllers must
   now be **direct children of an enabled `odp,pico-de-gallo` parent**. A
