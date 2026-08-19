@@ -431,3 +431,74 @@ jumper, driving from each end in turn — the same bidirectional validation used
 | Init-order regression is silent until a CS toggle fails | `device_is_ready` guards in every child; SPI init fails loudly if the GPIO device is not ready. |
 | No sample is a viable end-to-end gate (§7.5) | Acceptance rests on the upstream `spi_loopback` suite instead, which is stronger evidence anyway. |
 | Loopback echo semantics may be mode-dependent | Verify empirically before relying on it (§7.3); a mismatch shows as a bit shift, not a clean failure. |
+
+---
+
+## 10. Amendments — decided after M3
+
+Two decisions taken by the maintainer after M3 exposed a gap in §7.2. Both
+expand M4 beyond §2's original decision table; they are recorded here so an
+implementer does not read a spec that contradicts its brief.
+
+### D9 — M4 supports `SPI_HOLD_ON_CS`
+
+`pdg_spi.c:241-244` currently rejects it with `-ENOTSUP`. That rejection exists
+only because the **batch** design could not hold chip-select across separate
+calls; once CS is an ordinary GPIO driven by `spi_context`, the constraint
+disappears.
+
+`spi_context.h:396-401` honours the flag by *skipping* the deassert:
+
+```c
+if (!force_off && ctx->config->operation & SPI_HOLD_ON_CS) {
+        return;
+}
+```
+
+Two reasons to support it:
+
+1. **It is the only interrupt-free way to verify chip-select edges** (§7.2 as
+   amended, plan §10.2). Transfer with the flag → poll the witness → `spi_release()`
+   → poll again. Deterministic, single-threaded, no callbacks.
+2. It is a genuine capability gain — `SPI_HOLD_ON_CS` is how Zephyr expresses a
+   multi-transfer transaction, and every `jedec,spi-nor`-class driver may use it.
+
+`spi_release()` must therefore work: it reaches
+`spi_context_unlock_unconditionally()`, which force-deasserts via
+`_spi_context_cs_control(ctx, false, true)`.
+
+### D10 — A failed chip-select edge must fail closed
+
+`spi_context_cs_control()` returns **`void`** and discards both
+`gpio_pin_set_dt()` results (`spi_context.h:390-418`). Upstream can afford that
+because CS is a register write that cannot meaningfully fail. **Here every edge
+is a fallible USB round-trip** that can return `-EIO`, `-EBUSY` (a monitored pin)
+or `-EWOULDBLOCK` (ISR context).
+
+Left unhandled, the two failure modes are:
+
+- assert fails → **the transfer proceeds with CS unasserted**, clocking data at a
+  peripheral that is not selected;
+- deassert fails → **success is reported with CS still asserted**, leaving the
+  peripheral selected indefinitely.
+
+Both are silent-wrong-behaviour of exactly the class #104 was about, and neither
+is detectable by a loopback.
+
+**M4 must not call `spi_context_cs_control()` blindly.** The assert result must
+be checked and a failure must abort the transfer with the underlying errno; a
+failed deassert must be reported rather than swallowed. The implementation shape
+is M4's to choose — driving the pin directly with `gpio_pin_set_dt()` and
+checking the result is the obvious candidate — but the property is mandatory.
+
+This is a deliberate, documented divergence from the stock driver pattern, and it
+should be explained in a source comment so a reader does not "fix" it back to the
+idiomatic form.
+
+### Consequence for §5
+
+§5's table said `spi/batch` becomes unused by Zephyr and the atomic CS interval is
+lost. That stands. But D9 partially compensates: `SPI_HOLD_ON_CS` lets a caller
+hold CS across several transfers deliberately, which the batch could never
+express — the batch was atomic but fixed-scope. The loss is atomicity against a
+host crash, not the ability to span operations.
