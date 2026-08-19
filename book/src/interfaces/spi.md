@@ -49,14 +49,20 @@ The firmware defaults to mode 0.
 $ gallo spi help
 SPI access methods
 
+Usage: gallo spi <COMMAND>
+
 Commands:
   read        Read bytes through SPI bus
   write       Write bytes through SPI bus
-  transfer    Full-duplex SPI transfer
-  write-read  Write bytes followed by read bytes
-  set-config  Set SPI bus configuration (frequency, phase, polarity)
-  get-config  Get current SPI bus configuration
+  transfer    Full-duplex SPI transfer (simultaneous write and read)
+  write-read  Write bytes followed by read bytes (half-duplex)
+  set-config  Set SPI bus parameters
+  get-config  Query the current SPI bus configuration
   batch       Execute multiple SPI operations atomically under chip-select
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
 ```
 
 ### Read / Write / Transfer
@@ -76,11 +82,38 @@ clocks in the same number of bytes on MISO — true full-duplex.
 
 ### Config
 
+Mode is selected by two independent flags, and **both are opt-in**:
+
 ```console
-$ gallo spi set-config --frequency 1000000 --phase 0 --polarity 0
-$ gallo spi get-config
-Frequency: 1000000 Hz, CPHA: 0, CPOL: 0
+$ gallo spi set-config --help
+Set SPI bus parameters
+
+Usage: gallo spi set-config [OPTIONS] --frequency <FREQUENCY>
+
+Options:
+      --frequency <FREQUENCY>  SPI frequency in Hz
+      --first-transition       SPI phase first transition (CPHA=0)
+      --idle-low               SPI polarity idle low (CPOL=0)
+  -h, --help                   Print help
 ```
+
+Omitting `--first-transition` gives CPHA=1 and omitting `--idle-low`
+gives CPOL=1, so passing neither selects **mode 3**. Mode 0 needs both:
+
+```console
+$ gallo spi set-config --frequency 1000000 --first-transition --idle-low
+$ gallo spi get-config
+SPI frequency: 1000000 Hz
+SPI phase:     CaptureOnFirstTransition (CPHA=0)
+SPI polarity:  IdleLow (CPOL=0)
+```
+
+> [!WARNING]
+>
+> The firmware boots in mode 0, but `set-config` defaults to mode 3.
+> `gallo spi set-config --frequency 1000000` therefore changes the mode
+> as a side effect of setting the clock. Pass the mode flags explicitly
+> whenever you call `set-config`.
 
 ### Batch (Atomic Under CS)
 
@@ -104,7 +137,13 @@ use pico_de_gallo_lib::{PicoDeGallo, SpiBatchOp, SpiPhase, SpiPolarity};
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let pg = PicoDeGallo::new();
 
-    pg.spi_set_config(1_000_000, SpiPhase::Mode0, SpiPolarity::Low).await?;
+    // Mode 0: sample on the first transition, clock idles low.
+    pg.spi_set_config(
+        1_000_000,
+        SpiPhase::CaptureOnFirstTransition,
+        SpiPolarity::IdleLow,
+    )
+    .await?;
 
     // Read JEDEC ID under CS on GPIO 0
     let ops = [
@@ -178,7 +217,10 @@ available — see the `gallo_spi_batch_*` family in the generated
 from pyco_de_gallo import PycoDeGallo, SpiPhase, SpiPolarity
 
 pg = PycoDeGallo()
-pg.spi_set_config(1_000_000, SpiPhase.Mode0, SpiPolarity.Low)
+# Mode 0: sample on the first transition, clock idles low.
+pg.spi_set_config(
+    1_000_000, SpiPhase.CaptureOnFirstTransition, SpiPolarity.IdleLow
+)
 
 pg.spi_write(bytes([0x9F]))
 id_bytes = pg.spi_read(3)
