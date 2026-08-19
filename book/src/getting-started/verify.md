@@ -41,6 +41,23 @@ Ping OK
 matches. If you can ping, USB and the wire protocol are fully
 functional.
 
+The payload is randomised per invocation, so a stale or
+default-initialised response can't pass as a healthy round trip. If
+the round trip completes but the value comes back wrong, you get the
+mismatch instead of a generic transport error:
+
+```console
+$ gallo ping
+Error: ping echo mismatch: sent 0x9f2c41ab, received 0x00000000
+```
+
+> [!NOTE]
+>
+> `ping` and `version` are the only device subcommands that skip the
+> up-front schema check described below. That is deliberate: a board
+> whose schema doesn't match your `gallo` build should still be able
+> to prove its USB path works.
+
 ## Listing Multiple Devices
 
 If you have more than one Pico de Gallo connected, `gallo list`

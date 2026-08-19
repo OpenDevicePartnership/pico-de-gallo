@@ -5,6 +5,67 @@ All notable changes to `gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-08-19
+
+### Breaking Changes
+
+- `gallo spi set-config` now takes `--mode <0|1|2|3>` in place of the
+  `--first-transition` and `--idle-low` boolean flags. See the entry
+  under **Fixed** for why the old flags could not simply be given
+  correct defaults. Values outside 0–3 are rejected by the argument
+  parser rather than masked. The old flags were never documented in the
+  book — it described a `--phase` / `--polarity` pair that never
+  existed — so no working documented invocation changes meaning.
+
+### Added
+
+- `gallo ping` is now implemented. It round-trips a random `u32`
+  through the firmware's `ping` endpoint and prints `Ping OK` when the
+  echo matches. The subcommand was already documented in the book
+  (`getting-started/verify.md`, `appendix/troubleshooting.md`) but had
+  never been implemented, so `gallo 0.7.1` answered with
+  `error: unrecognized subcommand 'ping'`. The payload is randomised
+  per invocation so a stale, duplicated, or default-initialised
+  response cannot pass as a healthy round trip; a completed round trip
+  carrying the wrong value is reported as
+  `ping echo mismatch: sent 0x…, received 0x…` rather than as a generic
+  transport error, because the two failures have different causes.
+  Fixes [#113](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/113).
+- `-s, --serial-number` now has help text. The flag previously rendered
+  with an empty description column in `gallo -h`.
+
+### Changed
+
+- `ping` and `version` are now the only device subcommands exempt from
+  the up-front schema-version check. `ping` is the transport-level
+  liveness probe, so validating first would report a schema error on a
+  board whose USB path is precisely what the operator is trying to test.
+
+### Fixed
+
+- `gallo spi set-config` no longer changes the SPI mode as a side
+  effect of setting the clock. `--first-transition` and `--idle-low`
+  were opt-in flags defaulting to `false`, which the handler mapped to
+  `CaptureOnSecondTransition` and `IdleHigh` — so a bare
+  `gallo spi set-config --frequency 1000000` silently selected **mode
+  3**, while the firmware boots in **mode 0**. Selecting mode 0 required
+  passing both flags, the exact inverse of what their names suggest.
+  Giving the flags a `true` default does not fix this: `clap` derives
+  `ArgAction::SetTrue` for a bare `bool`, so `false` becomes
+  unreachable (`--idle-low=false` errors with *"unexpected value for an
+  argument found"*) and modes 1–3 would be impossible to select. The
+  flags are therefore replaced by `--mode`, which defaults to 0 and
+  matches the firmware's power-on configuration. The previous
+  regression test asserted the parsed flag values rather than the
+  resulting bus configuration, which is why it never caught this; the
+  replacement asserts the `(SpiPhase, SpiPolarity)` pair.
+- `gallo --help` no longer prints the crate's internal API
+  documentation. `clap` derives `long_about` from the `Cli` struct's
+  rustdoc when one is present, so long help rendered *"Top-level CLI
+  argument parser. Parse with [`clap::Parser::parse`] and execute with
+  [`Cli::run`]."* in place of the configured `about` string. `-h` was
+  unaffected. Now pinned with `long_about = None`.
+
 ## [0.7.1] — 2026-07-20
 
 ### Fixed

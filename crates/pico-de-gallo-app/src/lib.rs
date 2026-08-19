@@ -143,10 +143,15 @@ pub enum OutputFormat {
     name = "Pico De Gallo",
     author = "Felipe Balbi <febalbi@microsoft.com>",
     about = "Access I2C/SPI devices through Pico De Gallo",
+    // Without this, clap derives `long_about` from this struct's rustdoc and
+    // `gallo --help` shows the internal API documentation above instead of
+    // `about`. The rustdoc is for `docs.rs` readers; `about` is for users.
+    long_about = None,
     arg_required_else_help = true,
     version
 )]
 pub struct Cli {
+    /// Select a specific board by USB serial number
     #[arg(short, long)]
     serial_number: Option<String>,
 
@@ -162,6 +167,9 @@ pub struct Cli {
 enum Commands {
     /// List all connected Pico de Gallo devices
     List,
+
+    /// Check device liveness with a round-trip echo
+    Ping,
 
     /// Get firmware version
     Version,
@@ -330,13 +338,13 @@ enum SpiCommands {
         #[arg(long)]
         frequency: u32,
 
-        /// SPI phase first transition (CPHA=0)
-        #[arg(long, default_value_t)]
-        first_transition: bool,
-
-        /// SPI polarity idle low (CPOL=0)
-        #[arg(long, default_value_t)]
-        idle_low: bool,
+        /// SPI mode 0-3, the conventional (CPOL, CPHA) pairing.
+        ///
+        /// 0 = CPOL 0 / CPHA 0, 1 = CPOL 0 / CPHA 1,
+        /// 2 = CPOL 1 / CPHA 0, 3 = CPOL 1 / CPHA 1.
+        /// Defaults to 0, matching the firmware's power-on configuration.
+        #[arg(long, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=3))]
+        mode: u8,
     },
 
     /// Query the current SPI bus configuration
@@ -590,9 +598,10 @@ impl Cli {
     /// rather than as a confusing `CommsFailed` on the first RPC.
     ///
     /// Validation runs on the shared connection opened by [`Cli::run`],
-    /// for every subcommand except `list` (no device needed) and
-    /// `version` (the diagnostic subcommand that explicitly reports the
-    /// schema skew).
+    /// for every subcommand except `list` (no device needed), `version`
+    /// (the diagnostic subcommand that explicitly reports the schema
+    /// skew), and `ping` (the transport-level liveness check, which must
+    /// stay answerable on a board whose schema does not match).
     ///
     /// Closes Category A finding #4 (reviewer R4) at the CLI layer.
     async fn validate_firmware(&self, pg: &PicoDeGallo) -> Result<()> {
@@ -630,15 +639,18 @@ impl Cli {
 
         // Validate the firmware schema up-front for every subcommand that
         // touches the device, except `version` (the diagnostic subcommand
-        // that reports schema skew itself). Without this, a schema mismatch
-        // would manifest as a confusing CommsFailed on the first RPC.
-        // See Category A finding #4.
-        if !matches!(self.command, Commands::Version) {
+        // that reports schema skew itself) and `ping` (the transport-level
+        // liveness check — validating first would report a schema error on
+        // a board whose USB path is exactly what the operator is trying to
+        // test). Without this, a schema mismatch would manifest as a
+        // confusing CommsFailed on the first RPC. See Category A finding #4.
+        if !matches!(self.command, Commands::Version | Commands::Ping) {
             self.validate_firmware(&pg).await?;
         }
 
         match &self.command {
             Commands::List => unreachable!("handled before connecting"),
+            Commands::Ping => self.ping(&pg).await,
             Commands::Version => self.version(&pg).await,
             Commands::I2c { command } => match command {
                 I2cCommands::Scan { reserved } => self.i2c_scan(&pg, *reserved).await,
@@ -656,11 +668,7 @@ impl Cli {
                 SpiCommands::Write { bytes } => self.spi_write(&pg, bytes).await,
                 SpiCommands::Transfer { bytes } => self.spi_transfer(&pg, bytes).await,
                 SpiCommands::WriteRead { count, bytes } => self.spi_write_then_read(&pg, bytes, count).await,
-                SpiCommands::SetConfig {
-                    frequency,
-                    first_transition,
-                    idle_low,
-                } => self.spi_set_config(&pg, *frequency, *first_transition, *idle_low).await,
+                SpiCommands::SetConfig { frequency, mode } => self.spi_set_config(&pg, *frequency, *mode).await,
                 SpiCommands::GetConfig => self.spi_get_config(&pg).await,
                 SpiCommands::Batch { cs, op } => self.spi_batch(&pg, *cs, op).await,
             },
@@ -768,6 +776,30 @@ impl Cli {
                 }
             }
         }
+    }
+
+    /// Round-trip a random nonce through the firmware's `ping` endpoint.
+    ///
+    /// This is the lowest-level liveness check `gallo` offers: it exercises
+    /// USB enumeration, postcard-rpc framing, and the firmware dispatch loop
+    /// without touching a peripheral. Like `version`, it deliberately runs
+    /// without the up-front schema validation [`Cli::run`] applies to the
+    /// other device subcommands, so a schema-skewed board still reports
+    /// whether the transport itself works.
+    ///
+    /// The payload is randomised so that a stale, duplicated, or
+    /// default-initialised response cannot pass as a healthy round trip.
+    async fn ping(&self, pg: &PicoDeGallo) -> Result<()> {
+        let sent = rand::random::<u32>();
+        let echoed = pg
+            .ping(sent)
+            .await
+            .map_err(|e| eyre!("{:?}", e).wrap_err("ping failed"))?;
+
+        check_ping_echo(sent, echoed)?;
+
+        println!("Ping OK");
+        Ok(())
     }
 
     async fn i2c_scan(&self, pg: &PicoDeGallo, reserved: bool) -> Result<()> {
@@ -896,24 +928,8 @@ impl Cli {
         Ok(())
     }
 
-    async fn spi_set_config(
-        &self,
-        pg: &PicoDeGallo,
-        frequency: u32,
-        first_transition: bool,
-        idle_low: bool,
-    ) -> Result<()> {
-        let spi_polarity = if idle_low {
-            SpiPolarity::IdleLow
-        } else {
-            SpiPolarity::IdleHigh
-        };
-
-        let spi_phase = if first_transition {
-            SpiPhase::CaptureOnFirstTransition
-        } else {
-            SpiPhase::CaptureOnSecondTransition
-        };
+    async fn spi_set_config(&self, pg: &PicoDeGallo, frequency: u32, mode: u8) -> Result<()> {
+        let (spi_phase, spi_polarity) = spi_mode(mode)?;
 
         pg.spi_set_config(frequency, spi_phase, spi_polarity)
             .await
@@ -1294,6 +1310,52 @@ impl Cli {
     }
 }
 
+/// Decode an SPI mode number into the `(phase, polarity)` pair the wire
+/// protocol carries.
+///
+/// SPI mode is the conventional encoding of the `(CPOL, CPHA)` tuple, with
+/// CPOL in bit 1 and CPHA in bit 0:
+///
+/// | Mode | CPOL | CPHA | Idle clock | Sample edge |
+/// |------|------|------|------------|-------------|
+/// | 0    | 0    | 0    | low        | first       |
+/// | 1    | 0    | 1    | low        | second      |
+/// | 2    | 1    | 0    | high       | first       |
+/// | 3    | 1    | 1    | high       | second      |
+///
+/// Returns an error rather than masking to `mode & 0b11`, so an
+/// out-of-range value can never be silently reinterpreted as a valid but
+/// different bus configuration. The CLI's own range validator makes that
+/// path unreachable in practice; the check exists so the function is total
+/// without a panic.
+fn spi_mode(mode: u8) -> Result<(SpiPhase, SpiPolarity)> {
+    match mode {
+        0 => Ok((SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleLow)),
+        1 => Ok((SpiPhase::CaptureOnSecondTransition, SpiPolarity::IdleLow)),
+        2 => Ok((SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleHigh)),
+        3 => Ok((SpiPhase::CaptureOnSecondTransition, SpiPolarity::IdleHigh)),
+        _ => Err(eyre!("invalid SPI mode {mode}: expected 0–3")),
+    }
+}
+
+/// Compare a `ping` echo against the payload that was sent.
+///
+/// Split out of [`Cli::ping`] so the comparison policy is unit-testable
+/// without a board attached, mirroring the `check_schema_compatible` split
+/// in `pico-de-gallo-lib`.
+///
+/// A mismatch is a protocol-integrity failure rather than a transport
+/// failure — the round trip completed, but the firmware answered with the
+/// wrong bytes — so it is reported separately from `CommsFailed` and names
+/// both values, which are the only evidence available for diagnosing a
+/// framing or dispatch fault.
+fn check_ping_echo(sent: u32, echoed: u32) -> Result<()> {
+    if echoed != sent {
+        return Err(eyre!("ping echo mismatch: sent 0x{sent:08x}, received 0x{echoed:08x}"));
+    }
+    Ok(())
+}
+
 fn parse_byte(s: &str) -> Result<u8, ParseIntError> {
     if let Some(hex) = s.strip_prefix("0x") {
         u8::from_str_radix(hex, 16)
@@ -1632,47 +1694,13 @@ mod tests {
 
     #[test]
     fn cli_spi_set_config() {
-        let cli = Cli::try_parse_from([
-            "gallo",
-            "spi",
-            "set-config",
-            "--frequency",
-            "1000000",
-            "--first-transition",
-            "--idle-low",
-        ])
-        .unwrap();
+        let cli = Cli::try_parse_from(["gallo", "spi", "set-config", "--frequency", "1000000", "--mode", "3"]).unwrap();
         match cli.command {
             Commands::Spi {
-                command:
-                    SpiCommands::SetConfig {
-                        frequency,
-                        first_transition,
-                        idle_low,
-                    },
+                command: SpiCommands::SetConfig { frequency, mode },
             } => {
                 assert_eq!(frequency, 1_000_000);
-                assert!(first_transition);
-                assert!(idle_low);
-            }
-            _ => panic!("expected Spi SetConfig command"),
-        }
-    }
-
-    #[test]
-    fn cli_spi_set_config_defaults() {
-        let cli = Cli::try_parse_from(["gallo", "spi", "set-config", "--frequency", "500000"]).unwrap();
-        match cli.command {
-            Commands::Spi {
-                command:
-                    SpiCommands::SetConfig {
-                        first_transition,
-                        idle_low,
-                        ..
-                    },
-            } => {
-                assert!(!first_transition);
-                assert!(!idle_low);
+                assert_eq!(mode, 3);
             }
             _ => panic!("expected Spi SetConfig command"),
         }
@@ -1862,5 +1890,140 @@ mod tests {
     #[test]
     fn print_hex_dump_does_not_panic() {
         print_hex_dump(&[0x00, 0x41, 0x42, 0x7F, 0x80, 0xFF]);
+    }
+
+    // ----------------------------- ping tests -----------------------------
+
+    #[test]
+    fn cli_ping_subcommand() {
+        let cli = Cli::try_parse_from(["gallo", "ping"]).unwrap();
+        assert!(matches!(cli.command, Commands::Ping));
+    }
+
+    #[test]
+    fn cli_ping_with_serial() {
+        let cli = Cli::try_parse_from(["gallo", "-s", "E6633861A34B8C24", "ping"]).unwrap();
+        assert_eq!(cli.serial_number.as_deref(), Some("E6633861A34B8C24"));
+        assert!(matches!(cli.command, Commands::Ping));
+    }
+
+    #[test]
+    fn cli_ping_rejects_arguments() {
+        // The documented surface is a bare `gallo ping` (book/src/getting-started/verify.md).
+        // Lock it so a payload flag cannot be added without also updating the book.
+        assert!(Cli::try_parse_from(["gallo", "ping", "--id", "7"]).is_err());
+        assert!(Cli::try_parse_from(["gallo", "ping", "7"]).is_err());
+    }
+
+    #[test]
+    fn check_ping_echo_accepts_a_matching_echo() {
+        assert!(check_ping_echo(0xDEAD_BEEF, 0xDEAD_BEEF).is_ok());
+        assert!(check_ping_echo(0, 0).is_ok());
+        assert!(check_ping_echo(u32::MAX, u32::MAX).is_ok());
+    }
+
+    #[test]
+    fn check_ping_echo_rejects_a_mismatched_echo() {
+        let err = check_ping_echo(0xDEAD_BEEF, 0x0BAD_F00D).unwrap_err();
+        let msg = format!("{err}");
+        // Both values must appear: the difference between them is the only
+        // evidence available for diagnosing a framing or dispatch fault.
+        assert!(msg.contains("deadbeef"), "sent value missing from {msg:?}");
+        assert!(msg.contains("0badf00d"), "echoed value missing from {msg:?}");
+    }
+
+    #[test]
+    fn check_ping_echo_rejects_a_zero_echo_of_a_nonzero_nonce() {
+        // A firmware that answers with a default-initialised buffer is the
+        // most likely real-world mismatch, so pin it explicitly.
+        assert!(check_ping_echo(0x1234_5678, 0).is_err());
+    }
+
+    // ----------------------------- SPI mode tests -----------------------------
+
+    #[test]
+    fn spi_mode_decodes_the_four_standard_modes() {
+        // (CPOL, CPHA) per the conventional numbering: CPOL is bit 1,
+        // CPHA is bit 0.
+        assert_eq!(
+            spi_mode(0).unwrap(),
+            (SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleLow)
+        );
+        assert_eq!(
+            spi_mode(1).unwrap(),
+            (SpiPhase::CaptureOnSecondTransition, SpiPolarity::IdleLow)
+        );
+        assert_eq!(
+            spi_mode(2).unwrap(),
+            (SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleHigh)
+        );
+        assert_eq!(
+            spi_mode(3).unwrap(),
+            (SpiPhase::CaptureOnSecondTransition, SpiPolarity::IdleHigh)
+        );
+    }
+
+    #[test]
+    fn spi_mode_rejects_out_of_range_values() {
+        // Unreachable through clap's range validator, but a silent
+        // truncation to `mode & 0b11` would be a nasty way to find out.
+        assert!(spi_mode(4).is_err());
+        assert!(spi_mode(u8::MAX).is_err());
+    }
+
+    #[test]
+    fn cli_spi_set_config_defaults_to_mode_0() {
+        // Regression test for the CLI defaulting to mode 3 while the
+        // firmware booted in mode 0, so setting the clock silently
+        // changed the mode. Asserts the resulting wire values, not just
+        // the parsed flag: the previous test pinned the flags and so
+        // never noticed the mode was wrong.
+        let cli = Cli::try_parse_from(["gallo", "spi", "set-config", "--frequency", "500000"]).unwrap();
+        match cli.command {
+            Commands::Spi {
+                command: SpiCommands::SetConfig { frequency, mode },
+            } => {
+                assert_eq!(frequency, 500_000);
+                assert_eq!(mode, 0);
+                assert_eq!(
+                    spi_mode(mode).unwrap(),
+                    (SpiPhase::CaptureOnFirstTransition, SpiPolarity::IdleLow),
+                    "a bare set-config must select mode 0, matching the firmware default"
+                );
+            }
+            _ => panic!("expected Spi SetConfig command"),
+        }
+    }
+
+    #[test]
+    fn cli_spi_set_config_accepts_every_mode() {
+        for m in 0u8..=3 {
+            let cli = Cli::try_parse_from([
+                "gallo",
+                "spi",
+                "set-config",
+                "--frequency",
+                "1000000",
+                "--mode",
+                &m.to_string(),
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Spi {
+                    command: SpiCommands::SetConfig { mode, .. },
+                } => assert_eq!(mode, m),
+                _ => panic!("expected Spi SetConfig command"),
+            }
+        }
+    }
+
+    #[test]
+    fn cli_spi_set_config_rejects_an_invalid_mode() {
+        for bad in ["4", "255", "-1"] {
+            assert!(
+                Cli::try_parse_from(["gallo", "spi", "set-config", "--frequency", "1000000", "--mode", bad]).is_err(),
+                "--mode {bad} should be rejected"
+            );
+        }
     }
 }
