@@ -608,3 +608,101 @@ coupling, and no-caching — are **both** in the source-shape class.
 
 **Nothing on this branch has ever executed.** M5 remains the first milestone that
 runs anything.
+---
+
+## 11. M4 outcome — the sub-project's goal, achieved
+
+M4 landed as `919b55ad7a5b` (spec) + `0affe9206553` (implementation, 13 files,
+`feat(zephyr)!` with a `BREAKING CHANGE:` footer).
+
+**Conductor-verified independently:** `cs-gpio-indices` appears in **zero** files
+under `zephyr/`, `book/` or `crates/`; all three SPI overlays carry
+`cs-gpios = <&pdg_gpio0 0 GPIO_ACTIVE_LOW>`; `gpio_pin_set_dt` results are
+captured at both edges (`pdg_spi.c:220,236`); `SPI_HOLD_ON_CS` is gated on
+`SPI_LOCK_ON` (`:413`); `i2c_bridge` and `spi_nor_id` build clean; **`pdg_gpio.c`
+now compiles into the SPI sample** where it was absent at baseline; init
+priorities resolve **40 < 45 < 50**.
+
+### 11.1 Two protections beyond the brief, both justified
+
+**A failed deassert latches the controller.** Per-transfer honesty was
+insufficient: a failed deassert on slave A would let the *next* transfer to slave
+B succeed and return **0** with A possibly still selected. An unacknowledged
+force-deassert now latches; later transfers get `-EHOSTDOWN` after taking the
+lock but **before any hardware I/O**, cleared only by a successful checked
+deassert through `spi_release()`.
+
+**`SPI_HOLD_ON_CS` requires `SPI_LOCK_ON`.** HOLD alone returns success and then
+*releases the controller*, letting another thread select a second peripheral
+while the first is still asserted — simultaneous selection and MISO contention.
+On a bus with MOSI and MISO shorted (§7.1) that is not hypothetical.
+
+**If a caller never releases:** the line stays asserted, `ctx->config`/`ctx->owner`
+stay set, and any transceive with a different config **blocks forever**. No
+timeout, no watchdog, not detectable across process death. Documented, not fixed.
+
+### 11.2 Ruling — sample board identity
+
+Enabling `pdg_gpio0` trips M3's `BUILD_ASSERT` requiring `serial-number` on the
+parent, so all three SPI samples became **board-specific**. They build anywhere
+but fail strict-open on any board but the named one.
+
+**Decision: keep the placeholder** (`REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL`),
+documented so a user substitutes their own from `gallo list`. No private serial
+ships in public sample code, and the failure is loud and self-explaining.
+**M5 supplies its own fixture overlay carrying the real serial, kept out of the
+samples.**
+
+### 11.3 Corrections
+
+- **§1's M4 gate "CS edges witnessed" was impossible** under a compile-only M4 —
+  it belongs to M5.
+- **§7's "`cs-gpio-indices` appears nowhere in the repo" is untenable** against
+  mandated history (AGENTS.md §13.17, the #104 records, and the M2/M3/M4 specs
+  all legitimately cite it). **Corrected gate: zero hits under `zephyr/`,
+  `book/` and `crates/`.** Verified.
+- **R7 is stale** — `gallo_system_reset_subscriptions` exists at
+  `ffi/lib.rs:706-748`.
+- **§3's inventory was short again** — fifth milestone running. Treat as
+  indicative. The SPI `CMakeLists.txt` gained `${ZEPHYR_BASE}/drivers/spi` on the
+  include path because `spi_context.h` is a private in-tree header.
+- **Spec §4.2 orders assert before set-config**; M4 correctly reverses it to
+  shorten the selected-idle window.
+- **Spec §5 says "3+" RPCs — it is four**, and misdescribes the delay: Zephyr
+  *collapses* setup and hold into a single `DIV_ROUND_UP(MAX(...), 1000)` µs
+  value applied at both edges.
+- **Spec §6's "GPIO child is the sole writer" is too broad.** It is the sole
+  *driver path*, not an ownership reservation — a direct GPIO consumer can still
+  move the CS pin between SPI operations, and Zephyr arbitrates nothing against
+  non-DT consumers. Exclusive CS-pin ownership is a documented **user obligation**.
+
+### 11.4 Mandatory for M5
+
+- **Pair `SPI_HOLD_ON_CS | SPI_LOCK_ON`** — HOLD alone is rejected.
+- **Call `gallo_system_reset_subscriptions()` explicitly in acceptance *setup***,
+  after strict open. **Not** in a pin callback, SPI init, or ordinary parent init
+  — a hidden global mutation would destroy deliberately-retained subscriptions.
+  Required because pin 2 still carries the orphaned subscription and
+  `gpio_pin_configure_dt()` returns `-EBUSY` on it.
+- **Use a separate fixture overlay** with the real serial (§11.2), not the
+  samples.
+- **Four properties need new instrumentation to be testable at all:**
+  first-errno preservation; "no second GPIO edge" (electrically identical to the
+  first, API-invisible); "`-EHOSTDOWN` before *any* I/O" (proving RPC absence);
+  and the non-returning-RPC row. A `CONFIG`-gated fault shim plus a
+  `pdg_gpio_bottom_put` call counter would cover the first three.
+
+### 11.5 Assurance boundary
+
+M4's devicetree topology rejections are the **first genuinely proved properties**
+in this restructure — a foreign CS controller, a cross-parent one, a disabled one
+and a missing `cs-gpios` each fail with their own distinct diagnostic, and the
+same-parent clause is shown to fire independently.
+
+But the four properties the spec argues *hardest* for — the defanged unlock, the
+latch refusing a different slave before any I/O, the RX commit barrier, and
+HOLD-requires-LOCK — remain source-shape assertions. The latch is currently
+"tested" by asserting a byte offset between two source constructs.
+
+**Nothing on this branch has ever executed. M5 is the first milestone that runs
+anything, and it is where these four stop being claims.**
