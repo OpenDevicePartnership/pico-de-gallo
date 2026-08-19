@@ -1,0 +1,98 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * M5 phase 3 topology: parent, GPIO and SPI all okay, chip select on index 2.
+ *
+ * Distinct from every other M5 topology overlay. The only shared fragment is
+ * fixture-identity.dtsi (acceptance spec §2, reviewer BLOCKER: a shared
+ * enabled-child overlay would let GPIO or SPI init touch monitored pin 2 before
+ * the reset image runs).
+ *
+ * THE INTERRUPT-WITNESS PROPERTY IS DELIBERATELY OMITTED HERE TOO, AND MUST
+ * STAY OMITTED. Do not add the upstream loopback suite's optional CS-loopback
+ * GPIO property to any M5 overlay -- it would pull in GPIO interrupt
+ * configuration, which D5 leaves as -ENOSYS. See spi_loopback.overlay for the
+ * full reasoning.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+#include "../fixture-identity.dtsi"
+
+&pdg0 {
+	status = "okay";
+};
+
+&pdg_gpio0 {
+	status = "okay";
+};
+
+&pdg_spi0 {
+	status = "okay";
+
+	/*
+	 * Chip select is firmware user GPIO index 2, active low. The cell is a
+	 * firmware user GPIO index, not an RP2350 GPIO number and not a header
+	 * pin number. Pin 2 is jumpered to pin 3, the witness.
+	 *
+	 * The application must NOT reconfigure pin 2 before SPI use: pdg_spi_init()
+	 * parks it GPIO_OUTPUT_INACTIVE, which under GPIO_ACTIVE_LOW is physically
+	 * HIGH, and that parked state is the baseline every witness reading in
+	 * this phase is measured against.
+	 */
+	cs-gpios = <&pdg_gpio0 2 GPIO_ACTIVE_LOW>;
+
+	/*
+	 * Two SPI device children so the application can build its spi_configs
+	 * with the STANDARD upstream initializer, SPI_CONFIG_DT(), instead of
+	 * hand-populating struct spi_config and struct spi_cs_control.
+	 *
+	 * That is not a style preference. The first version of this test
+	 * hand-built the cs_control with .gpio and .delay and silently omitted
+	 * spi_cs_control.cs_is_gpio, which static initialization then left
+	 * false. spi_cs_is_gpio() reads ONLY that field, so
+	 * pdg_spi_cs_control_checked() returned 0 without ever calling
+	 * gpio_pin_set_dt(): the transfer echoed perfectly, returned 0, and chip
+	 * select was never asserted. SPI_CONFIG_DT()/SPI_CS_CONTROL_INIT() set
+	 * every field of the upstream struct by construction, so a field added
+	 * upstream cannot silently default to a behaviour-disabling value here.
+	 *
+	 * A child's reg is a plain index into cs-gpios, so both select entry 0,
+	 * i.e. firmware GPIO 2. Duplicate indices are permitted deliberately
+	 * (CS-contract §8.17).
+	 *
+	 * These two spi-max-frequency literals MUST equal the slow@0 and fast@0
+	 * values in ../spi_loopback.overlay: the timing multiplier is derived
+	 * from measurements taken at exactly these operating points, and
+	 * measuring anywhere else derives it from the wrong ratio and fails only
+	 * intermittently, much later (test design §8.5, escalation E5). The
+	 * application reads them with DT_PROP() and prints both, so a divergence
+	 * is visible in the aggregate verdict.
+	 */
+	m5_slow_dev: m5slow@0 {
+		compatible = "vnd,spi-device";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+	};
+
+	m5_fast_dev: m5fast@0 {
+		compatible = "vnd,spi-device";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+	};
+};
+
+/ {
+	zephyr,user {
+		/*
+		 * The independent witness. Pin 3 holds the shared node up
+		 * through its own pull-up; the only thing that can bring it low
+		 * is pin 2 actively driving. That asymmetry is why a witness
+		 * LOW is strong evidence and a witness HIGH is not
+		 * (test design §5.4).
+		 */
+		m5-witness-gpios = <&pdg_gpio0 3 GPIO_ACTIVE_HIGH>;
+	};
+};

@@ -1,0 +1,83 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * M5 phase 4 topology: the upstream tests/drivers/spi/spi_loopback suite.
+ *
+ * Distinct from every other M5 topology overlay -- it is the only one that
+ * declares SPI children. The only shared fragment is fixture-identity.dtsi.
+ *
+ * THE INTERRUPT-WITNESS PROPERTY IS DELIBERATELY OMITTED, AND MUST STAY
+ * OMITTED. Do not add the upstream loopback suite's optional CS-loopback GPIO
+ * property to this overlay. This is normative (acceptance spec §2.4; design
+ * §7.2 is superseded by D5 and plan §10.1).
+ *
+ * Why: upstream spi.c:140 guards the complete interrupt-driven witness
+ * implementation behind that property. Leaving it out selects the no-op helpers
+ * at 242-246, and spi_loopback_gpio_cs_loopback_init() becomes a trivial
+ * success. Declaring it would reach interrupt configuration at :233 and
+ * callback registration at :240 -- and this controller leaves GPIO interrupts
+ * as -ENOSYS by design, so the suite would fail at setup for a reason that has
+ * nothing to do with the data path. The bespoke acceptance image supplies the
+ * chip-select evidence instead, electrically, via the pin 2 to pin 3 jumper.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+#include "fixture-identity.dtsi"
+
+&pdg0 {
+	status = "okay";
+};
+
+&pdg_gpio0 {
+	status = "okay";
+};
+
+&pdg_spi0 {
+	status = "okay";
+
+	/*
+	 * One chip select, firmware user GPIO index 2, active low. Both children
+	 * carry reg = <0>, i.e. both select this same entry: a child's reg is a
+	 * plain index into cs-gpios, and duplicate indices are permitted
+	 * deliberately (CS-contract §8.17).
+	 */
+	cs-gpios = <&pdg_gpio0 2 GPIO_ACTIVE_LOW>;
+
+	/*
+	 * spi.c resolves these with DT_COMPAT_GET_ANY_STATUS_OKAY(), and
+	 * loopback_specs[] is {slow, fast} with spec_names[] {"SLOW","FAST"}.
+	 * BOTH log markers "Testing loopback spec: SLOW" and
+	 * "Testing loopback spec: FAST" are required: a malformed spec array --
+	 * one child, or two children resolving to the same node -- yields a run
+	 * that executes half the cases while still reporting all-green.
+	 *
+	 * These two spi-max-frequency literals MUST equal m5-slow-frequency-hz
+	 * and m5-fast-frequency-hz in acceptance/acceptance.overlay. The timing
+	 * multiplier is derived from measurements taken at exactly these
+	 * operating points; measuring anywhere else derives it from the wrong
+	 * ratio and fails only intermittently, much later (test design §8.5).
+	 *
+	 * fast@0 is held at 8 MHz on purpose. The multiplier is USB-latency
+	 * dominated -- wall time is roughly four USB round trips regardless of
+	 * clock rate, while the theoretical minimum shrinks as frequency rises --
+	 * so raising this frequency raises the required multiplier roughly
+	 * proportionally. 8 MHz keeps the requirement inside the expected 64-128
+	 * band. If a multiplier above 256 is ever needed, LOWER this frequency
+	 * and remeasure; never raise the multiplier past 256, which would
+	 * recreate a vacuous timing test.
+	 */
+	slow@0 {
+		compatible = "test-spi-loopback-slow";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+	};
+
+	fast@0 {
+		compatible = "test-spi-loopback-fast";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+	};
+};

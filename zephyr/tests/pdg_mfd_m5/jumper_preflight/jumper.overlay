@@ -1,0 +1,47 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * M5 phase 2 topology: parent and GPIO okay, SPI explicitly disabled.
+ *
+ * SPI must stay disabled here. This image deliberately drives pin 2 -- the
+ * chip-select line -- from both ends to prove the jumper, and no later image
+ * may do that once pdg_spi_init() has parked pin 2 as an inactive output
+ * (acceptance spec §2.2, §6).
+ *
+ * Distinct from every other M5 topology overlay by construction; the only
+ * shared fragment is fixture-identity.dtsi.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+#include "../fixture-identity.dtsi"
+
+&pdg0 {
+	status = "okay";
+};
+
+&pdg_gpio0 {
+	status = "okay";
+};
+
+&pdg_spi0 {
+	status = "disabled";
+};
+
+/ {
+	zephyr,user {
+		/*
+		 * Firmware user GPIO indices, not RP2350 GPIO numbers and not
+		 * header pin numbers. Pin 2 is chip select in the later images;
+		 * pin 3 is the witness. They are jumpered together.
+		 *
+		 * Both are declared GPIO_ACTIVE_HIGH so this image reasons in
+		 * raw physical levels. The GPIO_ACTIVE_LOW chip-select polarity
+		 * belongs to the SPI controller's cs-gpios, not here.
+		 */
+		m5-pin2-gpios = <&pdg_gpio0 2 GPIO_ACTIVE_HIGH>;
+		m5-pin3-gpios = <&pdg_gpio0 3 GPIO_ACTIVE_HIGH>;
+	};
+};
