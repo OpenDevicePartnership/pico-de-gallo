@@ -5,16 +5,27 @@
  *
  * Zephyr SPI controller driver for the Pico de Gallo USB bridge.
  *
- * This file runs in the embedded/Zephyr context. Note that
- * "embedded" here just means the embedded part of `native-sim`,
- * not something that actually gets flashed to hardware or anything.
- * Anyway, this file translates Zephyr SPI API transactions into the small 
- * host-context shim declared in pdg_spi_bottom.h, which forwards them to the Pico de Gallo C FFI.
+ * This file runs in the embedded/Zephyr context. Note that "embedded" here
+ * just means the embedded part of `native-sim`, not something that actually
+ * gets flashed to hardware. It translates Zephyr SPI API transactions into the
+ * small host-context shim declared in pdg_spi_bottom.h, which forwards them to
+ * the Pico de Gallo C FFI.
+ *
+ * Chip select is ordinary Zephyr cs-gpios. Every enabled controller declares
+ * at least one entry, each entry targets an enabled odp,pico-de-gallo-gpio
+ * sibling under the exact same odp,pico-de-gallo parent, and a child node's
+ * reg is a plain index into that array. Selection is therefore no longer
+ * atomic with the data phase: an ordinary successful transceive is four USB
+ * round trips (set-config, assert, transfer, deassert) instead of one firmware
+ * batch. The trade buys standard devicetree composition, SPI_LOCK_ON and a
+ * safe SPI_HOLD_ON_CS | SPI_LOCK_ON, at the cost of the batch's chip-select
+ * interval guarantee.
  */
 
 #define DT_DRV_COMPAT odp_pico_de_gallo_spi
 
 #include <zephyr/device.h>
+#include <zephyr/drivers/gpio.h>
 #include <zephyr/drivers/spi.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -52,6 +63,42 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
 	     "disable CONFIG_SPI_RTIO (CONFIG_SENSOR_ASYNC_API selects it).");
 
 /*
+ * Per-chip-select topology enforcement.
+ *
+ * Each cs-gpios entry must satisfy three independent conditions, and all three
+ * are load-bearing:
+ *
+ *   1. compatible -- a foreign controller (native_sim's zephyr,gpio-emul, for
+ *      instance) is an enabled, bound, perfectly functional GPIO port that
+ *      simply is not on this board at all.
+ *   2. status okay -- a disabled sibling has no device object to reach.
+ *   3. same parent -- this is the discriminating one. A genuine, enabled
+ *      odp,pico-de-gallo-gpio controller under a *different* odp,pico-de-gallo
+ *      parent passes both checks above while living on a different physical
+ *      board, so chip select would be driven on one board and data clocked on
+ *      another. That is the 2026-07-29 ambiguous-target failure class
+ *      (AGENTS.md §13.17) expressed in devicetree. Do not drop this clause.
+ */
+#define PDG_SPI_CS_ASSERT(node_id, prop, idx, inst)				\
+	BUILD_ASSERT(								\
+		DT_NODE_HAS_COMPAT(DT_GPIO_CTLR_BY_IDX(node_id, prop, idx),	\
+				   odp_pico_de_gallo_gpio),			\
+		"odp,pico-de-gallo-spi cs-gpios entry " #idx " must target an "	\
+		"odp,pico-de-gallo-gpio controller");				\
+	BUILD_ASSERT(								\
+		DT_NODE_HAS_STATUS_OKAY(					\
+			DT_GPIO_CTLR_BY_IDX(node_id, prop, idx)),		\
+		"odp,pico-de-gallo-spi cs-gpios entry " #idx " must target an "	\
+		"odp,pico-de-gallo-gpio controller with status okay");		\
+	BUILD_ASSERT(								\
+		DT_SAME_NODE(							\
+			DT_PARENT(DT_GPIO_CTLR_BY_IDX(node_id, prop, idx)),	\
+			DT_INST_PARENT(inst)),					\
+		"odp,pico-de-gallo-spi cs-gpios entry " #idx " must target an "	\
+		"odp,pico-de-gallo-gpio controller under the same "		\
+		"odp,pico-de-gallo parent as this controller");
+
+/*
  * Structural topology enforcement, by the same reasoning as the assertions
  * above: an explicit BUILD_ASSERT that names the problem beats an unresolved
  * __device_dts_ord_N at link time.
@@ -65,13 +112,20 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
  * stale root-level child yields `/`, so status alone is not sufficient either;
  * the compatible must be asserted separately.
  *
- * The order compatible -> parent status -> Kconfig is deliberate. Disabling
- * the parent also drops DT_HAS_ODP_PICO_DE_GALLO_ENABLED and therefore makes
- * CONFIG_MFD_PICO_DE_GALLO `n`, so the third assertion would be true
- * simultaneously with the second; emitting the most specific structural
- * diagnostic first keeps the message naming the actual topology error at the
- * top. (_Static_assert is not fatal, so GCC reports all failing assertions in
- * one pass.)
+ * The order compatible -> parent status -> parent serial -> Kconfig -> per-CS
+ * is deliberate and is the normative contract. Disabling the parent also drops
+ * DT_HAS_ODP_PICO_DE_GALLO_ENABLED and therefore makes CONFIG_MFD_PICO_DE_GALLO
+ * `n`, so the Kconfig assertion would be true simultaneously with the status
+ * one; emitting the most specific structural diagnostic first keeps the message
+ * naming the actual topology error at the top. (_Static_assert is not fatal, so
+ * GCC reports all failing assertions in one pass.)
+ *
+ * The serial-presence assertion exists because chip select now actuates a
+ * physical GPIO, exactly as the GPIO child does. A selector-less strict open
+ * cannot report which attached board it selected, so an enabled SPI controller
+ * under a selector-less parent would drive an unidentifiable board's pins.
+ * Presence is not uniqueness: two parents carrying the same explicit serial
+ * still alias to one board.
  *
  * They also precede the "pdg_mfd.h" include on purpose: with
  * CONFIG_MFD_PICO_DE_GALLO=n the MFD driver subdirectory is not added to the
@@ -88,9 +142,14 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
 		"Enabled odp,pico-de-gallo-spi controllers require their "	\
 		"odp,pico-de-gallo parent to have status okay");			\
 	BUILD_ASSERT(								\
+		DT_NODE_HAS_PROP(DT_INST_PARENT(inst), serial_number),		\
+		"odp,pico-de-gallo-spi parent must define serial-number");	\
+	BUILD_ASSERT(								\
 		IS_ENABLED(CONFIG_MFD_PICO_DE_GALLO),				\
 		"Enabled Pico de Gallo child controllers require "		\
-		"CONFIG_MFD_PICO_DE_GALLO=y");
+		"CONFIG_MFD_PICO_DE_GALLO=y");					\
+	DT_FOREACH_PROP_ELEM_VARGS(DT_DRV_INST(inst), cs_gpios,			\
+				   PDG_SPI_CS_ASSERT, inst)
 
 DT_INST_FOREACH_STATUS_OKAY(PDG_SPI_PARENT_ASSERTS)
 
@@ -98,333 +157,516 @@ DT_INST_FOREACH_STATUS_OKAY(PDG_SPI_PARENT_ASSERTS)
 
 LOG_MODULE_REGISTER(spi_pico_de_gallo, CONFIG_SPI_LOG_LEVEL);
 
+/* spi_context.h uses LOG_ERR in an inline helper, so it must follow the
+ * LOG_MODULE_REGISTER above.
+ */
+#include "spi_context.h"
+
 // Firmware single-transfer limit (pico_de_gallo_internal::MAX_TRANSFER_SIZE).
 #define PDG_SPI_MAX_BUFFER 4096U
 
 struct pdg_spi_config {
-    const struct device *mfd;
-    const uint8_t *cs_indices;
-    size_t cs_indices_len;
+	const struct device *mfd;
+	const char *serial_number;
 };
 
 struct pdg_spi_data {
+	struct spi_context spi_ctx; /* MUST be first */
 	void *ctx;
-	struct k_mutex lock;
-	uint8_t num_gpios;
+	bool cs_fault;
+	int cs_fault_errno;
 };
 
-// helper to calculate the total byte length of every buffer in a `spi_buf_set`
-// used when flattening Zephyr `spi_but_set`s into a normal contiguous buffer to pass into the pico-de-gallo ffi
-// (the `direction` parameter isn't part of the actual calculation, it is just for debugging verbosity)
-static int bufset_len_(const struct spi_buf_set *bufs, size_t *total_len, const char* direction)
+/*
+ * Diagnostic helper: the chip-select pin currently selected by ctx->config, or
+ * 0xFF when no GPIO chip select is in play. Used only in log lines.
+ */
+static uint8_t pdg_spi_cs_pin(const struct spi_context *ctx)
 {
-    *total_len = 0U;
+	if ((ctx->config != NULL) && spi_cs_is_gpio(ctx->config)) {
+		return (uint8_t)ctx->config->cs.gpio.pin;
+	}
 
-    if (bufs == NULL) {
-        return 0;
-    }
-    if (bufs->count != 0U && bufs->buffers == NULL) {
-        LOG_ERR("SPI %s buffer set has count %zu but no buffer array. Returning -EINVAL.", direction, bufs->count);
-        return -EINVAL;
-    }
+	return 0xFFU;
+}
 
-    for (size_t i = 0U; i < bufs->count; ++i) {
-        if (bufs->buffers[i].len > PDG_SPI_MAX_BUFFER - *total_len) {
-            LOG_WRN("SPI %s buffers exceed maximum transfer size of %u bytes. Returning -EMSGSIZE", direction, PDG_SPI_MAX_BUFFER);
-            return -EMSGSIZE;
-        }
-        *total_len += bufs->buffers[i].len;
-    }
+/*
+ * Checked chip-select edge.
+ *
+ * Do not replace this with `spi_context_cs_control()`. PDG CS is a fallible,
+ * potentially non-returning USB GPIO operation; Zephyr's void helper discards
+ * errno. This helper preserves upstream delay/HOLD rules while making returning
+ * failures observable.
+ *
+ * Behaviour mirrors _spi_context_cs_control() exactly, including the collapsed
+ * DIV_ROUND_UP(MAX(setup_ns, hold_ns), 1000) microsecond wait that Zephyr
+ * stores in config->cs.delay and applies at *both* edges: after a successful
+ * assert, and before the deassert write.
+ *
+ * The level is never verified by reading the pin back. The GPIO child masks an
+ * explicit output to zero in port_get_raw(), and a legacy-mode read mutates the
+ * pin's direction, so a readback would either lie or corrupt the line.
+ */
+static int pdg_spi_cs_control_checked(struct spi_context *ctx, bool on, bool force_off)
+{
+	const struct spi_config *config = ctx->config;
+	int ret;
 
-    return 0;
+	if ((config == NULL) || !spi_cs_is_gpio(config)) {
+		return 0;
+	}
+
+	if (on) {
+		ret = gpio_pin_set_dt(&config->cs.gpio, 1);
+		if (ret < 0) {
+			return ret;
+		}
+
+		k_busy_wait(config->cs.delay);
+
+		return 0;
+	}
+
+	if (!force_off && ((config->operation & SPI_HOLD_ON_CS) != 0U)) {
+		return 0;
+	}
+
+	k_busy_wait(config->cs.delay);
+
+	ret = gpio_pin_set_dt(&config->cs.gpio, 0);
+	if (ret < 0) {
+		return ret;
+	}
+
+	return 0;
+}
+
+/*
+ * Defanged unconditional unlock.
+ *
+ * spi_context_unlock_unconditionally() begins with a *void* forced CS-off edge
+ * and only then clears the owner and gives the semaphore. On this controller
+ * that edge is a second USB GPIO write which duplicates the checked deassert we
+ * already performed, discards its errno, and -- worst of all -- can fail to
+ * return at all, wedging software ownership before the semaphore is ever given.
+ *
+ * Clearing ctx->config first makes the stock edge guard false, so the helper
+ * degenerates to exactly the owner/semaphore bookkeeping we want and issues no
+ * GPIO traffic. This is deliberate defanging: do not restore the idiomatic
+ * live-config call. Verified against the pinned upstream source --
+ * _spi_context_cs_control() does nothing when ctx->config == NULL, and the
+ * remainder reads only lock and owner.
+ *
+ * The saved pointer is restored only when the preceding checked deassert
+ * failed, so a latched controller keeps the exact recovery target a later
+ * spi_release(dev, saved) must match. A successful release leaves it NULL,
+ * which is what makes a second release rejectable.
+ */
+static void pdg_spi_unlock_defanged(struct spi_context *ctx, bool deassert_failed)
+{
+	const struct spi_config *saved = ctx->config;
+
+	ctx->config = NULL;
+	spi_context_unlock_unconditionally(ctx);
+
+	if (deassert_failed) {
+		ctx->config = saved;
+	}
+}
+
+// helper to calculate the total byte length of every buffer in a `spi_buf_set`
+// used when flattening Zephyr `spi_buf_set`s into a normal contiguous buffer to pass into the pico-de-gallo ffi
+// (the `direction` parameter isn't part of the actual calculation, it is just for debugging verbosity)
+static int bufset_len_(const struct spi_buf_set *bufs, size_t *total_len, const char *direction)
+{
+	*total_len = 0U;
+
+	if (bufs == NULL) {
+		return 0;
+	}
+	if (bufs->count != 0U && bufs->buffers == NULL) {
+		LOG_ERR("SPI %s buffer set has count %zu but no buffer array. Returning -EINVAL.", direction, bufs->count);
+		return -EINVAL;
+	}
+
+	for (size_t i = 0U; i < bufs->count; ++i) {
+		if (bufs->buffers[i].len > PDG_SPI_MAX_BUFFER - *total_len) {
+			LOG_WRN("SPI %s buffers exceed maximum transfer size of %u bytes. Returning -EMSGSIZE", direction, PDG_SPI_MAX_BUFFER);
+			return -EMSGSIZE;
+		}
+		*total_len += bufs->buffers[i].len;
+	}
+
+	return 0;
 }
 
 // helper that flattens a set of `spi_buf_set`s into a single buffer
 static void flatten_tx_(const struct spi_buf_set *tx_bufs, uint8_t *flat, size_t flat_len)
 {
-    size_t offset = 0U;
+	size_t offset = 0U;
 
-    memset(flat, 0, flat_len);
-    if (tx_bufs == NULL) {
-        return;
-    }
+	memset(flat, 0, flat_len);
+	if (tx_bufs == NULL) {
+		return;
+	}
 
-    for (size_t i = 0U; i < tx_bufs->count; ++i) {
-        const struct spi_buf *buf = &tx_bufs->buffers[i];
+	for (size_t i = 0U; i < tx_bufs->count; ++i) {
+		const struct spi_buf *buf = &tx_bufs->buffers[i];
 
-        if (buf->buf != NULL) {
-            memcpy(flat + offset, buf->buf, buf->len);
-        }
-        offset += buf->len;
-    }
+		if (buf->buf != NULL) {
+			memcpy(flat + offset, buf->buf, buf->len);
+		}
+		offset += buf->len;
+	}
 }
 
 // helper that takes in a normal flat buffer from pico-de-gallo and organizes it into the multiple
 // buffer sets provided by zephyr
 static void unflatten_rx_(const struct spi_buf_set *rx_bufs, const uint8_t *flat)
 {
-    size_t offset = 0U;
+	size_t offset = 0U;
 
-    if (rx_bufs == NULL) {
-        return;
-    }
+	if (rx_bufs == NULL) {
+		return;
+	}
 
-    for (size_t i = 0U; i < rx_bufs->count; ++i) {
-        const struct spi_buf *buf = &rx_bufs->buffers[i];
+	for (size_t i = 0U; i < rx_bufs->count; ++i) {
+		const struct spi_buf *buf = &rx_bufs->buffers[i];
 
-        if (buf->buf != NULL) {
-            memcpy(buf->buf, flat + offset, buf->len);
-        }
-        offset += buf->len;
-    }
+		if (buf->buf != NULL) {
+			memcpy(buf->buf, flat + offset, buf->len);
+		}
+		offset += buf->len;
+	}
 }
 
-// helper macro for `pdg_spi_transceieve()`'s op flag checks.
+// helper macro for `pdg_spi_transceive()`'s op flag checks.
 #define OP_HAS_FLAG_(flag) (((config)->operation & (flag)) != 0U)
 
 static int pdg_spi_transceive(const struct device *dev, const struct spi_config *config, const struct spi_buf_set *tx_bufs, const struct spi_buf_set *rx_bufs)
 {
-    struct pdg_spi_data *data = dev->data;
-    const struct pdg_spi_config *dev_config = dev->config;
-    struct pdg_spi_batch_op ops[3] = {0};
-    struct pdg_spi_batch_op *transfer_op;
-    uint8_t *tx_flat = NULL;
-    uint8_t *rx_flat = NULL;
-    uint8_t cs_index;
-    size_t tx_len;
-    size_t rx_len;
-    size_t clock_len;
-    size_t ops_count = 0U;
-    size_t out_len = 0U;
-    int ret;
+	struct pdg_spi_data *data = dev->data;
+	const struct pdg_spi_config *dev_config = dev->config;
+	struct spi_context *ctx = &data->spi_ctx;
+	uint8_t *tx_flat = NULL;
+	uint8_t *rx_flat = NULL;
+	size_t tx_len;
+	size_t rx_len;
+	size_t clock_len;
+	bool commit_rx = false;
+	bool deassert_failed = false;
+	bool retain_lock = false;
+	int cleanup;
+	int ret;
 
-    /*
-     * Zephyr's spi_transceive() does not check device readiness, so an
-     * application that skips device_is_ready() reaches here on a device whose
-     * init failed. Guard first: every later diagnostic reads data->num_gpios.
-     */
-    if (data->ctx == NULL) {
-        LOG_ERR("SPI bridge context is NULL before chip-select validation; slave selector, cs-gpio-indices length, mapped GPIO index, and firmware GPIO count are unavailable. Check device readiness and the controller's cs-gpio-indices property. Returning -ENODEV.");
-        return -ENODEV;
-    }
+	/*
+	 * Zephyr's spi_transceive() does not check device readiness, so an
+	 * application that skips device_is_ready() reaches here on a device
+	 * whose init failed. Guard first: everything below dereferences the
+	 * borrowed context or the statically initialized spi_context.
+	 */
+	if (data->ctx == NULL) {
+		LOG_ERR("SPI bridge context is NULL; the controller's chip-select GPIOs were "
+			"never configured. Check device readiness and the controller's "
+			"cs-gpios property. Returning -ENODEV.");
+		return -ENODEV;
+	}
 
-    if (config == NULL) {
-        LOG_ERR("SPI configuration is NULL. Returning -EINVAL.");
-        return -EINVAL;
-    }
+	if (config == NULL) {
+		LOG_ERR("SPI configuration is NULL. Returning -EINVAL.");
+		return -EINVAL;
+	}
 
-    if(SPI_OP_MODE_GET(config->operation) != SPI_OP_MODE_MASTER) {
-        LOG_ERR("The configured SPI peripheral mode is not supported. Only SPI_OP_MODE_MASTER is supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	if (SPI_OP_MODE_GET(config->operation) != SPI_OP_MODE_MASTER) {
+		LOG_ERR("The configured SPI peripheral mode is not supported. Only SPI_OP_MODE_MASTER is supported. Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(SPI_WORD_SIZE_GET(config->operation) != 8U) {
-        LOG_ERR("The configured SPI word size is not supported. Only 8-bit SPI words are supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	if (SPI_WORD_SIZE_GET(config->operation) != 8U) {
+		LOG_ERR("The configured SPI word size is not supported. Only 8-bit SPI words are supported. Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(OP_HAS_FLAG_(SPI_TRANSFER_LSB)) {
-        LOG_ERR("This SPI operation (SPI_TRANSFER_LSB) is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	if (OP_HAS_FLAG_(SPI_TRANSFER_LSB)) {
+		LOG_ERR("This SPI operation (SPI_TRANSFER_LSB) is not supported. Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(OP_HAS_FLAG_(SPI_MODE_LOOP)) {
-        LOG_ERR("This SPI operation (SPI_MODE_LOOP) is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	if (OP_HAS_FLAG_(SPI_MODE_LOOP)) {
+		LOG_ERR("This SPI operation (SPI_MODE_LOOP) is not supported. Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(OP_HAS_FLAG_(SPI_HALF_DUPLEX)) {
-        LOG_ERR("This SPI operation (SPI_HALF_DUPLEX) is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	if (OP_HAS_FLAG_(SPI_HALF_DUPLEX)) {
+		LOG_ERR("This SPI operation (SPI_HALF_DUPLEX) is not supported. Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(OP_HAS_FLAG_(SPI_HOLD_ON_CS)) {
-        LOG_ERR("This SPI operation (SPI_HOLD_ON_CS) is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	/*
+	 * SPI_HOLD_ON_CS leaves a slave selected after this call returns. On a
+	 * bridge whose chip select is a separate, fallible USB operation that is
+	 * only safe while nothing else can start a transfer to a *different*
+	 * slave -- which is precisely what SPI_LOCK_ON guarantees. Holding
+	 * without locking would let the next caller select a second slave while
+	 * the first is still asserted.
+	 */
+	if (OP_HAS_FLAG_(SPI_HOLD_ON_CS) && !OP_HAS_FLAG_(SPI_LOCK_ON)) {
+		LOG_ERR("SPI_HOLD_ON_CS requires SPI_LOCK_ON on this controller: holding chip "
+			"select without owning the bus would let another configuration select "
+			"a second slave while the first remains asserted. Add SPI_LOCK_ON. "
+			"Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(OP_HAS_FLAG_(SPI_LOCK_ON)) {
-        LOG_ERR("This SPI operation (SPI_LOCK_ON) is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	if (OP_HAS_FLAG_(SPI_CS_ACTIVE_HIGH)) {
+		LOG_ERR("This SPI operation (SPI_CS_ACTIVE_HIGH) is not supported; express "
+			"chip-select polarity with GPIO_ACTIVE_HIGH in cs-gpios instead. "
+			"Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(OP_HAS_FLAG_(SPI_CS_ACTIVE_HIGH)) {
-        LOG_ERR("This SPI operation (SPI_CS_ACTIVE_HIGH) is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	if (OP_HAS_FLAG_(SPI_FRAME_FORMAT_TI)) {
+		LOG_ERR("This SPI operation (SPI_FRAME_FORMAT_TI) is not supported. Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(OP_HAS_FLAG_(SPI_FRAME_FORMAT_TI)) {
-        LOG_ERR("This SPI operation (SPI_FRAME_FORMAT_TI) is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	if (OP_HAS_FLAG_(SPI_LINES_MASK)) {
+		LOG_ERR("This SPI operation (SPI_LINES_MASK) is not supported. Returning -ENOTSUP.");
+		return -ENOTSUP;
+	}
 
-    if(OP_HAS_FLAG_(SPI_LINES_MASK)) {
-        LOG_ERR("This SPI operation (SPI_LINES_MASK) is not supported. Returning -ENOTSUP.");
-        return -ENOTSUP;
-    }
+	ret = bufset_len_(tx_bufs, &tx_len, "TX");
+	if (ret != 0) {
+		return ret;
+	}
+	ret = bufset_len_(rx_bufs, &rx_len, "RX");
+	if (ret != 0) {
+		return ret;
+	}
 
-    /*
-     * The chip-select mapping is validated before the buffers because stacked
-     * drivers hide the reason: jedec,spi-nor collapses any transfer failure to
-     * -ENODEV (drivers/flash/spi_nor.c), so these LOG_ERR lines are the only
-     * authoritative diagnosis of a devicetree error.
-     */
-    if (spi_cs_is_gpio(config)) {
-        LOG_ERR("SPI slave selector %u uses Zephyr GPIO-controlled CS; cs-gpio-indices length is %zu, mapped GPIO index is unavailable, firmware reported %u GPIOs. Remove cs-gpios and configure cs-gpio-indices on the Pico de Gallo SPI controller. Returning -ENOTSUP.",
-                (unsigned int)config->slave,
-                dev_config->cs_indices_len,
-                (unsigned int)data->num_gpios);
-        return -ENOTSUP;
-    }
+	/*
+	 * The firmware endpoint is always full duplex, so a read-only transfer
+	 * clocks zero-filled TX and a write-only transfer discards the returned
+	 * RX. Both scratch buffers are therefore allocated in every direction.
+	 */
+	clock_len = MAX(tx_len, rx_len);
+	if (clock_len == 0U) {
+		return 0;
+	}
 
-    if (dev_config->cs_indices_len == 0U) {
-        LOG_ERR("SPI slave selector %u cannot be mapped: cs-gpio-indices length is 0 (property absent), mapped GPIO index is unavailable, firmware reported %u GPIOs. Add cs-gpio-indices to the Pico de Gallo SPI controller. Returning -EINVAL.",
-                (unsigned int)config->slave,
-                (unsigned int)data->num_gpios);
-        return -EINVAL;
-    }
+	tx_flat = k_malloc(clock_len);
+	if (tx_flat == NULL) {
+		LOG_ERR("Failed to allocate %zu-byte SPI TX buffer. Returning -ENOMEM.", clock_len);
+		return -ENOMEM;
+	}
+	flatten_tx_(tx_bufs, tx_flat, clock_len);
 
-    if (config->slave >= dev_config->cs_indices_len) {
-        LOG_ERR("SPI slave selector %u is outside cs-gpio-indices length %zu; mapped GPIO index is unavailable, firmware reported %u GPIOs. Extend or correct cs-gpio-indices on the Pico de Gallo SPI controller. Returning -EINVAL.",
-                (unsigned int)config->slave,
-                dev_config->cs_indices_len,
-                (unsigned int)data->num_gpios);
-        return -EINVAL;
-    }
+	rx_flat = k_malloc(clock_len);
+	if (rx_flat == NULL) {
+		LOG_ERR("Failed to allocate %zu-byte SPI RX buffer. Returning -ENOMEM.", clock_len);
+		k_free(tx_flat);
+		return -ENOMEM;
+	}
 
-    cs_index = dev_config->cs_indices[config->slave];
+	spi_context_lock(ctx, false, NULL, NULL, config);
 
-    if (data->num_gpios == 0U) {
-        LOG_ERR("SPI slave selector %u maps through cs-gpio-indices length %zu to GPIO index %u, but firmware successfully reported zero GPIOs. Correct the firmware/device pairing or cs-gpio-indices; no chip select is available. Returning -ENODEV.",
-                (unsigned int)config->slave,
-                dev_config->cs_indices_len,
-                (unsigned int)cs_index);
-        return -ENODEV;
-    }
+	/*
+	 * The latch is checked *after* acquiring the controller lock and before
+	 * any set-config, chip-select edge or clocking. Checking it before the
+	 * lock would race a preceding transfer that faults while this caller is
+	 * still waiting on the semaphore.
+	 */
+	if (data->cs_fault) {
+		LOG_ERR("Pico de Gallo SPI controller on serial-number \"%s\" is latched after an "
+			"unacknowledged chip-select deassert on GPIO pin %u (originating "
+			"errno=%d); no configuration, chip-select edge or clocking is issued. "
+			"Call spi_release() with the retained configuration and have it "
+			"deassert successfully to recover. Returning -EHOSTDOWN.",
+			dev_config->serial_number, pdg_spi_cs_pin(ctx), data->cs_fault_errno);
+		pdg_spi_unlock_defanged(ctx, true);
+		k_free(rx_flat);
+		k_free(tx_flat);
+		return -EHOSTDOWN;
+	}
 
-    if (cs_index >= data->num_gpios) {
-        LOG_ERR("SPI slave selector %u maps through cs-gpio-indices length %zu to GPIO index %u, but firmware reported %u GPIOs. Correct cs-gpio-indices on the Pico de Gallo SPI controller. Returning -EINVAL.",
-                (unsigned int)config->slave,
-                dev_config->cs_indices_len,
-                (unsigned int)cs_index,
-                (unsigned int)data->num_gpios);
-        return -EINVAL;
-    }
+	ctx->config = config;
 
-    ret = bufset_len_(tx_bufs, &tx_len, "TX");
-    if (ret != 0) {
-        return ret;
-    }
-    ret = bufset_len_(rx_bufs, &rx_len, "RX");
-    if (ret != 0) {
-        return ret;
-    }
+	ret = pdg_spi_bottom_set_config(data->ctx, config->frequency,
+					(config->operation & SPI_MODE_CPHA) != 0U,
+					(config->operation & SPI_MODE_CPOL) != 0U);
+	if (ret != 0) {
+		LOG_ERR("Failed to configure the SPI bus at %u Hz on serial-number \"%s\" "
+			"(CS GPIO pin %u): errno=%d, cleanup not attempted, fault latch not "
+			"entered.", config->frequency, dev_config->serial_number,
+			pdg_spi_cs_pin(ctx), ret);
+		goto out;
+	}
 
-    clock_len = MAX(tx_len, rx_len);
-    if (clock_len == 0U) {
-        return 0;
-    }
+	ret = pdg_spi_cs_control_checked(ctx, true, false);
+	if (ret != 0) {
+		cleanup = pdg_spi_cs_control_checked(ctx, false, true);
+		if (cleanup != 0) {
+			if (!data->cs_fault) {
+				data->cs_fault = true;
+				data->cs_fault_errno = cleanup;
+			}
+			deassert_failed = true;
+		}
+		LOG_ERR("Chip-select assert failed on serial-number \"%s\" GPIO pin %u: "
+			"errno=%d, cleanup errno=%d, fault latch %s. No clocks were issued.",
+			dev_config->serial_number, pdg_spi_cs_pin(ctx), ret, cleanup,
+			deassert_failed ? "entered" : "not entered");
+		goto out;
+	}
 
-    if (tx_len != 0U) {
-        tx_flat = k_malloc(clock_len);
-        if (tx_flat == NULL) {
-            LOG_ERR("Failed to allocate %zu-byte SPI TX buffer. Returning -ENOMEM.", clock_len);
-            return -ENOMEM;
-        }
-        flatten_tx_(tx_bufs, tx_flat, clock_len);
-    }
-    if (rx_len != 0U) {
-        rx_flat = k_malloc(clock_len);
-        if (rx_flat == NULL) {
-            LOG_ERR("Failed to allocate %zu-byte SPI RX buffer. Returning -ENOMEM.", clock_len);
-            k_free(tx_flat);
-            return -ENOMEM;
-        }
-    }
+	ret = pdg_spi_bottom_transfer(data->ctx, tx_flat, rx_flat, clock_len);
+	if (ret != 0) {
+		cleanup = pdg_spi_cs_control_checked(ctx, false, true);
+		if (cleanup != 0) {
+			if (!data->cs_fault) {
+				data->cs_fault = true;
+				data->cs_fault_errno = cleanup;
+			}
+			deassert_failed = true;
+		}
+		LOG_ERR("SPI transfer of %zu bytes failed on serial-number \"%s\" GPIO pin %u: "
+			"errno=%d, cleanup errno=%d, fault latch %s. RX is not committed.",
+			clock_len, dev_config->serial_number, pdg_spi_cs_pin(ctx), ret, cleanup,
+			deassert_failed ? "entered" : "not entered");
+		if (deassert_failed) {
+			ret = cleanup;
+		}
+		goto out;
+	}
 
-    if (config->cs.setup_ns != 0U) {
-        ops[ops_count].tag = PDG_SPI_BATCH_DELAY_NS;
-        ops[ops_count].delay_ns = config->cs.setup_ns;
-        ops_count++;
-    }
+	if (OP_HAS_FLAG_(SPI_HOLD_ON_CS)) {
+		/*
+		 * A deliberate hold intentionally leaves the slave selected, so
+		 * there is no deassert to serve as the commit barrier. The data
+		 * is valid and the caller asked to stay selected under
+		 * SPI_LOCK_ON, so RX must be committed here.
+		 */
+		commit_rx = true;
+		goto out;
+	}
 
-    transfer_op = &ops[ops_count++];
-    if (tx_len == 0U) {
-        transfer_op->tag = PDG_SPI_BATCH_READ;
-        transfer_op->read_len = (uint16_t)clock_len;
-    } else if (rx_len == 0U) {
-        transfer_op->tag = PDG_SPI_BATCH_WRITE;
-        transfer_op->data = tx_flat;
-        transfer_op->data_len = clock_len;
-    } else {
-        transfer_op->tag = PDG_SPI_BATCH_TRANSFER;
-        transfer_op->data = tx_flat;
-        transfer_op->data_len = clock_len;
-    }
+	cleanup = pdg_spi_cs_control_checked(ctx, false, false);
+	if (cleanup != 0) {
+		if (!data->cs_fault) {
+			data->cs_fault = true;
+			data->cs_fault_errno = cleanup;
+		}
+		deassert_failed = true;
+		ret = cleanup;
+		LOG_ERR("SPI transfer of %zu bytes succeeded but the chip-select deassert on "
+			"serial-number \"%s\" GPIO pin %u was unacknowledged: primary errno=0, "
+			"cleanup errno=%d, fault latch entered. RX is not committed; the "
+			"peripheral may remain selected.",
+			clock_len, dev_config->serial_number, pdg_spi_cs_pin(ctx), cleanup);
+		goto out;
+	}
 
-    if (config->cs.hold_ns != 0U) {
-        ops[ops_count].tag = PDG_SPI_BATCH_DELAY_NS;
-        ops[ops_count].delay_ns = config->cs.hold_ns;
-        ops_count++;
-    }
+	commit_rx = true;
 
-    k_mutex_lock(&data->lock, K_FOREVER);
+out:
+	if (commit_rx) {
+		unflatten_rx_(rx_bufs, rx_flat);
+	}
 
-    ret = pdg_spi_bottom_set_config(data->ctx, config->frequency, (config->operation & SPI_MODE_CPHA) != 0U, (config->operation & SPI_MODE_CPOL) != 0U);
+	/*
+	 * SPI_LOCK_ON retains bus ownership across a successful call, exactly as
+	 * spi_context_release() does upstream; every failure releases it so an
+	 * error can never strand the software lock.
+	 */
+	retain_lock = (ret == 0) && OP_HAS_FLAG_(SPI_LOCK_ON);
+	if (!retain_lock) {
+		pdg_spi_unlock_defanged(ctx, deassert_failed);
+	}
 
-    if (ret != 0) {
-        LOG_ERR("Failed to configure SPI bus at %u Hz: Errno=%d", config->frequency, ret);
-    } else {
-        ret = pdg_spi_bottom_batch(data->ctx, (uint8_t)cs_index, ops, ops_count, rx_flat, rx_len == 0U ? 0U : clock_len, &out_len, NULL);
-        if (ret != 0) {
-            LOG_ERR("SPI transaction for slave selector %u using firmware GPIO index %u failed: Errno=%d", config->slave, cs_index, ret);
-        }
-    }
+	k_free(rx_flat);
+	k_free(tx_flat);
 
-    k_mutex_unlock(&data->lock);
-
-    if (ret == 0 && rx_len != 0U) {
-        if (out_len != clock_len) {
-            LOG_ERR("SPI response length mismatch: expected %zu bytes, received %zu. Returning -EPROTO.", clock_len, out_len);
-            ret = -EPROTO;
-        } else {
-            unflatten_rx_(rx_bufs, rx_flat);
-        }
-    }
-
-    k_free(rx_flat);
-    k_free(tx_flat);
-    return ret;
+	return ret;
 }
 
 static int pdg_spi_release(const struct device *dev, const struct spi_config *config)
 {
-    ARG_UNUSED(dev);
-    ARG_UNUSED(config);
+	struct pdg_spi_data *data = dev->data;
+	const struct pdg_spi_config *dev_config = dev->config;
+	struct spi_context *ctx = &data->spi_ctx;
+	int ret;
 
-    return 0;
+	if (data->ctx == NULL) {
+		LOG_ERR("SPI bridge context is NULL; check device readiness. Returning -ENODEV.");
+		return -ENODEV;
+	}
+
+	if (config == NULL) {
+		LOG_ERR("SPI configuration is NULL. Returning -EINVAL.");
+		return -EINVAL;
+	}
+
+	if (!spi_context_configured(ctx, config)) {
+		LOG_ERR("spi_release() was called with a configuration this controller does not "
+			"currently retain; a successful release leaves no retained "
+			"configuration, so a second release is rejected. Returning -EINVAL.");
+		return -EINVAL;
+	}
+
+	spi_context_lock(ctx, false, NULL, NULL, config);
+
+	/* Recheck after acquire: the precheck above raced whoever held the lock. */
+	if (!spi_context_configured(ctx, config)) {
+		LOG_ERR("spi_release() lost the retained configuration while waiting for the "
+			"controller lock. Returning -EINVAL.");
+		pdg_spi_unlock_defanged(ctx, false);
+		return -EINVAL;
+	}
+
+	ret = pdg_spi_cs_control_checked(ctx, false, true);
+	if (ret != 0) {
+		if (!data->cs_fault) {
+			data->cs_fault = true;
+			data->cs_fault_errno = ret;
+		}
+		LOG_ERR("spi_release() chip-select deassert on serial-number \"%s\" GPIO pin %u "
+			"was unacknowledged: errno=%d, fault latch entered (originating "
+			"errno=%d). Software ownership is released, but transfers remain "
+			"blocked; retry spi_release() with this exact configuration, or "
+			"reinitialize/power-cycle.",
+			dev_config->serial_number, pdg_spi_cs_pin(ctx), ret,
+			data->cs_fault_errno);
+	} else {
+		data->cs_fault = false;
+		data->cs_fault_errno = 0;
+	}
+
+	pdg_spi_unlock_defanged(ctx, ret != 0);
+
+	return ret;
 }
 
 static DEVICE_API(spi, pdg_spi_api) = {
-    .transceive = pdg_spi_transceive,
-    .release = pdg_spi_release,
+	.transceive = pdg_spi_transceive,
+	.release = pdg_spi_release,
 };
 
 static int pdg_spi_init(const struct device *dev)
 {
 	const struct pdg_spi_config *config = dev->config;
 	struct pdg_spi_data *data = dev->data;
+	struct spi_context *ctx = &data->spi_ctx;
 	int ret;
 
 	/*
-	 * The mutex is initialized before any early return so that every device
-	 * object that exists at all has a usable lock. Zephyr's spi_transceive()
-	 * dispatches into the driver without checking readiness, so a direct
-	 * call on a failed device must find an initialized mutex; the
-	 * data->ctx == NULL guard at the top of pdg_spi_transceive() then turns
-	 * that call into -ENODEV.
+	 * spi_context's lock/sync semaphores and its cs_gpios array are
+	 * statically initialized by the SPI_CONTEXT_* macros below, and the
+	 * fault latch is zero-initialized, so every device object that exists at
+	 * all is usable before this function runs. Zephyr's spi_transceive()
+	 * dispatches into the driver without checking readiness; the
+	 * data->ctx == NULL guard at the top of pdg_spi_transceive() turns such
+	 * a call on a failed device into -ENODEV.
 	 */
-	k_mutex_init(&data->lock);
 
 	/*
 	 * Mandatory MFD child sequence (pdg_mfd.h): require parent readiness
@@ -448,64 +690,95 @@ static int pdg_spi_init(const struct device *dev)
 	}
 
 	/*
-	 * The MFD parent's open uses gallo_init_strict(), whose successful
-	 * validation populates the shared num_gpios cache. By the time this
-	 * child runs, the parent has already validated, so this call is a
-	 * guaranteed warm-cache read with no USB traffic. The failure branch is
-	 * defence-in-depth for an invariant violation, not an expected timeout
-	 * path. Reading the firmware GPIO count is validated device metadata,
-	 * not chip-select logic, so it stays here.
+	 * Local indexed equivalent of spi_context_cs_configure_all().
+	 *
+	 * Do not call the stock helper here. It reproduces exactly this loop --
+	 * readiness check, then gpio_pin_configure_dt(GPIO_OUTPUT_INACTIVE), in
+	 * ascending array order -- but returns only an errno and discards the
+	 * failing iterator, so it cannot name the cs-gpios array index or the
+	 * GPIO pin this driver's diagnostics are specified to report. Calling it
+	 * and then re-probing to recover the index would issue duplicate,
+	 * state-changing, unbounded USB round trips. The behaviour and ordering
+	 * are identical; only the diagnostics differ.
+	 *
+	 * Readiness is checked before any configuration, so a priority inversion
+	 * (this controller running before the GPIO child) fails loudly with
+	 * -ENODEV having actuated no pin.
+	 *
+	 * There is deliberately no rollback on failure: init has no trustworthy
+	 * record of the prior configuration, and another unbounded RPC could
+	 * hang boot. Residue is documented in the module README.
 	 */
-	ret = pdg_spi_bottom_num_gpios(data->ctx, &data->num_gpios);
-	if (ret != 0) {
-		LOG_ERR("Failed to read the cached firmware GPIO count from the validated Pico de Gallo bridge: Errno=%d. The SPI device will remain not ready.",
-			ret);
-		/*
-		 * Defensive invalidation of this child's cached borrow -- never
-		 * a reference release. The parent holds the sole registry
-		 * reference; closing here would drop it and leave the parent and
-		 * the I2C sibling holding a freed pointer. NULL is guardable and
-		 * becomes -ENODEV; a valid-looking unowned pointer would bypass
-		 * every NULL check.
-		 */
-		data->ctx = NULL;
-		return ret;
+	for (size_t idx = 0U; idx < ctx->num_cs_gpios; idx++) {
+		const struct gpio_dt_spec *cs = &ctx->cs_gpios[idx];
+
+		if (!device_is_ready(cs->port)) {
+			LOG_ERR("%s: cs-gpios index %zu (GPIO pin %u on port %s, Pico de Gallo "
+				"serial-number \"%s\") is not ready during phase "
+				"\"readiness check\"; no chip-select pin was configured. This "
+				"is an initialization priority inversion: "
+				"CONFIG_SPI_PICO_DE_GALLO_INIT_PRIORITY must be greater than "
+				"CONFIG_GPIO_PICO_DE_GALLO_INIT_PRIORITY. Returning -ENODEV.",
+				dev->name, idx, cs->pin, cs->port->name,
+				config->serial_number);
+			data->ctx = NULL;
+			return -ENODEV;
+		}
+
+		ret = gpio_pin_configure_dt(cs, GPIO_OUTPUT_INACTIVE);
+		if (ret < 0) {
+			if (ret == -EBUSY) {
+				LOG_ERR("%s: cs-gpios index %zu (GPIO pin %u, Pico de Gallo "
+					"serial-number \"%s\") failed phase \"configure "
+					"inactive output\" with errno=%d: a firmware GPIO "
+					"event subscription owns this pin. Reset it explicitly "
+					"with gallo_system_reset_subscriptions() after a strict "
+					"open, then reinitialize; or power-cycle the board.",
+					dev->name, idx, cs->pin, config->serial_number, ret);
+			} else {
+				LOG_ERR("%s: cs-gpios index %zu (GPIO pin %u, Pico de Gallo "
+					"serial-number \"%s\") failed phase \"configure "
+					"inactive output\" with errno=%d. Earlier entries are "
+					"acknowledged inactive; this entry is indeterminate and "
+					"later entries were never issued. No rollback is "
+					"attempted.",
+					dev->name, idx, cs->pin, config->serial_number, ret);
+			}
+			data->ctx = NULL;
+			return ret;
+		}
 	}
 
-	LOG_INF("Pico de Gallo SPI bridge ready");
+	/*
+	 * Give the lock semaphore its initial count. ctx->config is still NULL
+	 * here -- nothing above assigns it -- so the defanged helper's stock
+	 * call issues no chip-select edge, which is exactly what init wants.
+	 */
+	pdg_spi_unlock_defanged(ctx, false);
+
+	LOG_INF("%s: ready on Pico de Gallo serial-number \"%s\" with %zu chip select(s).",
+		dev->name, config->serial_number, ctx->num_cs_gpios);
 
 	return 0;
 }
 
-/*
- * The one-element { 0U } sentinel avoids a non-standard zero-length array when
- * cs-gpio-indices is absent. cs_indices_len stays 0, which is the sole
- * "property absent" signal (min-len: 1 in the binding makes a generated length
- * of 0 unambiguous).
- *
- * Because the sentinel makes cs_indices[0] == 0, the cs_indices_len == 0 guard
- * in pdg_spi_transceive() is load-bearing for *safety*, not merely for its
- * message: removing or reordering it would silently reproduce issue #104 by
- * driving firmware GPIO 0 as a chip select.
- */
-#define PDG_SPI_INIT(inst)                                                   \
-	static const uint8_t pdg_spi_cs_indices_##inst[] =                    \
-		COND_CODE_1(DT_INST_NODE_HAS_PROP(inst, cs_gpio_indices),       \
-			    (DT_INST_PROP(inst, cs_gpio_indices)),              \
-			    ({ 0U }));                                          \
-	                                                                         \
-	static struct pdg_spi_data pdg_spi_data_##inst;                        \
-	                                                                         \
-	static const struct pdg_spi_config pdg_spi_config_##inst = {           \
-		.mfd = DEVICE_DT_GET(DT_INST_PARENT(inst)),                       \
-		.cs_indices = pdg_spi_cs_indices_##inst,                           \
-		.cs_indices_len = DT_INST_PROP_LEN_OR(inst, cs_gpio_indices, 0),  \
-	};                                                                       \
-	                                                                         \
-	SPI_DEVICE_DT_INST_DEFINE(inst, pdg_spi_init, NULL,                     \
-				  &pdg_spi_data_##inst,                       \
-				  &pdg_spi_config_##inst,                     \
-				  POST_KERNEL, CONFIG_SPI_INIT_PRIORITY,       \
+#define PDG_SPI_INIT(inst)							\
+	static struct pdg_spi_data pdg_spi_data_##inst = {			\
+		SPI_CONTEXT_INIT_LOCK(pdg_spi_data_##inst, spi_ctx),		\
+		SPI_CONTEXT_INIT_SYNC(pdg_spi_data_##inst, spi_ctx),		\
+		SPI_CONTEXT_CS_GPIOS_INITIALIZE(DT_DRV_INST(inst), spi_ctx)	\
+	};									\
+										\
+	static const struct pdg_spi_config pdg_spi_config_##inst = {		\
+		.mfd = DEVICE_DT_GET(DT_INST_PARENT(inst)),			\
+		.serial_number = DT_PROP(DT_INST_PARENT(inst), serial_number),	\
+	};									\
+										\
+	SPI_DEVICE_DT_INST_DEFINE(inst, pdg_spi_init, NULL,			\
+				  &pdg_spi_data_##inst,				\
+				  &pdg_spi_config_##inst,			\
+				  POST_KERNEL,					\
+				  CONFIG_SPI_PICO_DE_GALLO_INIT_PRIORITY,	\
 				  &pdg_spi_api);
 
 DT_INST_FOREACH_STATUS_OKAY(PDG_SPI_INIT)

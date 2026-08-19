@@ -12,6 +12,26 @@ config SPI_PICO_DE_GALLO
 	  Zephyr SPI API calls to a Pico de Gallo USB bridge attached to the host
 	  running native_sim via the Pico de Gallo C FFI.
 
+config SPI_PICO_DE_GALLO_INIT_PRIORITY
+	int "Pico de Gallo SPI controller initialization priority"
+	default 50
+	depends on SPI_PICO_DE_GALLO
+	help
+	  POST_KERNEL initialization priority of the Pico de Gallo SPI
+	  controller.
+
+	  It must be greater than CONFIG_GPIO_PICO_DE_GALLO_INIT_PRIORITY
+	  (default 45), which must in turn be greater than
+	  CONFIG_MFD_PICO_DE_GALLO_INIT_PRIORITY (default 40). This controller
+	  configures every pin named in its cs-gpios property as an inactive
+	  output at initialization, so the Pico de Gallo GPIO port owning those
+	  pins has to be ready first.
+
+	  Kconfig cannot check the arithmetic. Runtime readiness is
+	  authoritative instead: an inverted priority makes initialization
+	  return -ENODEV before any pin is configured, rather than actuating the
+	  wrong line.
+
 config HEAP_MEM_POOL_ADD_SIZE_PDG_SPI
 	int "Heap memory pool size for the Pico de Gallo SPI driver"
 	default 8192

@@ -143,21 +143,29 @@ restored, but a pull configured through `gpio/set-config` is preserved.
 Firmware predating this contract may instead reconfigure an explicit input
 pin. See [Transaction Batching](./batching.md).
 
-### Zephyr chip-select mapping
+### Zephyr chip select: standard `cs-gpios`
 
-The Zephyr SPI controller driver reaches the same batch endpoint, but a child
-node's `reg` is a chip-select *selector*, not a firmware GPIO index. It indexes
-the controller's `cs-gpio-indices` array, whose elements are the firmware GPIO
-indices this page describes:
+The Zephyr SPI controller driver does **not** use the batch endpoint. It uses
+`spi/transfer` and drives every chip-select edge through the
+`odp,pico-de-gallo-gpio` child, using ordinary Zephyr `cs-gpios`. A child
+node's `reg` therefore has its standard Zephyr meaning: an index into the
+controller's `cs-gpios` array.
 
 ```dts
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
 &pdg0 {
+	status = "okay";
+	serial-number = "REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL";
+};
+
+&pdg_gpio0 {
 	status = "okay";
 };
 
 &pdg_spi0 {
 	status = "okay";
-	cs-gpio-indices = <2 0>;
+	cs-gpios = <&pdg_gpio0 0 GPIO_ACTIVE_LOW>;
 };
 ```
 
@@ -165,31 +173,80 @@ The SPI controller is a direct child of the `pdg0` multi-function-device
 parent: `pdg0` owns the board selection and the USB connection, and the SPI
 controller borrows that connection rather than opening its own.
 
-Here a child with `reg = <0>` drives firmware GPIO index 2 and a child with
-`reg = <1>` drives index 0. There is no identity fallback.
+`cs-gpios` is **required** on every enabled controller; there is no native-CS
+fallback and a missing property fails devicetree processing. Every entry must
+target an enabled `odp,pico-de-gallo-gpio` controller under the *same*
+`odp,pico-de-gallo` parent. A foreign GPIO controller, a disabled sibling, and
+a Pico de Gallo GPIO controller belonging to a *different* parent are each
+rejected at build time with an assertion naming the `cs-gpios` array index. The
+cross-parent case is the important one: it is a real, enabled Pico de Gallo
+GPIO port on a *different physical board*, so chip select would be driven on
+one board while data was clocked on another. Because chip select actuates a
+pin, the parent of an enabled controller must also declare `serial-number`.
 
-The controller validates the mapping *before* it validates transfer buffers, so
-a devicetree mistake never reaches the bus. A controller without
-`cs-gpio-indices`, a selector beyond the array, or a mapped index at or beyond
-the firmware-reported GPIO count each return `-EINVAL`. Firmware reporting zero
-GPIOs returns `-ENODEV`. A mapped pin explicitly configured as an input returns
-`-EACCES`; a pin under a live GPIO event subscription returns `-EBUSY`.
+The pin cell is a firmware user GPIO index in the same namespace this page
+describes — 0–3 on current firmware, not an RP2350 GPIO number and not a header
+pin number. `GPIO_ACTIVE_LOW` is typical; `GPIO_ACTIVE_HIGH` is permitted,
+because GPIO logical polarity determines the physical edge. The SPI operation
+flag `SPI_CS_ACTIVE_HIGH` remains rejected with `-ENOTSUP`.
 
-Each refusal is logged with the selector, the mapping length, the mapped index,
-and the reported GPIO count. Stacked drivers collapse these into a generic
-not-ready error — `jedec,spi-nor`, for instance, reports `-ENODEV` for any
-transfer failure — so the controller's own log line is the only authoritative
-diagnosis.
+#### What this costs
 
-Duplicate indices are permitted, but every child mapped to one index selects
-the same physical line. That is safe only when the hardware intentionally
-shares selection; mapping physically distinct peripherals to one index selects
-them simultaneously, and both may drive MISO, producing bus contention, invalid
-returned bytes, and possible electrical over-drive.
+Chip select is no longer atomic with the data phase. An ordinary successful
+transceive is **four** USB round trips:
 
-Zephyr `cs-gpios` is rejected with `-ENOTSUP`: driving chip select from the
-Zephyr side would split one atomic firmware batch across multiple USB
-round-trips, losing the chip-select interval guarantee described above.
+```text
+spi/set-config -> gpio/put(assert) -> spi/transfer -> gpio/put(deassert)
+```
+
+Any of them can fail independently, and host death after the assert can leave
+chip select asserted; recovery is a fresh session that deasserts the pin, or a
+power-cycle. Only RPCs that *return* have defined behaviour — an RPC that never
+returns leaves the call pending forever with no errno and no cleanup.
+
+Zephyr also collapses a child's `spi-cs-setup-delay-ns` and
+`spi-cs-hold-delay-ns` into a single
+`DIV_ROUND_UP(MAX(setup_ns, hold_ns), 1000)` microsecond value and applies that
+same delay after the assert and before the deassert. Microsecond waits between
+millisecond USB round trips cannot provide meaningful nanosecond timing.
+
+Read-only and write-only transfers become **full-duplex** transfers of
+`max(tx_len, rx_len)` bytes, with zero-filled TX or discarded RX respectively.
+
+Declaring a pin in `cs-gpios` makes the SPI driver the sole *driver path* for
+that pin's mode; it is not an ownership reservation. The application must give
+SPI **exclusive ownership** of every declared chip-select pin, because a direct
+GPIO consumer can otherwise reconfigure or drive it between SPI operations.
+
+#### Holding chip select, and the fault latch
+
+`SPI_HOLD_ON_CS` requires `SPI_LOCK_ON` and returns `-ENOTSUP` without it:
+holding chip select while another configuration could select a second slave
+would leave two peripherals selected at once. A successful hold commits the
+received data and keeps both the line asserted and the bus locked until
+`spi_release()` is called with that same configuration. A thread or process
+that never releases strands both.
+
+Received data is committed only after the deassert that ends the transaction is
+acknowledged, or immediately on a successful deliberate hold. A transfer that
+succeeds but whose deassert fails returns the deassert errno and does **not**
+commit RX: the peripheral may still be selected.
+
+If a forced deassert returns an error the driver cannot tell whether the line
+went inactive, so the controller **latches**. Every later transceive then
+returns `-EHOSTDOWN` before issuing any configuration, chip-select edge or
+clocking. Only a `spi_release()` whose checked deassert succeeds clears it.
+
+Other errors a caller can see: `-ENODEV`, `-EINVAL`, `-ENOTSUP`, `-EMSGSIZE`
+(over 4096 bytes), `-ENOMEM`, `-EIO` / `-ECOMM` / `-EPROTO`, `-EACCES` (a
+chip-select pin the firmware records as an explicit input) and `-EBUSY` (a
+chip-select pin under a live firmware GPIO event subscription). Stacked drivers
+collapse these into a generic not-ready error — `jedec,spi-nor`, for instance,
+reports `-ENODEV` for any transfer failure — so the controller's own log line
+is the only authoritative diagnosis.
+
+`gallo spi batch` and the host `spi_batch` APIs described above are unchanged
+and remain fully supported; only the Zephyr module stopped using them.
 `zephyr/README.md` in the repository remains the detailed module guide.
 
 ## Rust Library

@@ -560,6 +560,31 @@ pending-interrupt query return `-ENOSYS`. Generic toggle consumers — **blinky*
 the **GPIO shell**, the **TPS382x watchdog** and the **LS0xx display** —
 therefore do not work with this controller.
 
+### Serving as SPI chip select
+
+This controller is also how the `odp,pico-de-gallo-spi` controller drives chip
+select. Each `cs-gpios` entry on an enabled SPI controller must name an
+**enabled** `odp,pico-de-gallo-gpio` controller under the **same**
+`odp,pico-de-gallo` parent; a foreign controller, a disabled sibling, or a
+Pico de Gallo GPIO controller belonging to a *different* parent is rejected at
+build time with an assertion naming the `cs-gpios` array index. Enabling
+`pdg_gpio0` is therefore now a prerequisite for using SPI, not an optional
+extra. See [SPI](./spi.md).
+
+At initialization the SPI controller configures every declared chip-select pin
+as an **explicit output, inactive**, in ascending array order. That is two USB
+round trips per pin (set-config, then put), and there is no rollback: if a pin
+fails, earlier entries are acknowledged inactive, that entry's state is
+indeterminate, and later entries were never issued. A pin under a live firmware
+GPIO event subscription fails with `-EBUSY`; reset it explicitly with
+`gallo_system_reset_subscriptions()` after a strict open, then reinitialize, or
+power-cycle the board.
+
+A declared chip-select pin must be owned **exclusively** by SPI. The GPIO child
+being the sole *driver path* for the pin's mode is not an ownership
+reservation: a direct GPIO consumer in the same application can reconfigure or
+drive that pin between SPI operations, and nothing detects it.
+
 ## Limitations
 
 - **4 pins only** — GPIO 0–3 (RP2350 GPIO 8–11).

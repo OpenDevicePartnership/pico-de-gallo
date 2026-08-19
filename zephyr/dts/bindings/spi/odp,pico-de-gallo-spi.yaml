@@ -12,80 +12,93 @@ description: |
   parent. It borrows the parent's host connection and inherits the parent's
   serial-number board selection; serial-number is not valid on the child
   controller. A controller that is not a direct child of an enabled
-  odp,pico-de-gallo node is rejected at build time.
+  odp,pico-de-gallo node is rejected at build time. Because chip select now
+  actuates a physical pin, the parent of an enabled controller must define
+  serial-number; a selector-less parent is rejected at build time too.
 
-  A child node's reg value is a chip-select *selector*, not a GPIO number. It
-  indexes the controller's cs-gpio-indices array, whose elements are firmware
-  GPIO indices. There is no identity fallback: a controller without
-  cs-gpio-indices rejects every transfer with -EINVAL, as does a selector
-  beyond the array or a mapped index at or beyond the firmware-reported GPIO
-  count. Firmware reporting zero GPIOs returns -ENODEV. A mapped pin explicitly
-  configured as an input returns -EACCES; a pin under a live GPIO event
-  subscription returns -EBUSY.
+  Chip select is standard Zephyr cs-gpios and is required. A child node's reg
+  is an ordinary index into that array:
 
-  The mapped chip select is asserted for the complete firmware batch and is
-  left deasserted-high afterwards.
+      &pdg0 {
+              status = "okay";
+              serial-number = "REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL";
+      };
+      &pdg_gpio0 { status = "okay"; };
+      &pdg_spi0 {
+              status = "okay";
+              cs-gpios = <&pdg_gpio0 0 GPIO_ACTIVE_LOW>;
+              device@0 { compatible = "vendor,device"; reg = <0>; };
+      };
 
-  Zephyr cs-gpios is not supported with this controller and is rejected with
-  -ENOTSUP: driving chip select from the Zephyr side would split one atomic
-  firmware batch across multiple USB round-trips, losing the batch's
-  chip-select interval guarantee.
+  Every cs-gpios entry must target an enabled odp,pico-de-gallo-gpio controller
+  under the *same* odp,pico-de-gallo parent. A foreign GPIO controller, a
+  disabled sibling, and a Pico de Gallo GPIO controller belonging to a
+  different parent are each rejected at build time with an assertion naming the
+  cs-gpios array index. The cross-parent case matters most: it is a real,
+  enabled Pico de Gallo GPIO port on a *different physical board*, so chip
+  select would be driven on one board while data was clocked on another.
 
-  Duplicate elements in cs-gpio-indices are permitted, but every child mapped
-  to one index selects the same physical line. That is safe only when the
-  hardware intentionally shares selection. Mapping physically distinct
-  peripherals to one index selects them simultaneously; both may drive MISO,
-  producing bus contention, invalid returned bytes, and possible electrical
-  over-drive.
+  The pin cell is a firmware user GPIO index, 0-3 on current firmware; it is
+  neither an RP2350 GPIO number nor a header pin number. Index 0 is header pin
+  11 (RP2350 GPIO8), index 1 is header pin 12 (RP2350 GPIO9), index 2 is
+  RP2350 GPIO10 and index 3 is RP2350 GPIO11.
+
+  GPIO_ACTIVE_LOW is typical. GPIO_ACTIVE_HIGH is permitted, because GPIO
+  logical polarity is what determines the physical edge. The SPI operation flag
+  SPI_CS_ACTIVE_HIGH remains rejected with -ENOTSUP: this driver does not
+  implement that separate polarity contract.
+
+  Atomicity: chip select is no longer part of a firmware batch. An ordinary
+  successful transceive is four USB round trips -- spi/set-config,
+  gpio/put(assert), spi/transfer, gpio/put(deassert) -- and any of them can
+  fail independently. Host death after the assert can leave chip select
+  asserted; recovery is a fresh session that deasserts the pin, or a
+  power-cycle. Only the returning-RPC cases have defined behaviour: an RPC that
+  never returns leaves the call pending forever with no errno and no cleanup.
+
+  Chip-select timing: Zephyr collapses a child's spi-cs-setup-delay-ns and
+  spi-cs-hold-delay-ns into a single
+  DIV_ROUND_UP(MAX(setup_ns, hold_ns), 1000) microsecond value and applies that
+  same delay after the assert and before the deassert. Microsecond waits
+  between millisecond USB round trips cannot provide meaningful nanosecond
+  timing.
+
+  Exclusive ownership: declaring a pin in cs-gpios makes this driver the sole
+  *driver path* for that pin's mode, not an ownership reservation. The
+  application must give SPI exclusive ownership of every declared chip-select
+  pin; a direct GPIO consumer can otherwise reconfigure or drive it between SPI
+  operations.
+
+  Read-only and write-only transfers become full-duplex transfers of
+  max(tx_len, rx_len) bytes with zero-filled TX or discarded RX respectively.
+  Transfers over 4096 bytes return -EMSGSIZE.
+
+  SPI_HOLD_ON_CS requires SPI_LOCK_ON and returns -ENOTSUP without it: holding
+  chip select while another configuration could select a second slave would
+  leave two peripherals selected at once. A successful hold commits received
+  data and keeps both the line asserted and the bus locked until
+  spi_release() is called with that same configuration.
+
+  Errors a caller can see: -ENODEV (device not ready), -EINVAL (NULL or
+  unretained configuration, malformed buffer set), -ENOTSUP (unsupported
+  operation flag, including SPI_HOLD_ON_CS without SPI_LOCK_ON),
+  -EMSGSIZE (over 4096 bytes), -ENOMEM (scratch allocation), -EIO / -ECOMM /
+  -EPROTO (transport and firmware failures), -EACCES (a chip-select pin the
+  firmware records as an explicit input), -EBUSY (a chip-select pin under a
+  live firmware GPIO event subscription), and -EHOSTDOWN.
+
+  Chip-select fault latch: if a forced chip-select deassert returns an error,
+  the driver cannot tell whether the line went inactive, so the controller
+  latches. Every later transceive then returns -EHOSTDOWN before issuing any
+  configuration, chip-select edge or clocking, because a previous peripheral
+  may still be selected. Only a spi_release() whose checked deassert succeeds
+  clears the latch. Received data is never committed when the deassert that
+  should have ended the transaction failed.
 
 compatible: "odp,pico-de-gallo-spi"
 
 include: spi-controller.yaml
 
 properties:
-  cs-gpio-indices:
-    type: array
-    min: 0
-    max: 255
-    min-len: 1
-    max-len: 256
-    description: |
-      Firmware GPIO indices used as chip selects, indexed by each SPI child
-      node's reg value. For example, cs-gpio-indices = <2 0> maps child reg
-      <0> to firmware GPIO index 2 and child reg <1> to firmware GPIO index 0.
-
-      An element is a *firmware* GPIO index: the same numbering the gallo CLI
-      takes in "spi batch --cs". It is neither an RP2350 GPIO number nor a
-      header pin number. On the current firmware the four user GPIOs map as
-      follows, so a chip select wired to the board pin silkscreened GPIO2 is
-      written as <2>, not <10>:
-
-        firmware index 0 -> board GPIO0 -> RP2350 GPIO8
-        firmware index 1 -> board GPIO1 -> RP2350 GPIO9
-        firmware index 2 -> board GPIO2 -> RP2350 GPIO10
-        firmware index 3 -> board GPIO3 -> RP2350 GPIO11
-
-      The board's separately silkscreened SPI_CS signal (RP2350 GPIO5) is not
-      claimed by the firmware and cannot be selected through this property. The
-      valid range is bounded at runtime by the firmware-reported GPIO count;
-      the mapping above is the current firmware's set.
-
-      The property is optional in the schema, but an enabled controller without
-      it rejects every transfer with -EINVAL and logs the required fix; there
-      is no identity fallback. A selector beyond the array or a mapped index
-      beyond the firmware-reported GPIO count also returns -EINVAL. Firmware
-      reporting zero GPIOs returns -ENODEV. A mapped pin explicitly configured
-      as an input returns -EACCES, while a pin under a live GPIO event
-      subscription returns -EBUSY.
-
-      The mapped pin is asserted for the complete firmware batch and left
-      deasserted-high afterwards. Duplicate indices are permitted, but all
-      children mapped to one index select the same physical line. This is safe
-      only when the hardware intentionally shares selection. Mapping physically
-      distinct peripherals to one index selects them simultaneously; both may
-      drive MISO, producing bus contention, invalid returned bytes, and possible
-      electrical over-drive.
-
-      Do not use Zephyr cs-gpios with this controller. It cannot preserve the
-      Pico de Gallo batch's atomic chip-select interval and is rejected with
-      -ENOTSUP.
+  cs-gpios:
+    required: true
