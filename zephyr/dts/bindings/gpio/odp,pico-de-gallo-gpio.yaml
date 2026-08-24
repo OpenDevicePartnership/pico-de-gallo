@@ -25,7 +25,11 @@ description: |
   Calls rejected before any I/O -- interrupt context, invalid arguments, a zero
   pin mask, and toggle -- do not reach the bridge at all. Calls made from
   interrupt context return -EWOULDBLOCK without touching hardware. A transport
-  failure is reported as -EIO.
+  failure is reported as -EIO. Configuration and writes can also return -EBUSY
+  when a live firmware event subscription owns the pin. Writes can return
+  -EACCES when the firmware records the pin as an explicit input. While scanning
+  the port, gpio_pin_get() normalizes subscription -EBUSY to -EIO and treats
+  -EACCES from an explicit output as a zero bit.
 
   Supported configuration flags. A pin is either an input or an output.
   GPIO_DISCONNECTED, and GPIO_INPUT | GPIO_OUTPUT together, return -ENOTSUP.
@@ -61,6 +65,11 @@ description: |
   GPIO_INPUT | GPIO_OUTPUT is rejected, so a reported zero is provably not an
   input pin. Direction-query APIs are unavailable on this controller;
   gpio_pin_is_input() and gpio_pin_is_output() return -ENOSYS.
+
+  Reads are not state-neutral. gpio_port_get_raw() scans every pin, and reading
+  a LegacyAuto pin invokes firmware gpio/get, which switches that pad to input.
+  Consequently gpio_pin_get() can reconfigure unrelated unconfigured pins as a
+  side effect. Configure every pin explicitly before reading.
 
   Unsupported operations. Interrupt configuration, callback management and the
   pending-interrupt query are not implemented and return -ENOSYS. Toggle

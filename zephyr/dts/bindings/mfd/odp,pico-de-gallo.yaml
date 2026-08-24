@@ -8,6 +8,10 @@ description: |
   the host connection to that board and exposes the peripheral controllers it
   provides, such as I2C, SPI and GPIO, as children.
 
+  Parent initialization uses the strict host open and can block for as long as
+  300 seconds. All child controllers remain unavailable during that interval;
+  this is the expected worst-case timeout behaviour, not proof of a hang.
+
 compatible: "odp,pico-de-gallo"
 
 include: base.yaml

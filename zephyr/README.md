@@ -20,17 +20,16 @@ laptop, against the real silicon, without cross-compiling or flashing.
 
 | Requirement | Notes |
 |---|---|
-| Zephyr `main` | **Not a release.** `pdg_spi.c` reads `config->cs.setup_ns` / `cs.hold_ns`, which exist only on `main` — they are absent from v4.0.0 through v4.2.0. Only needed for SPI, but `main` is the tested configuration. |
+| Zephyr revision | The measured build environment was `main` at `v4.4.0-6123-g26f811ee9d0`. The driver uses `spi_cs_control.delay`, `spi_context`'s `ctx->num_cs_gpios`, `SPI_CONTEXT_CS_GPIOS_INITIALIZE`, and `DEVICE_API`. This checkout does not establish the earliest compatible Zephyr release; treat `main` as the verified baseline rather than an asserted minimum. |
 | A 64-bit `native_sim` | Always build `native_sim/native/64`. `zephyr/Kconfig` has `depends on 64BIT`, because `corrosion_set_hostbuild()` forces the rustc host triple. Plain `native_sim` is 32-bit and will not work. |
 | Rust 1.90+ and Cargo | The FFI is built from this repository by Corrosion during the Zephyr build. |
 | A host C toolchain | `native_sim` compiles with host GCC/Clang. No Zephyr SDK is required. |
 | CMake 3.20+ | Corrosion 0.5.2 is used specifically because it still supports Zephyr's 3.20 baseline. |
 
-Verify the Zephyr requirement before anything else — if this prints `0`, you
-are not on `main` and the SPI driver will not compile:
+Record the Zephyr revision before reporting a build result:
 
 ```bash
-grep -c setup_ns "$ZEPHYR_BASE/include/zephyr/drivers/spi.h"
+git -C "$ZEPHYR_BASE" describe --always --dirty
 ```
 
 ---
@@ -130,6 +129,12 @@ The MFD parent owns the USB connection, so it is the node that reports the
 open failure. Each controller then fails fast against the parent rather than
 retrying the open itself.
 
+The strict parent open can block for up to **300 seconds**. During that wait all
+children remain unavailable; this is expected worst-case timeout behaviour, not
+by itself evidence of a hang. Registry and FFI diagnostics are written to host
+`stderr` and may not appear in the Zephyr log. Capture both streams under west,
+CI, services, and redirected runners.
+
 The sample loops forever. `native_sim` accepts runner arguments directly, so
 bound the run or slow it to wall-clock time:
 
@@ -161,7 +166,8 @@ they are concerned. Geometry is discovered from the part at runtime over SFDP
 (`CONFIG_SPI_NOR_SFDP_RUNTIME`), so the values printed are read from the
 device rather than echoed back out of the devicetree.
 
-Wire the flash to SCK/MOSI/MISO and put its chip-select on **GPIO 8**, then:
+Wire the flash to SCK/MOSI/MISO and put its chip-select on **firmware user
+GPIO0 (RP2350 GPIO8, header pin 11)**, then:
 
 ```bash
 cd zephyr/samples/spi_nor_id
@@ -169,10 +175,13 @@ west build -p always -b native_sim/native/64 -- -DSHIELD=pico_de_gallo
 west build -t run
 ```
 
-Actual output, against a GigaDevice GD25Q16 holding an iCE40 bitstream:
+Illustrative output from a GigaDevice GD25Q16 holding an iCE40 bitstream (the
+initialization prefixes and device names vary by Zephyr revision):
 
 ```text
-<inf> spi_pico_de_gallo: Pico de Gallo SPI bridge ready
+<inf> mfd_pico_de_gallo: pico-de-gallo: ready ...
+<inf> gpio_pico_de_gallo: gpio: ready ...
+<inf> spi_pico_de_gallo: spi: ready on Pico de Gallo serial-number "..." with 1 chip select(s).
 <inf> spi_nor: nor@0: SFDP v 1.0 AP ff with 2 PH
 <inf> spi_nor: PH0: ff00 rev 1.0: 9 DW @ 30
 <inf> spi_nor: nor@0: 2 MiBy flash
@@ -286,6 +295,12 @@ output reports a zero bit and the scan continues. That is only sound because
 input pin. `gpio_pin_get()` is not a direction oracle. Direction-query APIs are
 also unavailable on this controller (`gpio_pin_is_input()` and
 `gpio_pin_is_output()` return `-ENOSYS`).
+
+Reads are **not state-neutral**. `gpio_port_get_raw()` scans every pin, and
+firmware `gpio/get` switches a `LegacyAuto` pad to input. Because
+`gpio_pin_get()` is implemented through that whole-port scan, reading one pin
+can reconfigure other, unrelated unconfigured pins. Configure every pin
+explicitly before reading and do not use reads as passive state queries.
 
 **Toggle and interrupts are unavailable.** `gpio_pin_toggle()` returns
 `-ENOTSUP`, because an explicit output cannot be read back and this driver
@@ -415,10 +430,19 @@ spi/set-config -> gpio/put(assert) -> spi/transfer -> gpio/put(deassert)
 ```
 
 Each can fail independently. Host death after the assert leaves chip select
-asserted; recovery is a fresh session that deasserts the pin, or a power-cycle.
+asserted; a fresh session can deassert ordinary residue.
 Only RPCs that *return* have defined behaviour — an RPC that never returns
 leaves the calling thread pending forever, with no errno, no cleanup, no fault
 latch update, and the SPI lock still held. There is no bounded cancellation.
+
+The Zephyr SPI driver rejects any transfer whose clocked length exceeds 1013
+bytes. This contains a known firmware failure; it is not a duplex-capacity
+guarantee. TX-only 1013 succeeded, TX-only 1015 wedges the dispatcher, and 1014
+was not tested. Full duplex succeeded at 512, failed at 3072, and was not tested
+from 513 through 1013. Applications needing a documented-safe duplex size must
+use 512 bytes or less. Do not infer 1013-byte duplex support from
+`PDG_SPI_MAX_BUFFER`; the protocol's 4096-byte constant is a packet-buffer and
+argument bound, not a demonstrated application-payload guarantee.
 
 Zephyr collapses a child's `spi-cs-setup-delay-ns` and `spi-cs-hold-delay-ns`
 into one `DIV_ROUND_UP(MAX(setup_ns, hold_ns), 1000)` microsecond value and
@@ -437,7 +461,8 @@ detects it.
 #### Initialization
 
 The controller initializes at `CONFIG_SPI_PICO_DE_GALLO_INIT_PRIORITY`
-(default 50), after the GPIO child (45) and the MFD parent (40). It configures
+(default 50), after the GPIO child (45) and the MFD parent
+(`KERNEL_INIT_PRIORITY_DEFAULT`, currently 40). It configures
 every declared chip-select pin as an **explicit output, inactive**, in
 ascending array order — two round trips per pin.
 
@@ -459,7 +484,13 @@ holding chip select while another configuration could select a second slave
 would leave two peripherals selected at once. A successful hold commits the
 received data and keeps the line asserted and the bus locked until
 `spi_release()` is called with that same configuration. A thread or process
-that never releases strands both the line and software ownership.
+that never releases strands both the line and software ownership. A transceive
+with a different configuration then blocks forever; there is no timeout and the
+independently fed watchdog does not recover this ownership wait. HOLD alone is
+rejected because releasing the controller while CS remained asserted would let
+another configuration select a second peripheral, causing simultaneous
+selection and MISO contention. On the documented loopback fixture, MOSI and
+MISO are physically shorted, so that contention is not hypothetical.
 
 Received data is committed only after the deassert that ends the transaction is
 acknowledged, or immediately on a successful deliberate hold. A transfer that
@@ -548,7 +579,9 @@ These are enforced in the drivers and reported as errors, not silently ignored.
 | `gpio_pin_toggle()` / `gpio_port_toggle_bits()` | `-ENOTSUP` |
 | Interrupt configure, callback management, pending interrupt | `-ENOSYS` |
 | `gpio_pin_get_config()`, `gpio_port_get_direction()` | `-ENOSYS` |
-| Reading a pin configured as an explicit output | reports `0`; reads are scoped to input pins |
+| Configure/write pin owned by a live event subscription | `-EBUSY`; a read normalizes subscription `-EBUSY` to `-EIO` |
+| Write pin recorded as an explicit input | `-EACCES` |
+| Reading a pin configured as an explicit output | reports `0`; the read path treats its `-EACCES` as a zero bit |
 | Transport failure | `-EIO` |
 
 `GPIO_ACTIVE_LOW` is supported and handled by Zephyr's common GPIO layer.
@@ -580,6 +613,8 @@ These are enforced in the drivers and reported as errors, not silently ignored.
 | Chip-select pin explicitly configured as an input | `-EACCES` |
 | Chip-select pin under a live GPIO event subscription | `-EBUSY` |
 | Transfers over 1013 bytes | `-EMSGSIZE` |
+| Legacy firmware lacks a required SPI operation | `-ENOSYS` |
+| Firmware SPI operation times out | `-ETIMEDOUT` |
 | Controller latched by an unacknowledged chip-select deassert | `-EHOSTDOWN` until a successful `spi_release()` |
 
 Every operation is a blocking USB round trip, so the asynchronous and RTIO
@@ -641,7 +676,7 @@ while data was clocked on another. Also remember to set
 `&pdg_gpio0 { status = "okay"; };`.
 
 **Build fails with `odp,pico-de-gallo-spi parent must define serial-number`**
-Same reason as the GPIO child below: SPI chip select actuates a physical pin,
+Same reason as the GPIO child above: SPI chip select actuates a physical pin,
 so the parent must name the board.
 
 **SPI returns `-EHOSTDOWN`**
@@ -662,10 +697,24 @@ process that died. Call `gallo_system_reset_subscriptions()` after a strict
 open, then reinitialize, or power-cycle.
 
 **The application builds but the device is never ready**
-Check that **both** `&pdg0` and the controller node are `status = "okay"` in
-your overlay. The parent and both controllers ship disabled, and a controller
+Check that `&pdg0` and every required controller node are `status = "okay"` in
+your overlay. The parent and all three controllers ship disabled, and a controller
 whose parent failed to open reports `Pico de Gallo parent ... is not ready`
 rather than a connection error of its own.
+
+If initialization appears idle, allow for the strict parent's 300-second
+worst-case open timeout. Capture host `stderr` as well as the Zephyr log because
+registry and FFI diagnostics may appear only there.
+
+**An SPI call never returns, and later RPCs also stop responding**
+A 1015-byte TX-only transfer reproduced a device-wide firmware-dispatcher wedge.
+The 1013-byte Zephyr check contains that trigger only through this driver. In the
+reproduced tests the device resumed after USB re-enumeration; on Windows/WSL this
+used `usbipd detach` followed by attach. That observation does not prove detach
+cancels the blocked handler. On Linux/macOS unplug/reconnect or use USB
+unbind/rebind. Power-cycle if re-enumeration is unavailable or ineffective.
+`system/reset-subscriptions` cannot recover this condition because the blocked
+dispatcher cannot service it.
 
 **Corrosion or crates.io is unreachable**
 The FFI itself builds from this repository and needs no network. Corrosion is

@@ -52,9 +52,14 @@ description: |
   successful transceive is four USB round trips -- spi/set-config,
   gpio/put(assert), spi/transfer, gpio/put(deassert) -- and any of them can
   fail independently. Host death after the assert can leave chip select
-  asserted; recovery is a fresh session that deasserts the pin, or a
-  power-cycle. Only the returning-RPC cases have defined behaviour: an RPC that
+  asserted; a fresh session can deassert ordinary residue. Only the
+  returning-RPC cases have defined behaviour: an RPC that
   never returns leaves the call pending forever with no errno and no cleanup.
+  In the reproduced SPI tests, the device resumed after USB re-enumeration
+  (usbipd detach followed by attach on Windows/WSL). This is an observed
+  procedure, not proof that detach cancels the blocked handler. On Linux/macOS,
+  reconnect the cable or use USB unbind/rebind; power-cycle if unavailable or
+  ineffective. system/reset-subscriptions cannot run while dispatch is blocked.
 
   Chip-select timing: Zephyr collapses a child's spi-cs-setup-delay-ns and
   spi-cs-hold-delay-ns into a single
@@ -71,25 +76,30 @@ description: |
 
   Read-only and write-only transfers become full-duplex transfers of
   max(tx_len, rx_len) bytes with zero-filled TX or discarded RX respectively.
-  Transfers over 1013 bytes return -EMSGSIZE. That ceiling is a MEASURED value,
-  not a derived one: 1013 is the largest length observed to work on hardware.
-  The packet buffer covers payload plus postcard-rpc header and COBS framing,
-  so usable payload sits strictly below it. Full duplex has NOT been measured
-  at any working length, and a 1015-byte transfer is known to hang the firmware
-  dispatcher device-wide, which this ceiling puts out of reach through this
-  driver. See PDG_SPI_MAX_BUFFER in pdg_spi.c.
+  Transfers whose clocked length exceeds 1013 bytes return -EMSGSIZE. This is a
+  containment limit, not a duplex-capacity guarantee. TX-only 1013 succeeded;
+  TX-only 1015 wedges the firmware dispatcher; 1014 was not tested. Full duplex
+  succeeded at 512, failed at 3072, and was not tested from 513 through 1013.
+  Applications needing a documented-safe duplex size must use 512 bytes or
+  less. Do not infer 1013-byte duplex support from PDG_SPI_MAX_BUFFER. The
+  protocol's 4096-byte constant is a packet-buffer/argument bound, not a
+  demonstrated end-to-end application-payload guarantee.
 
-  SPI_HOLD_ON_CS requires SPI_LOCK_ON and returns -ENOTSUP without it: holding
-  chip select while another configuration could select a second slave would
-  leave two peripherals selected at once. A successful hold commits received
-  data and keeps both the line asserted and the bus locked until
-  spi_release() is called with that same configuration.
+  SPI_HOLD_ON_CS requires SPI_LOCK_ON and returns -ENOTSUP without it. HOLD alone
+  would release the controller with chip select asserted, allowing simultaneous
+  selection and MISO contention. This is not hypothetical on the loopback
+  fixture, where MOSI and MISO are shorted. A successful hold commits received
+  data and keeps both the line asserted and the bus locked until spi_release()
+  is called with that same configuration. If the matching release never occurs,
+  a transceive with a different configuration blocks forever; there is no
+  timeout or watchdog recovery for that ownership wait.
 
   Errors a caller can see: -ENODEV (device not ready), -EINVAL (NULL or
   unretained configuration, malformed buffer set), -ENOTSUP (unsupported
   operation flag, including SPI_HOLD_ON_CS without SPI_LOCK_ON),
   -EMSGSIZE (over 1013 bytes), -ENOMEM (scratch allocation), -EIO / -ECOMM /
-  -EPROTO (transport and firmware failures), -EACCES (a chip-select pin the
+  -EPROTO (transport and firmware failures), -ENOSYS (legacy firmware),
+  -ETIMEDOUT (firmware timeout), -EACCES (a chip-select pin the
   firmware records as an explicit input), -EBUSY (a chip-select pin under a
   live firmware GPIO event subscription), and -EHOSTDOWN.
 

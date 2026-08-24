@@ -188,7 +188,7 @@ LOG_MODULE_REGISTER(spi_pico_de_gallo, CONFIG_SPI_LOG_LEVEL);
  *         also fails -ECOMM. That reasoning considered ONE direction; the
  *         budget must cover the request frame AND the response frame.
  *
- * MEASURED, NOT DERIVED. 1013 is the largest length observed to work on
+ * MEASURED, NOT DERIVED. 1013 is the largest TX-only length observed to work on
  * hardware on the M5 acceptance fixture board, across two byte-identical
  * consecutive runs. Every observed failure was -ECOMM and never -EMSGSIZE, so
  * the transport was always the limiter and the compiled constant never was.
@@ -196,11 +196,13 @@ LOG_MODULE_REGISTER(spi_pico_de_gallo, CONFIG_SPI_LOG_LEVEL);
  * WHAT IS STILL UNKNOWN, stated plainly so nobody mistakes this for a solved
  * problem:
  *
- *   - The true ceiling is unresolved between 1013 and 1015. 1014 and 1016 were
- *     never probed, and 1015 hangs, so the boundary cannot currently be
+ *   - The TX-only boundary is unresolved between 1013 and 1015. 1014 was never
+ *     probed, and 1015 hangs, so the boundary cannot currently be
  *     narrowed by bisection without stepping into the hang.
- *   - FULL DUPLEX WAS NEVER MEASURED. 1013 is a TX-only result. 3072 duplex is
- *     known to fail, so duplex at 1013 is UNVERIFIED, not established.
+ *   - Full duplex succeeded at 512 bytes and failed at 3072 bytes. It was not
+ *     tested from 513 through 1013, so duplex at 1013 is UNVERIFIED.
+ *     Applications needing a documented-safe duplex size must use 512 bytes or
+ *     less; do not infer 1013-byte duplex support from this constant.
  *   - A lower constant reduces exposure to the known hang. It does NOT prove
  *     that no other hang window exists below it.
  *   - 1013 is close to 1024, which would be consistent with a ~1 KiB budget and
@@ -211,9 +213,13 @@ LOG_MODULE_REGISTER(spi_pico_de_gallo, CONFIG_SPI_LOG_LEVEL);
  * 1015-byte TX-only spi/transfer never returns and wedges the dispatcher for
  * every subsequent RPC, including from a fresh host process and including
  * system/reset-subscriptions. The 2 s watchdog does not catch it, because the
- * dedicated feeder task keeps feeding while a handler blocks. Recovery does NOT
- * require a power cycle: a USB detach and re-attach (re-enumeration) clears it,
- * verified twice.
+ * dedicated feeder task keeps feeding while a handler blocks. In the reproduced
+ * SPI tests the device resumed after USB re-enumeration (usbipd detach followed
+ * by attach on Windows/WSL). This is an observed procedure, not proof that
+ * detach directly cancels the blocked handler. On other hosts use cable
+ * reconnect or USB unbind/rebind; power-cycle if re-enumeration is unavailable
+ * or ineffective. system/reset-subscriptions cannot run while dispatch is
+ * blocked.
  *
  * FOLLOW-UP (do not just raise this number, and do not lower it by guesswork
  * either): derive the usable spi/transfer payload ceiling from the worst-case

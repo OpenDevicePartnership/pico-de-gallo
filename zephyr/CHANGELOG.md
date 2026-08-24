@@ -46,10 +46,13 @@ The format is based on
   feeding while a request handler blocks, which is precisely the gap left open
   by the serial-dispatch hazard recorded in AGENTS.md §13.17 (2026-06-03).
 
-  **Recovery does not require a power cycle.** A USB detach and re-attach —
-  `usbipd detach` followed by re-attach, i.e. bus re-enumeration — clears it,
-  verified twice. Earlier guidance implying power-cycle-only recovery is too
-  pessimistic.
+  In the reproduced tests, the device resumed responding after USB
+  re-enumeration. On Windows/WSL this was `usbipd detach` followed by attach.
+  This is an observed procedure, not proof that detach directly cancels the
+  blocked handler, and it has not been generalized to other dispatcher-wedge
+  triggers. On Linux/macOS use cable reconnect or USB unbind/rebind; power-cycle
+  if re-enumeration is unavailable or ineffective. The blocked dispatcher cannot
+  service `system/reset-subscriptions`.
 
   Root cause is in the firmware/wire layer (`crates/`) and is out of scope for
   this module. `PDG_SPI_MAX_BUFFER = 1013` puts the hang out of reach *through
@@ -59,8 +62,8 @@ The format is based on
 
 ### Breaking Changes
 
-- **The SPI single-transfer ceiling is 1013 bytes — roughly 75% below the 4096
-  this module originally advertised.** Transfers above it return `-EMSGSIZE`
+- **The Zephyr SPI driver now rejects transfers over 1013 bytes.** Transfers
+  above it return `-EMSGSIZE`
   locally, before any allocation, controller lock, set-config or chip-select
   edge. Applications transferring more than 1013 bytes in one call must split.
   If you are designing around large SPI transfers through this bridge, plan for
@@ -79,15 +82,15 @@ The format is based on
   - **3072** — a "conservative" guess reasoned from the firmware's
     `PacketBuffers<MAX_TRANSFER_SIZE + 1024>` headroom. 3072 **full duplex**
     also fails `-ECOMM`. That reasoning considered only one direction.
-  - **1013** — the largest length *measured* to work on hardware.
+  - **1013** — the largest TX-only length measured to work on hardware.
 
   Every observed failure was `-ECOMM` and never `-EMSGSIZE`, so the transport
   was always the limiter and the compiled constant never was.
 
-  **1013 is measured, not derived, and the picture is incomplete:** the true
-  ceiling is unresolved between 1013 and 1015 (1014 and 1016 were never probed,
-  and 1015 hangs); **full duplex was never measured at any working length**, so
-  duplex at 1013 is unverified; and while 1013 sits just under 1024 in a way
+  **1013 is measured, not derived, and the picture is incomplete:** the TX-only
+  boundary is unresolved between 1013 and 1015 (1014 was never probed, and 1015
+  hangs); full duplex succeeded at 512, failed at 3072, and was not tested from
+  513 through 1013; and while 1013 sits just under 1024 in a way
   that would be consistent with a ~1 KiB budget and ~11 bytes of framing, there
   is no evidence for that decomposition and it must not be relied on.
 
@@ -96,6 +99,11 @@ The format is based on
   shared contract instead of a constant duplicated per consumer, and pin limit
   and limit+1 tests against it. That requires a wire-crate change with schema
   and lockstep-release implications, so it is out of scope for this module.
+
+  Applications needing a documented-safe duplex size must use 512 bytes or
+  less. `PDG_SPI_MAX_BUFFER = 1013` is containment, not a duplex-capacity
+  guarantee, and the 4096 protocol constant is a packet-buffer/argument bound,
+  not a demonstrated end-to-end application-payload guarantee.
 
 - The `odp,pico-de-gallo-i2c` and `odp,pico-de-gallo-spi` controllers must
   now be **direct children of an enabled `odp,pico-de-gallo` parent**. A
@@ -129,7 +137,9 @@ The format is based on
   children. Physical USB opens were already deduplicated to one and remain
   one; registry calls and references drop from three to one. A parent open
   failure now fails both controllers coherently, at the parent's
-  `POST_KERNEL/40` rather than the controllers' `POST_KERNEL/50`, and the
+  `POST_KERNEL/CONFIG_MFD_PICO_DE_GALLO_INIT_PRIORITY` (default
+  `KERNEL_INIT_PRIORITY_DEFAULT`, currently 40) rather than the controllers'
+  `POST_KERNEL/50`, and the
   worst case falls from as many as three independent five-minute strict opens
   to one attempt plus two fast child failures. The cost is that a controller
   can no longer initialize independently of the parent.
@@ -215,7 +225,8 @@ The format is based on
 - Added the `odp,pico-de-gallo-gpio` devicetree compatible and its Zephyr GPIO
   controller driver. The controller is a direct child of an enabled
   `odp,pico-de-gallo` parent, borrows the parent's USB connection and never
-  releases it, and initializes at `POST_KERNEL/45` — after the parent (40) and
+  releases it, and initializes at `POST_KERNEL/45` — after the parent
+  (`KERNEL_INIT_PRIORITY_DEFAULT`, currently 40) and
   before the I2C and SPI controllers (50). The shield ships one **disabled**
   `pdg_gpio0` node with `ngpios = <4>`.
 
@@ -268,6 +279,10 @@ The format is based on
   mappings for all #104 statuses: `-71` to `-EINVAL`, `-72` to `-EACCES`,
   `-73` to `-EBUSY`, `-74` to `-ENODEV`, and `-75` to `-ETIMEDOUT`. The
   mapping uses `switch ((enum Status)status)` with no `default:` label inside
-  the switch and is enforced by `-Werror=switch`. Full `cs-gpios` support was
-  rejected because it would split one atomic `spi/batch` into three USB
-  round-trips and stop holding chip-select atomically. Closes #104.
+  the switch and is enforced by `-Werror=switch`. At that point full
+  `cs-gpios` support was rejected because it would split one atomic `spi/batch`
+  into four USB round trips and stop holding chip-select atomically. Closes
+  #104. **Superseded in the same Unreleased development cycle:** SP1 later added
+  a real GPIO controller and replaced that temporary mapping with required,
+  same-parent standard `cs-gpios`; the Zephyr path now uses checked GPIO edges
+  around `spi/transfer`, while non-Zephyr `spi/batch` remains supported.
