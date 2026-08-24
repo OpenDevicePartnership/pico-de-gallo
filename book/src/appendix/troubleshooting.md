@@ -21,9 +21,9 @@
    `system_profiler SPUSBDataType` (macOS) for VID `045E` and
    PID `067D`.
 
-### `gallo ping` fails with a comms error
+### `gallo version` fails with a comms error
 
-A successful `gallo list` followed by a failing `gallo ping`
+A successful `gallo list` followed by a failing `gallo version`
 usually means another process has the device open — typically a
 previous `gallo` instance that didn''t exit cleanly, or a Python
 script holding a `PycoDeGallo`. Close it.
@@ -47,8 +47,9 @@ recent firmware build.
 ### `Unsupported` (status code −65)
 
 The peripheral exists in the protocol but isn''t wired on this
-hardware revision. Check the capability bitfield from
-`gallo info`. See [Revisions](../hardware/revisions.md).
+hardware revision. Confirm discovery with `gallo list` and firmware
+communication with `gallo version`, then see
+[Revisions](../hardware/revisions.md).
 
 ### `GpioTimeout` (status code −70)
 
@@ -105,18 +106,26 @@ source of confusion:
   same buffer must also hold the postcard-rpc header, the length varint and
   the COBS framing, and it covers the request frame *and* the response
   frame.
-- **The usable payload, which is smaller and must be measured.** For the
-  Zephyr SPI driver it is **1013 bytes**, established on hardware: 4096 and
-  3072 both pass the local check, reach the transport and fail `-ECOMM`.
-  Transfers above 1013 are rejected locally with `-EMSGSIZE`.
+- **The usable payload, which is smaller and shape-dependent.** In measured SPI
+  tests, 4096-byte TX-only and 3072-byte full-duplex requests passed their local
+  checks, reached the transport, and failed `-ECOMM`.
 
-Split larger transfers, or use batch operations to keep them in one USB
-round-trip even when broken into smaller chunks.
+Split larger transfers. Batch operations still occupy one framed request and
+response; batching does not make an otherwise undeliverable aggregate fit.
 
-Two caveats on the 1013 figure: the exact boundary is unresolved between
-1013 and 1015, and the **full-duplex** ceiling has never been measured —
-full duplex is only known to work at 512 bytes. Treat 1013 as a measured
-lower bound, not a located boundary.
+The Zephyr SPI driver rejects clocked lengths above 1013 bytes. That is
+containment, not a duplex-capacity guarantee: TX-only 1013 succeeded, TX-only
+1015 wedges the dispatcher, and 1014 was not tested. Full duplex succeeded at
+512, failed at 3072, and was not tested from 513 through 1013. Applications
+needing a documented-safe duplex size must use 512 bytes or less. Do not infer
+1013-byte duplex support from `PDG_SPI_MAX_BUFFER`.
+
+The Zephyr limit does not protect CLI, Rust, C, Python, or MCP callers. In the
+reproduced SPI tests the device resumed after USB re-enumeration (`usbipd
+detach`/attach on Windows/WSL). This is an observation, not proof that detach
+cancels the handler. On Linux/macOS reconnect the cable or use USB
+unbind/rebind; power-cycle if unavailable or ineffective.
+`system/reset-subscriptions` cannot run while dispatch is blocked.
 
 ### GPIO `WrongDirection` (−28)
 

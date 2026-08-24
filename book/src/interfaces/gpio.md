@@ -546,6 +546,16 @@ init level without `GPIO_OUTPUT` (`-EINVAL`).
 
 **Blocking.** Every operation that reaches hardware is a USB round trip. Calls from interrupt context
 return `-EWOULDBLOCK`; transport failure is `-EIO`.
+Configuration and writes may return `-EBUSY` when a live firmware event
+subscription owns the pin. Write paths may return `-EACCES` when firmware
+records the pin as an explicit input. During a read, `gpio_pin_get()` normalizes
+subscription `-EBUSY` to `-EIO` and treats `-EACCES` from an explicit output as
+a zero bit.
+
+**Reads are destructive on unconfigured pins.** `gpio_port_get_raw()` scans
+every pin. Firmware `gpio/get` switches a `LegacyAuto` pad to input, so
+`gpio_pin_get()` can reconfigure unrelated unconfigured pins as a side effect.
+Configure all pins explicitly and do not treat reads as state-neutral queries.
 
 **Non-atomic.** Multi-pin writes are ascending per-pin round trips with no
 rollback: on failure the acknowledged prefix definitely changed, the failed pin

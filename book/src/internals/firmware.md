@@ -25,17 +25,17 @@ context, while background tasks handle work such as GPIO event publication.
 
 A dedicated `watchdog_feeder_task` arms the RP2350 hardware watchdog at
 **2 seconds** and feeds it every **800 ms**. The 800 ms cadence leaves
-margin for embassy scheduling jitter while keeping the worst-case
-recovery time under 2 seconds when a handler genuinely wedges.
+margin for embassy scheduling jitter.
 
-The feeder is a **separate embassy task**, not part of any RPC handler.
-This is deliberate: postcard-rpc dispatches handlers serially on a
-shared context, and a wedged handler would also wedge any handler-based
-feed scheme. The dispatcher-wedge regression closed in
-`pico-de-gallo-firmware` 0.11.0 (see CHANGELOG) is exactly the scenario
-this defense covers — even with the GPIO `wait_for_*` timeout fix, any
-future unbounded await in a handler will trip the watchdog within 2 s
-and reset the device.
+The feeder is a **separate embassy task**, not part of any RPC handler. It proves
+executor liveness, not dispatcher progress. M5 demonstrated that a request
+handler can block the serial postcard-rpc dispatcher while the feeder continues
+to run, so the 2 s watchdog does not reset that failure mode. A 1015-byte
+TX-only `spi/transfer` reproduced this device-wide wedge. In those tests the
+device resumed after USB re-enumeration; that is an observed procedure, not
+proof that detach cancels the handler. Treat the watchdog as defense against
+executor-wide stalls, not bounded RPC cancellation or a guarantee against
+handler deadlock.
 
 `pause_on_debug(true)` is set so an attached debugger session does not
 reset the chip while you single-step. The watchdog is the same on both
@@ -177,7 +177,9 @@ firmware changes only the SIO output-enable state, while the pull-up and
 pull-down settings remain in the separate pad-control state.
 
 The shared transfer buffer is 4096 bytes (`MAX_TRANSFER_SIZE`), and handlers
-validate lengths before indexing into it.
+validate lengths before indexing into it. This is an internal buffer and
+argument bound, not a demonstrated end-to-end application-payload guarantee;
+framing and response shape reduce the deliverable size.
 
 ## Dependency pins that matter
 

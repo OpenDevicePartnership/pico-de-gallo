@@ -172,11 +172,12 @@ synchronize all documentation and buffer sizes.
 **Note (M5, measured):** `MAX_TRANSFER_SIZE` is a **packet-buffer budget**,
 not usable payload. The buffer must also hold the postcard-rpc header, the
 length varint and COBS framing, and the budget covers the request frame *and*
-the response frame. On hardware the largest `spi/transfer` payload that
-actually works is **1013 bytes**, not 4096: 4096 TX-only and 3072 full duplex
-both fail `-ECOMM` at the transport. Treating 4096 as generally usable payload
-is therefore wrong, and this audit should derive the real ceiling from
-worst-case framing rather than restating the constant.
+the response frame. On hardware the largest TX-only `spi/transfer` payload
+observed to work is **1013 bytes**, not 4096: 4096 TX-only and 3072 full duplex
+both fail `-ECOMM` at the transport. Full duplex is documented safe only at 512
+bytes or less. Treating 4096 as generally usable payload is therefore wrong,
+and this audit should derive the real ceiling from worst-case framing rather
+than restating the constant.
 
 **Why:** Mismatched expectations between crates could cause silent data
 truncation.

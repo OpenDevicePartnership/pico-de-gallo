@@ -72,10 +72,20 @@ firmware enforces instead of hard-coding copies:
 #define GALLO_NUM_GPIOS 4
 ```
 
-`GALLO_MAX_TRANSFER_SIZE` applies **per direction** — a write-then-read may
-carry that many bytes each way. Exceeding it yields `Status::BufferTooLong`.
+`GALLO_MAX_TRANSFER_SIZE` mirrors the protocol's 4096-byte packet-buffer and
+local argument bound. It is **not** a guarantee that 4096 bytes of application
+payload can traverse the framed transport; deliverable size depends on the
+operation's request and response shape. Exceeding the local bound yields
+`Status::BufferTooLong`, while a smaller framed request can still fail in
+transport. See the measured [SPI limits](../interfaces/spi.md#holding-chip-select-and-the-fault-latch).
 Exceeding `GALLO_MAX_BATCH_OPS` in `gallo_i2c_batch` or `gallo_spi_batch`
 yields `Status::InvalidArgument`.
+
+> [!WARNING]
+> The Zephyr driver's 1013-byte containment does not apply to C callers. A
+> 1015-byte TX-only SPI request reproduced a device-wide firmware-dispatcher
+> wedge. Until an operation-specific host limit exists, keep individual SPI
+> payloads at or below 512 bytes; see [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 
 `GALLO_NUM_GPIOS` bounds the valid pin indices, `0..GALLO_NUM_GPIOS`, which
 map to physical GPIO8-GPIO11 on the Pico 2 header. Anything at or above it

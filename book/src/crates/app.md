@@ -161,6 +161,12 @@ See the [I<sup>2</sup>C chapter](../interfaces/i2c.md) and
 | `get-config` | Show the active SPI configuration |
 | `batch` | Run atomic multi-step SPI transactions under chip-select |
 
+> [!WARNING]
+> The CLI is not protected by the Zephyr driver's 1013-byte containment. A
+> 1015-byte TX-only SPI request reproduced a device-wide firmware-dispatcher
+> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
 `batch --cs <PIN>` accepts any `u8`. The pin is checked at run time
 against the GPIO count the connected device reports — not against a fixed
 range — before the operations are parsed and before anything is

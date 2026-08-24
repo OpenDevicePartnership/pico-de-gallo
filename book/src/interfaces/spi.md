@@ -10,7 +10,7 @@ DMA-backed full-duplex mode.
 | MISO (RX)  | GPIO 4      | v1.0+        |
 | SPI_CS net | GPIO 5      | v1.1+        |
 
-> **Note.** GPIO 5 is physically routed as SPI_CS on v1.1, but firmware
+> **Note for non-Zephyr host APIs.** GPIO 5 is physically routed as SPI_CS on v1.1, but firmware
 > never claims or drives it on either revision. The only firmware-managed
 > chip-select mechanism uses user GPIO indices in `0..num_gpios`, where
 > `num_gpios` is device-reported and currently 4. Those indices map to
@@ -119,6 +119,9 @@ $ gallo spi set-config --frequency 1000000 --mode 4
 error: invalid value '4' for '--mode <MODE>': 4 is not in 0..=3
 ```
 
+`--first-transition` and `--idle-low` are presence-only boolean flags; neither
+takes a value, and each defaults to `false` when omitted.
+
 ### Batch (Atomic Under CS)
 
 A single transaction with chip-select held low for the duration:
@@ -200,9 +203,15 @@ spi/set-config -> gpio/put(assert) -> spi/transfer -> gpio/put(deassert)
 ```
 
 Any of them can fail independently, and host death after the assert can leave
-chip select asserted; recovery is a fresh session that deasserts the pin, or a
-power-cycle. Only RPCs that *return* have defined behaviour — an RPC that never
+chip select asserted; a fresh session can deassert ordinary residue. Only RPCs that *return* have defined behaviour — an RPC that never
 returns leaves the call pending forever with no errno and no cleanup.
+
+A non-returning 1015-byte TX-only request reproduced a device-wide dispatcher
+wedge. In those tests the device resumed after USB re-enumeration (`usbipd
+detach`/attach on Windows/WSL). This is an observed procedure, not proof that
+detach cancels the handler. On Linux/macOS reconnect the cable or use USB
+unbind/rebind; power-cycle if re-enumeration is unavailable or ineffective.
+`system/reset-subscriptions` cannot run while the dispatcher is blocked.
 
 Zephyr also collapses a child's `spi-cs-setup-delay-ns` and
 `spi-cs-hold-delay-ns` into a single
@@ -225,7 +234,12 @@ holding chip select while another configuration could select a second slave
 would leave two peripherals selected at once. A successful hold commits the
 received data and keeps both the line asserted and the bus locked until
 `spi_release()` is called with that same configuration. A thread or process
-that never releases strands both.
+that never releases strands both. A transceive using a different configuration
+then blocks forever; there is no timeout and no watchdog recovery. HOLD without
+LOCK is rejected because it would release the controller while CS remained
+asserted, allowing a second peripheral to be selected and causing MISO
+contention. On the M5 fixture MOSI and MISO are shorted, so this is not
+hypothetical.
 
 Received data is committed only after the deassert that ends the transaction is
 acknowledged, or immediately on a successful deliberate hold. A transfer that
@@ -238,12 +252,13 @@ returns `-EHOSTDOWN` before issuing any configuration, chip-select edge or
 clocking. Only a `spi_release()` whose checked deassert succeeds clears it.
 
 Other errors a caller can see: `-ENODEV`, `-EINVAL`, `-ENOTSUP`, `-EMSGSIZE`
-(over **1013 bytes** — a measured ceiling, not a derived one, and roughly 75%
-below the 4096 this bridge originally advertised. 1013 is simply the largest
-length observed to work on hardware; the packet buffer covers payload plus
-postcard-rpc header and COBS framing, so usable payload sits strictly below it.
-Full duplex has not been measured at any working length. If you are designing
-around large SPI transfers through this bridge, plan to split them),
+(over **1013 bytes**). This is a Zephyr containment limit, not a duplex-capacity
+guarantee: TX-only 1013 succeeded, TX-only 1015 wedges the firmware dispatcher,
+and 1014 was not tested. Full duplex succeeded at 512, failed at 3072, and was
+not tested from 513 through 1013. Applications needing a documented-safe duplex
+size must use 512 bytes or less. Do not infer 1013-byte duplex support from
+`PDG_SPI_MAX_BUFFER`; the protocol's 4096-byte constant is a packet-buffer and
+argument bound, not a demonstrated end-to-end payload guarantee),
 `-ENOMEM`, `-EIO` / `-ECOMM` / `-EPROTO`, `-EACCES` (a
 chip-select pin the firmware records as an explicit input) and `-EBUSY` (a
 chip-select pin under a live firmware GPIO event subscription). Stacked drivers
@@ -254,6 +269,12 @@ is the only authoritative diagnosis.
 `gallo spi batch` and the host `spi_batch` APIs described above are unchanged
 and remain fully supported; only the Zephyr module stopped using them.
 `zephyr/README.md` in the repository remains the detailed module guide.
+
+> [!WARNING]
+> The 1013-byte containment exists only in the Zephyr driver. CLI, Rust, C,
+> Python, and MCP SPI calls can still reach the 1015-byte device-wide wedge.
+> Keep individual SPI payloads at or below 512 bytes until an operation-specific
+> host limit is derived; see [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 
 ## Rust Library
 
@@ -393,7 +414,7 @@ print("JEDEC:", id_bytes.hex())
 
 | Variant            | Meaning                                              |
 |--------------------|------------------------------------------------------|
-| `BufferTooLong`    | Request exceeds firmware buffer limit                |
+| `BufferTooLong`    | Request exceeds a local operation limit or framed transport budget; usable payload is shape-dependent |
 | `Other`            | Catch-all for firmware-reported SPI failure          |
 | `InvalidCsPin`     | Chip-select index outside `0..DeviceInfo::num_gpios` |
 | `CsPinUnavailable` | Chip-select pin is explicitly configured as an input |

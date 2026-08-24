@@ -153,6 +153,12 @@ pg.spi_set_config(
 
 ## Example: I<sup>2</sup>C Register Read
 
+> [!WARNING]
+> Python SPI calls are not protected by the Zephyr driver's 1013-byte
+> containment. A 1015-byte TX-only request reproduced a device-wide firmware
+> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
 ```python
 import pyco_de_gallo as gallo
 

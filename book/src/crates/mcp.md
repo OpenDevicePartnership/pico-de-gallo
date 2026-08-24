@@ -284,6 +284,12 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 | `spi_set_config` | Set frequency, phase, and polarity | destructive |
 | `spi_batch` | Atomic multi-step transaction under chip-select | destructive |
 
+> [!WARNING]
+> MCP SPI tools are not protected by the Zephyr driver's 1013-byte containment.
+> A 1015-byte TX-only request reproduced a device-wide firmware-dispatcher
+> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
 `spi_batch` takes `cs` as a `u8` and runs its steps in a fixed order:
 parse every operation payload, connect exactly once, read the GPIO count
 from the `DeviceInfo` that connection already validated, classify `cs`,

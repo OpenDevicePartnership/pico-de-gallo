@@ -265,9 +265,14 @@ from the request, so no framing is needed in the response.
 | Parameter | Value |
 |-----------|-------|
 | Maximum operations per batch | 64 (`MAX_BATCH_OPS`) |
-| Maximum total payload | 4096 bytes (`MAX_TRANSFER_SIZE`) |
-| Maximum response data | 4096 bytes |
+| Protocol packet-buffer/argument bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
+| Demonstrated end-to-end payload | Shape-dependent and below 4096; no general ceiling is published |
 
 If a batch exceeds these limits, the firmware returns an error
 indicating which limit was violated and, for operation-level failures,
 which operation failed (zero-indexed).
+
+`MAX_TRANSFER_SIZE` is a buffer and argument bound, not a guarantee that 4096
+bytes of application data fit through postcard-rpc and COBS framing. Request
+shape and response size both matter. See the measured SPI evidence in
+[Troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
