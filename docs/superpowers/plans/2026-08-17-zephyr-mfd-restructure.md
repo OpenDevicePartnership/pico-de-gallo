@@ -38,6 +38,18 @@ where a coordinator may fan out across independent files.
 | M5 | Integrate `spi_loopback` + board overlay; hardware acceptance | Verification | Loopback suite passes on hardware |
 | M6 | Book parity, `zephyr/README.md`, CHANGELOGs | Documentation | `mdbook build` clean; §15.1 checklist |
 
+> **Corrected after M1–M5 — this table is the original sequencing summary, not
+> the final acceptance record.** M1 could not make all four samples build and
+> its parent was disabled by default; the achieved gate was two clean builds,
+> two failures matching the measured baseline, and an enabled-parent probe
+> (§8.1). M2 was not a pure refactor: it changed initialization failure
+> coupling, failure location, and worst-case boot latency (§9.1). M4 was
+> compile-only, so chip-select edges could only be witnessed in M5 (§11.3).
+> M5's data-path and chip-select checks passed, but its overall verdict was
+> **FAIL** because it found three defects; the upstream loopback result was
+> 41 PASS / 12 SKIP / 1 structurally unrunnable FAIL / 2 NOT BUILT, not a clean
+> suite pass (§12 and `zephyr/CHANGELOG.md`).
+
 **On M1's temporary redundancy.** In M1 the parent opens a handle that nothing
 consumes, while i2c and spi still open their own. This is safe — `gallo_registry.c`
 deduplicates by serial and refcounts — but the **mixed-selector guard**
@@ -104,6 +116,12 @@ not a graceful error. Consider a runtime check in the GPIO driver's init.
 Samples verify **compilation and devicetree correctness only**. Behavioural
 acceptance rests on M5's `spi_loopback` integration.
 
+> **Corrected after M5 — this table remains a compile-time sample inventory.**
+> `i2c_bridge` was not exercised on hardware by SP1, so its runtime state
+> remains unverified. The two IS31 samples still do not link, and `spi_nor_id`
+> still has no attached NOR. Runtime evidence instead came from the dedicated
+> M5 fixtures; it must not be summarized as “all four samples pass.”
+
 ### R6 — WSL build environment
 
 - Ubuntu-26.04; repo at `/mnt/d/workspace/pico-de-gallo`; Zephyr at
@@ -124,9 +142,24 @@ Dirty from #104 acceptance: an **orphaned GPIO subscription on pin 2** and **pin
 is required before M3's GPIO work. The **jumper between header pins 13 and 14**
 (firmware GPIO indices 2 and 3) is fitted and must stay.
 
+> **Corrected after M3 and M5 — the original recovery claim and residue premise
+> were stale.** `gallo_system_reset_subscriptions()` exists and is the software
+> cleanup path for orphaned subscriptions (§10.4 and §11.3). M5 measured
+> `M5_RESET_COUNT=0`, so the expected orphaned pin-2 subscription was not present
+> (§12.5). Separately, a different 1015-byte SPI dispatcher wedge was observed
+> to recover after USB re-enumeration (§12.2). That observation does not prove
+> the mechanism or generalize to the GPIO-wait trigger. Keep resets explicit in
+> acceptance setup because their necessity depends on actual board state.
+
 ---
 
 ## 3. File inventory
+
+> **Corrected after M1–M5 — this inventory was an indicative planning baseline,
+> not an exhaustive allow-list.** Every implementation milestone discovered
+> justified parity, build, test, or specification files omitted here; see
+> §§8.1, 9.3, 10.4, 11.3, and 12.5. The milestone specifications and shipped
+> diffs are authoritative for the files actually changed.
 
 Anything not listed is out of scope; adding a file requires the milestone
 `@architect` to justify it to `@reviewer`.
@@ -198,6 +231,12 @@ west build ... -- -DEXTRA_DTC_OVERLAY_FILE=/tmp/enable.overlay
 
 All four samples must build. Plus, unchanged from #104:
 
+> **Corrected after M1 — “all four” means reproduce the measured baseline, not
+> four successful links.** Build the two viable samples successfully and verify
+> the two IS31 samples fail identically to baseline; use an enabling overlay to
+> prove any otherwise-disabled translation unit is compiled (§8.1). Do not turn
+> a pre-existing missing upstream device driver into an SP1 regression.
+
 ```bash
 cargo test --workspace --locked      # host crates untouched, must stay green
 mdbook build book
@@ -268,6 +307,33 @@ register.
 - [ ] `cargo test --workspace --locked` still green (host crates untouched)
 - [ ] `mdbook build book` clean
 - [ ] No `[package].version`, `Cargo.lock`, wire-protocol or firmware change
+
+### Final evidence (after M4–M6)
+
+- [ ] M1–M6 committed on `zephyr`, nothing pushed *(M6 awaits integration)*
+- [ ] The original “all four samples build” criterion needs a maintainer ruling:
+  the measured outcome is two clean builds plus two failures identical to the
+  pre-existing missing-driver baseline
+- [ ] The original clean hardware-acceptance criterion needs a maintainer
+  ruling: M5 observed the required data path and chip-select behaviour, but its
+  own overall verdict was **FAIL** after finding three defects
+- [x] Corrected property-removal gate: `cs-gpio-indices` has zero hits under
+  `zephyr/`, `book/`, and `crates/`; historical planning records remain
+- [x] `cargo test --workspace --locked` was reported green before M6
+  (561 unit tests and 7 doctests); documentation-only M6 did not rerun it
+- [x] `mdbook build book` clean *(verified during M6)*
+- [x] No `[package].version`, `Cargo.lock`, wire-protocol, firmware, or
+  `crates/` change in SP1 (`git diff --stat e7087bdc4eee~1..HEAD -- crates/`
+  is empty)
+
+> **Corrected after M4–M5 — repository-wide absence was never a valid gate.**
+> Historical plans, specifications, and AGENTS.md legitimately name the deleted
+> property. The scoped zero-hit gate above is the one M4 verified (§11.3).
+> Likewise, “the loopback suite passes” is not the outcome: see §12 and the
+> Zephyr CHANGELOG for the mixed upstream result and crash-class finding.
+
+The original checklist above is retained as the branch's definition at planning
+time. The appended checklist records final evidence without rewriting history.
 
 ### R8 — Two selector-less parents silently alias to one board
 
@@ -736,8 +802,20 @@ challenge. **It does not hold.**
 Every estimate — the maintainer's, mine, the architect's, and the reviewer's
 `MAX_TRANSFER_SIZE + 1024` — reasoned about **one direction**. The original
 failing case was TX-only; a loopback transfer is **full-duplex**, so both buffers
-ride the same frame. A binary sweep measured the true ceiling at **~1013**,
-roughly **4× below** the advertised 4096.
+ride the same frame. The original account called 1013 the “true ceiling” and
+made an invalid relative comparison with the 4096 packet-buffer bound; both
+claims are superseded immediately below.
+
+> **Corrected during M6 — “true ceiling” and “binary sweep” overstate the
+> evidence, and the relative-shortfall comparison mixes unlike limits.** 1013
+> is the largest **TX-only** length observed to work. The exact TX-only boundary
+> remains unresolved between 1013 and 1015 because 1014 was not probed and 1015
+> wedges the dispatcher. Full duplex is verified at 512, fails at 3072, and was
+> not tested from 513 through 1013. Therefore 1013 is a conservative local
+> containment limit, not a derived protocol limit, a duplex-capacity guarantee,
+> or a generally usable payload. Applications needing a documented-safe Zephyr
+> duplex size must use 512 bytes or less. Do not infer 1013-byte duplex support
+> from `PDG_SPI_MAX_BUFFER`, and do not run the non-converging `--ceiling-sweep`.
 
 M5 refused to guess a third number and measured instead. The constant now carries
 a comment saying **do not raise this by guesswork either** — the defensible fix is
@@ -763,9 +841,20 @@ is in `crates/`, reachable from the CLI, Python and FFI — **not** a Zephyr def
 **`1013` is containment, not a fix.** Decision: file it as its own issue, keep the
 containment, finish SP1.
 
-**Recovery is `usbipd detach`/attach, not a power cycle** — which corrects
-§13.17's 2026-06-03 row. **Do not run `--ceiling-sweep`**: it is non-converging
-and steps into the hang.
+The original account treated `usbipd detach`/attach as the recovery mechanism
+and generalized it to §13.17's 2026-06-03 row. That claim is superseded
+immediately below. **Do not run `--ceiling-sweep`**: it is non-converging and
+steps into the hang.
+
+> **Corrected during M6 — recovery is an observation, not a demonstrated
+> mechanism or a general correction to the older GPIO-wait incident.** In the
+> reproduced SPI tests, the device resumed responding after USB re-enumeration;
+> on Windows/WSL this used `usbipd detach` followed by attach. This does not
+> prove that detach directly cancels the blocked firmware handler, and the
+> GPIO-wait trigger was not rerun. On Linux or macOS, force equivalent
+> re-enumeration by unplugging/reconnecting or USB unbind/rebind. If that is
+> unavailable or ineffective, power-cycle the board. The wedged dispatcher
+> cannot service `system/reset-subscriptions`.
 
 ### 12.3 Third defect, reported not fixed
 
