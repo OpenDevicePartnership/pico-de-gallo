@@ -900,3 +900,78 @@ the RP2350 pull-down trap.
 Subscriptions **0**; pin 2 `ExplicitOutput` witnessed **HIGH** (deasserted); pin 3
 `Input/PullUp`; SPI left at mode3 @ 8 MHz by the loopback FAST spec; both jumpers
 fitted; **no wedge**; `usbipd` detached; `/tmp` at 0%.
+
+---
+
+## 13. SP1 closed — final rulings
+
+All six milestones landed and were conductor-verified. Three §7 gates required a
+ruling because they were written before anyone knew the samples could not link,
+or that a first execution would find a crash-class defect. **Ruled by the
+maintainer, 2026-08-24:**
+
+| §7 gate | Ruling |
+| --- | --- |
+| All four samples build for `native_sim` | **MET, as corrected.** Two samples cannot link because they instantiate `issi,is31fl3743b`, which exists in neither Zephyr v4.4.99 nor this repo — confirmed pre-existing at baseline before any SP1 work (R5). The operative criterion is **two clean builds plus two failures identical to a measured baseline**, which every milestone met. The broken samples are tracked separately. |
+| `spi_loopback` passes on hardware, incl. CS witness | **MET, with qualification.** The dedicated M5 suite reported `M5_ACCEPTANCE_PASS`: CS edges witnessed via `SPI_HOLD_ON_CS \| SPI_LOCK_ON`, byte-exact echo across all four modes, latch entered and recovered. The upstream suite ran **41 pass / 12 skip / 1 fail / 2 not built**, and that single failure is **structurally unrunnable here** — `native_sim`'s simulated clock does not advance during blocking USB calls, and the assert is a lower bound, so no multiplier can satisfy it. The three defects M5 found are carried as separate issues. |
+| AGENTS.md §15.1 has no `zephyr/**` parity row | **ADDED.** `zephyr/` → `zephyr/README.md`, `zephyr/CHANGELOG.md`, the relevant `book/src/interfaces/*` chapter. M6 correctly declined to extend repo policy unilaterally. |
+
+### 13.1 What SP1 delivered
+
+The devicetree contract is now ordinary Zephyr:
+
+```dts
+&pdg_spi0 {
+    cs-gpios = <&pdg_gpio0 0 GPIO_ACTIVE_LOW>;
+    nor: nor@0 { compatible = "jedec,spi-nor"; reg = <0>; };
+};
+```
+
+`cs-gpio-indices` appears in **zero** files under `zephyr/`, `book/` or
+`crates/`. `reg` recovers its correct Zephyr meaning. The board is a devicetree
+relationship rather than a `serial-number` string convention. A real GPIO
+controller exists where none did. **No wire-protocol, firmware or `crates/`
+change was needed** — verified across the whole SP1 range.
+
+### 13.2 The directional error, three times
+
+The transfer-ceiling mistake is the single most transferable lesson, and it was
+made by **the maintainer, the conductor, and a milestone architect independently**
+before anyone measured it:
+
+- 4096 TX-only failed → 3072 was proposed → 3072 **duplex** also failed, because
+  request and response framing share one packet budget.
+- The conductor then reported "~1013, roughly 4× below 4096" and put it in a
+  brief. **Also wrong**: 1013 is a **TX-only** measurement, and no duplex ceiling
+  was ever measured. M6's reviewers rejected the framing independently.
+
+Shipped position: **TX-only 1013 succeeds, 1015 wedges, 1014 untested. Duplex 512
+succeeds, 3072 fails, 513–1013 untested. 512 bytes is the documented-safe duplex
+size.** `PDG_SPI_MAX_BUFFER` is containment, not a capacity guarantee.
+
+**Rule: a boundary measured in one direction does not bound a duplex operation.**
+
+### 13.3 Carried out of SP1 as separate issues
+
+1. **A 1015-byte TX-only `spi/transfer` wedges the firmware dispatcher
+   device-wide.** Survives host process death; the watchdog does not catch it
+   because the feeder keeps feeding while a handler blocks. Root cause in
+   `crates/`, reachable from CLI, Python, FFI and MCP. 1013 is containment only.
+2. **The advertised `MAX_TRANSFER_SIZE` is not a deliverable payload.** Derive
+   operation-specific TX/RX/duplex ceilings from worst-case framing, as one shared
+   contract rather than a constant duplicated per consumer. Needs a wire change.
+3. **`pdg_spi_cs_control_checked()` returns `0` when `cs_is_gpio` is false**, so a
+   hand-built config yields a successful transfer with CS never asserted.
+4. **Firmware health should track dispatcher progress**, not merely executor
+   liveness.
+5. **Two Zephyr samples cannot link** (`issi,is31fl3743b` exists nowhere), and no
+   CI job builds any sample.
+
+### 13.4 Still open, deferred by design
+
+- **GPIO interrupts** (D5) — the natural SP2.
+- **R11**: a parent with one explicit serial still aliases if two boards share it.
+  The `BUILD_ASSERT` checks presence, not uniqueness, and no FFI accessor reports
+  which serial an open handle selected.
+- **uart, adc, pwm, 1-wire children** (D8) — each an independent child of the same
+  parent, structurally similar to those that exist.

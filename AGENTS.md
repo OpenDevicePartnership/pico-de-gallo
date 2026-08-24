@@ -851,6 +851,7 @@ update at least the chapter(s) on the right:
 | `pyco-de-gallo/src/...` — Python surface                    | `book/src/crates/python.md`                                              |
 | `pico-de-gallo-firmware/src/...` — peripheral behaviour     | `book/src/internals/firmware.md`, `book/src/interfaces/*`                |
 | `crates/pico-de-gallo-internal/build.rs` — schema version   | `book/src/internals/releases.md`, `book/src/internals/wire-protocol.md`  |
+| `zephyr/` — drivers, DT bindings, sample overlays           | `zephyr/README.md`, `zephyr/CHANGELOG.md`, the relevant `book/src/interfaces/*` chapter |
 | `hardware/` — KiCad changes (new revision, pin remap)       | `book/src/hardware/{overview,revisions,pinout}.md`                       |
 | `CHANGELOG.md`                                              | Hand-write the entry (Keep a Changelog); it is not auto-generated.       |
 
