@@ -24,7 +24,7 @@ from.
 |---------------------------|--------------------------------------------------------------|
 | `ping`                    | Echo a `u32`. Useful for liveness checks.                    |
 | `version`                 | Firmware version triple (major / minor / patch).             |
-| `device/info`             | Firmware version + schema version + capability bitfield.     |
+| `device/info`             | Firmware version + schema version + capability bitfield + runtime GPIO count. |
 | `i2c/read`                | Read N bytes from a target address.                          |
 | `i2c/write`               | Write bytes to a target address.                             |
 | `i2c/write-read`          | Write then read on the same target (repeated start).         |
@@ -36,7 +36,7 @@ from.
 | `spi/write`               | Clock out bytes (MOSI).                                      |
 | `spi/transfer`            | Full-duplex transfer of equal-length TX and RX.              |
 | `spi/flush`               | Wait for any in-flight DMA SPI ops to complete.              |
-| `spi/batch`               | Sequence of SPI ops under chip-select in one round-trip.     |
+| `spi/batch`               | Sequence of SPI ops under chip-select in one round-trip. See the chip-select contract below. |
 | `spi/set-config`          | Set frequency, CPHA, and CPOL.                               |
 | `spi/get-config`          | Query current SPI configuration.                             |
 | `uart/read`               | Read with timeout.                                           |
@@ -69,6 +69,14 @@ from.
 | `onewire/search`          | Start a ROM search (returns first ROM).                      |
 | `onewire/search-next`     | Continue a ROM search.                                       |
 | `system/reset-subscriptions` | Tear down any GPIO subscriptions left over from a prior host. |
+
+### `spi/batch` chip-select contract
+
+A valid `cs_pin` is inside `0..DeviceInfo::num_gpios`, is not being
+monitored for GPIO events, and is not explicitly configured as an input.
+Refusals return `InvalidCsPin`, `CsPinMonitored`, and `CsPinUnavailable`
+respectively, and **leave the pin unchanged**. An accepted pin is driven
+as an output and left deasserted high.
 
 ## Topics (server → client push)
 

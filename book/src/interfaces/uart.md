@@ -212,6 +212,7 @@ UART operations return `PicoDeGalloError<UartError>` on failure. The
 | `Framing` | Invalid stop bit detected |
 | `InvalidBaudRate` | Requested baud rate is out of range or unsupported |
 | `Other` | Catch-all for unexpected firmware errors |
+| `Unsupported` | UART is not available on this hardware revision |
 
 ## API Reference
 

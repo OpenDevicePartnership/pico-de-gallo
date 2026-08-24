@@ -420,10 +420,24 @@ impl Hal {
     /// call will assert CS low, perform the operations, flush, then deassert
     /// CS high.
     ///
+    /// # Chip-select preflight
+    ///
+    /// `cs_pin` is validated against the device-reported GPIO count (see
+    /// [`Hal::num_gpios`]) **before** the pin is driven. A refused
+    /// chip-select therefore leaves the pin exactly as the caller had
+    /// configured it — which is the defect issue #104 reported. The first
+    /// call performs one implicit `device/info` round-trip; afterwards the
+    /// count is read from a cache shared by every handle cloned from the
+    /// same connection.
+    ///
     /// # Errors
     ///
-    /// Returns `SpiHalError` if the initial CS-high drive fails (e.g. the
-    /// device is not connected or `cs_pin` is out of range).
+    /// - [`SpiHalError::DeviceInfo`] — the GPIO count could not be
+    ///   established (transport, 300-second timeout, legacy firmware, or
+    ///   schema mismatch). Never reported as an invalid chip-select.
+    /// - [`SpiHalError::NoGpios`] — the device reports zero GPIOs.
+    /// - [`SpiHalError::InvalidCsPin`] — `cs_pin` is at or beyond the count.
+    /// - [`SpiHalError::Comms`] — the initial CS-high drive failed.
     pub fn spi_device(&self, cs_pin: u8) -> Result<SpiDev, SpiHalError> {
         // Bridge to async like every other device method: inside a tokio
         // runtime the inner `block_on`s must run under `block_in_place` or they
@@ -441,12 +455,19 @@ impl Hal {
         let gallo = Arc::clone(&self.gallo);
         let handle = self.handle.clone();
 
-        // Drive CS high so the line starts deasserted.
-        let guard = handle.block_on(gallo.lock());
-        handle
-            .block_on(guard.gpio_put(cs_pin, GpioState::High))
-            .map_err(|e| SpiHalError::Comms(format!("CS init failed: {e:?}")))?;
-        drop(guard);
+        {
+            // One guard covers both the metadata lookup and the CS drive.
+            // The public `Hal::num_gpios` must never be called here: it takes
+            // the same lock and would deadlock.
+            let guard = handle.block_on(gallo.lock());
+            let bound = handle.block_on(guard.num_gpios());
+            let mut drive = |pin: u8| {
+                handle
+                    .block_on(guard.gpio_put(pin, GpioState::High))
+                    .map_err(|e| SpiHalError::Comms(format!("CS init failed: {e:?}")))
+            };
+            spi_device_from_bound(bound, cs_pin, &mut drive)?;
+        }
 
         Ok(SpiDev {
             gallo,
@@ -523,6 +544,45 @@ impl Hal {
         handle
             .block_on(gallo.validate())
             .map(|_info| ())
+            .map_err(HalInitError::Validate)
+    }
+
+    /// The number of GPIO pins the connected device reports.
+    ///
+    /// This is the runtime-authoritative bound for a GPIO index and for the
+    /// SPI chip-select pin of [`Hal::spi_device`]. Prefer it over the
+    /// compile-time `pico_de_gallo_lib::NUM_GPIOS`, which is only this
+    /// build's default.
+    ///
+    /// The first call performs one implicit validated `device/info`
+    /// round-trip, bounded at 300 seconds; afterwards the value is read from
+    /// a cache shared by every handle cloned from the same connection. A
+    /// reported count of zero is a legitimate, cacheable answer.
+    ///
+    /// Note: during the current schema freeze, a matching reported schema
+    /// version does not prove wire-*shape* compatibility. Validation bounds
+    /// how long you wait and checks the reported numbers; it cannot make
+    /// those numbers trustworthy.
+    ///
+    /// # Errors
+    ///
+    /// [`HalInitError::Validate`] carrying the exact
+    /// [`ValidateError`] — including
+    /// [`ValidateError::Timeout`] when the query did not
+    /// complete within 300 seconds. A failure is retryable.
+    pub fn num_gpios(&self) -> Result<u8, HalInitError> {
+        if Self::in_async_context() {
+            block_in_place(|| self.num_gpios_inner())
+        } else {
+            self.num_gpios_inner()
+        }
+    }
+
+    fn num_gpios_inner(&self) -> Result<u8, HalInitError> {
+        let handle = self.handle.clone();
+        let gallo = handle.block_on(self.gallo.lock());
+        handle
+            .block_on(gallo.num_gpios())
             .map_err(HalInitError::Validate)
     }
 
@@ -705,12 +765,35 @@ impl embedded_hal::i2c::Error for I2cHalError {
 }
 
 /// Error type for SPI HAL operations.
+///
+/// Not `#[non_exhaustive]`: appending a variant must break every exhaustive
+/// match so each caller makes a deliberate decision about the new case.
 #[derive(Debug)]
 pub enum SpiHalError {
     /// An SPI-specific error from the device firmware.
     Spi(SpiError),
     /// A USB communication error.
     Comms(String),
+    /// The device-reported GPIO count could not be established, so no
+    /// chip-select could be validated.
+    ///
+    /// Carries the exact [`ValidateError`] — transport, timeout, legacy
+    /// firmware, or schema mismatch. A metadata failure is **never**
+    /// reported as [`Self::InvalidCsPin`]; misattributing it would send
+    /// users hunting for a bug in their own arguments (issue #104).
+    DeviceInfo(ValidateError),
+    /// The device reports zero GPIOs, so no chip-select pin exists.
+    /// Distinct from [`Self::InvalidCsPin`]: the caller's index is not the
+    /// problem.
+    NoGpios,
+    /// The requested chip-select index is at or beyond the device-reported
+    /// GPIO count. Refused locally: no pin is driven and no RPC is sent.
+    InvalidCsPin {
+        /// The chip-select index the caller supplied, verbatim.
+        cs: u8,
+        /// The device-reported GPIO count that `cs` was checked against.
+        num_gpios: u8,
+    },
 }
 
 impl core::fmt::Display for SpiHalError {
@@ -718,6 +801,16 @@ impl core::fmt::Display for SpiHalError {
         match self {
             Self::Spi(e) => write!(f, "{e}"),
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::DeviceInfo(e) => write!(f, "failed to determine num_gpios: {e}"),
+            Self::NoGpios => write!(
+                f,
+                "device reports num_gpios=0; no SPI chip-select pin is available"
+            ),
+            Self::InvalidCsPin { cs, num_gpios } => write!(
+                f,
+                "invalid SPI chip-select pin {cs}; device reports {num_gpios} \
+                 GPIOs (valid 0..{num_gpios})"
+            ),
         }
     }
 }
@@ -733,13 +826,54 @@ impl From<PicoDeGalloError<SpiError>> for SpiHalError {
     }
 }
 
-impl From<PicoDeGalloError<pico_de_gallo_lib::SpiBatchError>> for SpiHalError {
-    fn from(e: PicoDeGalloError<pico_de_gallo_lib::SpiBatchError>) -> Self {
+impl From<pico_de_gallo_lib::SpiBatchCallError> for SpiHalError {
+    fn from(e: pico_de_gallo_lib::SpiBatchCallError) -> Self {
+        use pico_de_gallo_lib::SpiBatchCallError as E;
         match e {
-            PicoDeGalloError::Endpoint(batch_err) => Self::Spi(batch_err.kind),
-            PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            E::DeviceInfo(v) => Self::DeviceInfo(v),
+            E::NoGpios => Self::NoGpios,
+            E::InvalidCsPin { cs, num_gpios } => Self::InvalidCsPin { cs, num_gpios },
+            E::Comms(c) => Self::Comms(format!("{c:?}")),
+            E::Endpoint(batch_err) => Self::Spi(batch_err.kind),
         }
     }
+}
+
+/// Classify a chip-select index against a device-reported GPIO count.
+///
+/// `num_gpios` must come from an `Ok(_)` metadata read: see
+/// [`spi_device_from_bound`], which is the only caller and which returns
+/// early on `Err`. A count of zero is [`SpiHalError::NoGpios`] for every
+/// index, so a board with no GPIOs is diagnosable as exactly that.
+fn classify_cs(cs: u8, num_gpios: u8) -> Result<(), SpiHalError> {
+    if num_gpios == 0 {
+        return Err(SpiHalError::NoGpios);
+    }
+    if cs >= num_gpios {
+        return Err(SpiHalError::InvalidCsPin { cs, num_gpios });
+    }
+    Ok(())
+}
+
+/// Decide whether to drive the chip-select line, given a metadata result.
+///
+/// Extracted from [`Hal::spi_device`] so the central property of issue #104
+/// — *a refusal drives no pin* — is executable rather than merely argued:
+/// a test can pass a counting `drive` closure and assert it was never
+/// called.
+///
+/// `drive` is invoked exactly once, and only after `bound` resolved to an
+/// `Ok(_)` **and** `cs` was accepted. An `Err(bound)` returns before
+/// classification, so a communications failure can never be reported as an
+/// invalid chip-select.
+fn spi_device_from_bound(
+    bound: Result<u8, ValidateError>,
+    cs: u8,
+    drive: &mut dyn FnMut(u8) -> Result<(), SpiHalError>,
+) -> Result<(), SpiHalError> {
+    let num_gpios = bound.map_err(SpiHalError::DeviceInfo)?;
+    classify_cs(cs, num_gpios)?;
+    drive(cs)
 }
 
 impl embedded_hal::spi::Error for SpiHalError {
@@ -2122,5 +2256,189 @@ mod tests {
             OneWireHalError::OneWire(OneWireError::BusError) => {}
             other => panic!("expected OneWire(BusError), got {other:?}"),
         }
+    }
+
+    // ===================================================================
+    // M3 — SPI chip-select bounds (issue #104)
+    // ===================================================================
+
+    fn all_validate_errors() -> Vec<ValidateError> {
+        vec![
+            ValidateError::Comms(pico_de_gallo_lib::HostErr::Closed),
+            ValidateError::Timeout,
+            ValidateError::LegacyFirmware,
+            ValidateError::SchemaMismatch {
+                expected_major: 0,
+                actual_major: 0,
+                expected_minor: 7,
+                actual_minor: 6,
+            },
+        ]
+    }
+
+    fn all_spi_hal_errors() -> Vec<SpiHalError> {
+        vec![
+            SpiHalError::Spi(SpiError::Other),
+            SpiHalError::Comms("closed".to_string()),
+            SpiHalError::DeviceInfo(ValidateError::Timeout),
+            SpiHalError::NoGpios,
+            SpiHalError::InvalidCsPin {
+                cs: 255,
+                num_gpios: 4,
+            },
+        ]
+    }
+
+    #[test]
+    fn spi_hal_error_witness_is_exhaustive() {
+        // Compile-time witness: appending a SpiHalError variant must fail to
+        // *compile* here rather than fall through a wildcard.
+        fn witness(e: &SpiHalError) -> u8 {
+            match e {
+                SpiHalError::Spi(_) => 0,
+                SpiHalError::Comms(_) => 1,
+                SpiHalError::DeviceInfo(_) => 2,
+                SpiHalError::NoGpios => 3,
+                SpiHalError::InvalidCsPin { .. } => 4,
+            }
+        }
+        let tags: std::collections::HashSet<u8> =
+            all_spi_hal_errors().iter().map(witness).collect();
+        assert_eq!(tags.len(), 5);
+    }
+
+    #[test]
+    fn classify_cs_accepts_zero_and_upper_boundary() {
+        for (cs, n) in [(0u8, 4u8), (3, 4), (0, 7), (6, 7)] {
+            classify_cs(cs, n).unwrap_or_else(|e| panic!("cs {cs} at n {n} must be valid: {e}"));
+        }
+    }
+
+    #[test]
+    fn classify_cs_rejects_bound_and_max_u8() {
+        for (cs, n) in [(4u8, 4u8), (7, 7), (255, 4)] {
+            match classify_cs(cs, n) {
+                Err(SpiHalError::InvalidCsPin { cs: got, num_gpios }) => {
+                    // The payload must echo the caller's index verbatim: a
+                    // truncating implementation would report 3 for 255.
+                    assert_eq!(got, cs);
+                    assert_eq!(num_gpios, n);
+                }
+                other => panic!("cs {cs} at n {n} must be InvalidCsPin, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn classify_cs_zero_bound_is_no_gpios_for_every_pin() {
+        for cs in 0..=u8::MAX {
+            match classify_cs(cs, 0) {
+                Err(SpiHalError::NoGpios) => {}
+                other => panic!("cs {cs} at n=0 must be NoGpios, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn spi_hal_error_from_device_info_preserves_validate_variant() {
+        use pico_de_gallo_lib::SpiBatchCallError;
+        for e in all_validate_errors() {
+            let want = format!("{e}");
+            match SpiHalError::from(SpiBatchCallError::DeviceInfo(e)) {
+                SpiHalError::DeviceInfo(v) => assert_eq!(format!("{v}"), want),
+                other => panic!("metadata failure must stay DeviceInfo, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn spi_hal_error_display_variants_are_pairwise_distinct() {
+        let msgs: Vec<String> = all_spi_hal_errors()
+            .iter()
+            .map(|e| format!("{e}"))
+            .collect();
+        let unique: std::collections::HashSet<&String> = msgs.iter().collect();
+        assert_eq!(unique.len(), msgs.len(), "collision in {msgs:?}");
+
+        let timeout = format!("{}", SpiHalError::DeviceInfo(ValidateError::Timeout));
+        assert!(timeout.contains("device/info"), "got: {timeout}");
+    }
+
+    #[test]
+    fn spi_hal_error_kind_is_defined_for_every_variant() {
+        use embedded_hal::spi::Error;
+        for e in all_spi_hal_errors() {
+            let _ = e.kind();
+        }
+    }
+
+    #[test]
+    fn spi_device_rejects_out_of_range_cs_without_driving_a_pin() {
+        // The #104 property itself, executable: a refusal must never reach
+        // the `gpio_put` that would reconfigure the caller's input pin as a
+        // push-pull output.
+        let mut drives: Vec<u8> = Vec::new();
+        {
+            let mut drive = |pin: u8| {
+                drives.push(pin);
+                Ok(())
+            };
+            assert!(matches!(
+                spi_device_from_bound(Ok(4), 4, &mut drive),
+                Err(SpiHalError::InvalidCsPin {
+                    cs: 4,
+                    num_gpios: 4
+                })
+            ));
+            assert!(matches!(
+                spi_device_from_bound(Ok(4), 255, &mut drive),
+                Err(SpiHalError::InvalidCsPin { cs: 255, .. })
+            ));
+            assert!(matches!(
+                spi_device_from_bound(Ok(0), 0, &mut drive),
+                Err(SpiHalError::NoGpios)
+            ));
+            assert!(matches!(
+                spi_device_from_bound(Err(ValidateError::Timeout), 0, &mut drive),
+                Err(SpiHalError::DeviceInfo(ValidateError::Timeout))
+            ));
+        }
+        assert!(drives.is_empty(), "a refusal drove pins {drives:?}");
+
+        // Positive control: an accepted chip-select drives exactly its pin.
+        let mut driven: Vec<u8> = Vec::new();
+        {
+            let mut drive = |pin: u8| {
+                driven.push(pin);
+                Ok(())
+            };
+            spi_device_from_bound(Ok(4), 3, &mut drive).expect("pin 3 is valid at n = 4");
+        }
+        assert_eq!(driven, vec![3]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn classify_cs_is_identical_inside_and_outside_async_context() {
+        let cases = [(0u8, 4u8), (3, 4), (4, 4), (255, 4), (6, 7), (7, 7), (0, 0)];
+        let plain: Vec<String> = cases
+            .iter()
+            .map(|(c, n)| format!("{:?}", classify_cs(*c, *n)))
+            .collect();
+        let inside: Vec<String> = block_in_place(|| {
+            cases
+                .iter()
+                .map(|(c, n)| format!("{:?}", classify_cs(*c, *n)))
+                .collect()
+        });
+        assert_eq!(plain, inside);
+    }
+
+    #[test]
+    fn num_gpios_error_propagates_as_hal_init_error_validate() {
+        let e = HalInitError::Validate(ValidateError::Timeout);
+        let msg = format!("{e}");
+        assert!(msg.contains("firmware validation failed"), "got: {msg}");
+        assert!(msg.contains("device/info"), "got: {msg}");
+        assert!(msg.contains("300"), "got: {msg}");
     }
 }

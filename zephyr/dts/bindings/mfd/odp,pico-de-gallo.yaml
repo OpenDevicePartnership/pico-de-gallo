@@ -1,0 +1,43 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Pico de Gallo USB-attached multi-function device.
+
+  This node represents one physical USB-attached Pico de Gallo board. It owns
+  the host connection to that board and exposes the peripheral controllers it
+  provides, such as I2C, SPI and GPIO, as children.
+
+  Parent initialization uses the strict host open and can block for as long as
+  300 seconds. All child controllers remain unavailable during that interval;
+  this is the expected worst-case timeout behaviour, not proof of a hang.
+
+compatible: "odp,pico-de-gallo"
+
+include: base.yaml
+
+properties:
+  serial-number:
+    type: string
+    description: |
+      Optional USB serial number selecting the physical Pico de Gallo board
+      that this parent represents. The selection applies to all child
+      peripheral controllers, which borrow this parent's host connection and
+      must not carry a selector of their own.
+
+      If omitted, the first matching board is selected, but the host API
+      cannot report which serial number it chose. Omission is therefore safe
+      only when exactly one matching Pico de Gallo board is physically
+      attached. With multiple matching boards attached, a selector-less parent
+      and all of its children can become ready against the wrong board without
+      any diagnostic; the build-time check below counts devicetree parents, not
+      attached USB devices, so it cannot detect this. Any multi-board host
+      environment must set an explicit serial-number on every enabled parent.
+
+      At most one enabled parent may omit this property; a build-time
+      assertion rejects multiple enabled selector-less parents, because they
+      all normalise to the same registry key and would silently alias to one
+      board. That check verifies property presence, not value uniqueness: two
+      parents carrying the same explicit value still resolve to one board and
+      silently alias. Devicetree authors must ensure explicit values are
+      distinct.

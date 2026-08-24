@@ -8,22 +8,113 @@ description: |
   connected to the host running native_sim. Devices on the bus are declared as
   ordinary child nodes using their own vendor,device compatible.
 
+  This controller must be a direct child of an enabled odp,pico-de-gallo MFD
+  parent. It borrows the parent's host connection and inherits the parent's
+  serial-number board selection; serial-number is not valid on the child
+  controller. A controller that is not a direct child of an enabled
+  odp,pico-de-gallo node is rejected at build time. Because chip select now
+  actuates a physical pin, the parent of an enabled controller must define
+  serial-number; a selector-less parent is rejected at build time too.
+
+  Chip select is standard Zephyr cs-gpios and is required. A child node's reg
+  is an ordinary index into that array:
+
+      &pdg0 {
+              status = "okay";
+              serial-number = "REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL";
+      };
+      &pdg_gpio0 { status = "okay"; };
+      &pdg_spi0 {
+              status = "okay";
+              cs-gpios = <&pdg_gpio0 0 GPIO_ACTIVE_LOW>;
+              device@0 { compatible = "vendor,device"; reg = <0>; };
+      };
+
+  Every cs-gpios entry must target an enabled odp,pico-de-gallo-gpio controller
+  under the *same* odp,pico-de-gallo parent. A foreign GPIO controller, a
+  disabled sibling, and a Pico de Gallo GPIO controller belonging to a
+  different parent are each rejected at build time with an assertion naming the
+  cs-gpios array index. The cross-parent case matters most: it is a real,
+  enabled Pico de Gallo GPIO port on a *different physical board*, so chip
+  select would be driven on one board while data was clocked on another.
+
+  The pin cell is a firmware user GPIO index, 0-3 on current firmware; it is
+  neither an RP2350 GPIO number nor a header pin number. Index 0 is header pin
+  11 (RP2350 GPIO8), index 1 is header pin 12 (RP2350 GPIO9), index 2 is
+  RP2350 GPIO10 and index 3 is RP2350 GPIO11.
+
+  GPIO_ACTIVE_LOW is typical. GPIO_ACTIVE_HIGH is permitted, because GPIO
+  logical polarity is what determines the physical edge. The SPI operation flag
+  SPI_CS_ACTIVE_HIGH remains rejected with -ENOTSUP: this driver does not
+  implement that separate polarity contract.
+
+  Atomicity: chip select is no longer part of a firmware batch. An ordinary
+  successful transceive is four USB round trips -- spi/set-config,
+  gpio/put(assert), spi/transfer, gpio/put(deassert) -- and any of them can
+  fail independently. Host death after the assert can leave chip select
+  asserted; a fresh session can deassert ordinary residue. Only the
+  returning-RPC cases have defined behaviour: an RPC that
+  never returns leaves the call pending forever with no errno and no cleanup.
+  In the reproduced SPI tests, the device resumed after USB re-enumeration
+  (usbipd detach followed by attach on Windows/WSL). This is an observed
+  procedure, not proof that detach cancels the blocked handler. On Linux/macOS,
+  reconnect the cable or use USB unbind/rebind; power-cycle if unavailable or
+  ineffective. system/reset-subscriptions cannot run while dispatch is blocked.
+
+  Chip-select timing: Zephyr collapses a child's spi-cs-setup-delay-ns and
+  spi-cs-hold-delay-ns into a single
+  DIV_ROUND_UP(MAX(setup_ns, hold_ns), 1000) microsecond value and applies that
+  same delay after the assert and before the deassert. Microsecond waits
+  between millisecond USB round trips cannot provide meaningful nanosecond
+  timing.
+
+  Exclusive ownership: declaring a pin in cs-gpios makes this driver the sole
+  *driver path* for that pin's mode, not an ownership reservation. The
+  application must give SPI exclusive ownership of every declared chip-select
+  pin; a direct GPIO consumer can otherwise reconfigure or drive it between SPI
+  operations.
+
+  Read-only and write-only transfers become full-duplex transfers of
+  max(tx_len, rx_len) bytes with zero-filled TX or discarded RX respectively.
+  Transfers whose clocked length exceeds 1013 bytes return -EMSGSIZE. This is a
+  containment limit, not a duplex-capacity guarantee. TX-only 1013 succeeded;
+  TX-only 1015 wedges the firmware dispatcher; 1014 was not tested. Full duplex
+  succeeded at 512, failed at 3072, and was not tested from 513 through 1013.
+  Applications needing a documented-safe duplex size must use 512 bytes or
+  less. Do not infer 1013-byte duplex support from PDG_SPI_MAX_BUFFER. The
+  protocol's 4096-byte constant is a packet-buffer/argument bound, not a
+  demonstrated end-to-end application-payload guarantee.
+
+  SPI_HOLD_ON_CS requires SPI_LOCK_ON and returns -ENOTSUP without it. HOLD alone
+  would release the controller with chip select asserted, allowing simultaneous
+  selection and MISO contention. This is not hypothetical on the loopback
+  fixture, where MOSI and MISO are shorted. A successful hold commits received
+  data and keeps both the line asserted and the bus locked until spi_release()
+  is called with that same configuration. If the matching release never occurs,
+  a transceive with a different configuration blocks forever; there is no
+  timeout or watchdog recovery for that ownership wait.
+
+  Errors a caller can see: -ENODEV (device not ready), -EINVAL (NULL or
+  unretained configuration, malformed buffer set), -ENOTSUP (unsupported
+  operation flag, including SPI_HOLD_ON_CS without SPI_LOCK_ON),
+  -EMSGSIZE (over 1013 bytes), -ENOMEM (scratch allocation), -EIO / -ECOMM /
+  -EPROTO (transport and firmware failures), -ENOSYS (legacy firmware),
+  -ETIMEDOUT (firmware timeout), -EACCES (a chip-select pin the
+  firmware records as an explicit input), -EBUSY (a chip-select pin under a
+  live firmware GPIO event subscription), and -EHOSTDOWN.
+
+  Chip-select fault latch: if a forced chip-select deassert returns an error,
+  the driver cannot tell whether the line went inactive, so the controller
+  latches. Every later transceive then returns -EHOSTDOWN before issuing any
+  configuration, chip-select edge or clocking, because a previous peripheral
+  may still be selected. Only a spi_release() whose checked deassert succeeds
+  clears the latch. Received data is never committed when the deassert that
+  should have ended the transaction failed.
+
 compatible: "odp,pico-de-gallo-spi"
 
 include: spi-controller.yaml
 
 properties:
-  serial-number:
-    type: string
-    description: |
-      Optional USB serial number selecting the physical Pico de Gallo board
-      that backs this controller. Devicetree authors must use the same value
-      on every Pico de Gallo controller node, such as I2C and SPI, that accesses
-      the same board. Those controllers then share one USB connection
-      internally; application code can use the normal Zephyr controller APIs
-      without managing that connection. Different values select different
-      physical boards.
-
-      If omitted, the first matching board is selected. Every controller node
-      intended to share that default board must also omit this property. Do not
-      mix omitted and explicit selectors for the same board.
+  cs-gpios:
+    required: true

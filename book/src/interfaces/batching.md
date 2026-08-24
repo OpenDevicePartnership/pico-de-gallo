@@ -78,7 +78,14 @@ Read data (7 bytes):
   0000: ff ff ff 00 00 00 00                               .......
 ```
 
-The `--cs` flag specifies which GPIO pin (0–3) is used as chip-select.
+The `--cs` flag specifies which GPIO pin is used as chip-select. Valid
+values are `0..num_gpios`, where `num_gpios` is the count the connected
+device reports in `device/info` — not a fixed range baked into the CLI.
+`gallo` validates the firmware on startup and checks `--cs` against that
+reported count *before* parsing the operations or transmitting anything,
+so an out-of-range chip-select drives no pin. A device reporting zero
+GPIOs produces its own distinct error rather than an out-of-range one.
+
 The firmware asserts CS low before the first operation and deasserts it
 after the last — all operations run atomically under chip-select.
 
@@ -193,7 +200,10 @@ use embedded_hal::spi::Operation;
 use pico_de_gallo_hal::Hal;
 
 fn read_spi_jedec(hal: &Hal) -> Result<[u8; 3], Box<dyn std::error::Error>> {
-    let mut spi = hal.spi_device(0);  // CS on GPIO 0
+    // `spi_device` returns a Result: the chip-select is checked against
+    // the device-reported GPIO count before the pin is driven, so an
+    // out-of-range pin is refused here rather than reconfigured.
+    let mut spi = hal.spi_device(0)?;  // CS on GPIO 0
     let mut id = [0u8; 3];
 
     // One USB round-trip: CS asserted, command sent, ID read, CS deasserted
@@ -255,9 +265,14 @@ from the request, so no framing is needed in the response.
 | Parameter | Value |
 |-----------|-------|
 | Maximum operations per batch | 64 (`MAX_BATCH_OPS`) |
-| Maximum total payload | 4096 bytes (`MAX_TRANSFER_SIZE`) |
-| Maximum response data | 4096 bytes |
+| Protocol packet-buffer/argument bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
+| Demonstrated end-to-end payload | Shape-dependent and below 4096; no general ceiling is published |
 
 If a batch exceeds these limits, the firmware returns an error
 indicating which limit was violated and, for operation-level failures,
 which operation failed (zero-indexed).
+
+`MAX_TRANSFER_SIZE` is a buffer and argument bound, not a guarantee that 4096
+bytes of application data fit through postcard-rpc and COBS framing. Request
+shape and response size both matter. See the measured SPI evidence in
+[Troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).

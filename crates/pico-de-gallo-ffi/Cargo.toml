@@ -1,6 +1,6 @@
 [package]
 name = "pico-de-gallo-ffi"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.90"
 description = "C-FFI for Pico de Gallo device"
@@ -12,7 +12,7 @@ repository = "https://github.com/OpenDevicePartnership/pico-de-gallo"
 documentation = "https://docs.rs/pico-de-gallo-ffi"
 
 [dependencies]
-pico-de-gallo-lib = { version = "0.7.1", path = "../pico-de-gallo-lib" }
+pico-de-gallo-lib = { version = "0.8.0", path = "../pico-de-gallo-lib" }
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time"] }
 
 [build-dependencies]

@@ -30,17 +30,23 @@ The firmware defaults to Standard mode.
 ## CLI
 
 ```console
-$ gallo i2c help
+$ gallo i2c --help
 I2C access methods
+
+Usage: gallo i2c <COMMAND>
 
 Commands:
   scan        Scan I2C bus for existing devices
   read        Read bytes through the I2C bus from device at given address
   write       Write bytes through I2C bus to device at given address
-  write-read  Write bytes followed by read bytes
-  set-config  Set I2C bus configuration (frequency)
-  get-config  Get current I2C bus configuration
-  batch       Execute multiple I2C operations in a single transfer
+  write-read  Write bytes follwed by read bytes
+  set-config  Set I2C bus parameters
+  get-config  Query the current I2C bus configuration
+  batch       Execute multiple I2C operations in a single USB transfer
+  help        Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help  Print help
 ```
 
 ### Scanning
@@ -199,14 +205,13 @@ side; FFI returns negative `Status` values:
 
 | Variant              | Meaning                                  |
 |----------------------|------------------------------------------|
-| `Nack`               | Target did not acknowledge               |
-| `BusError`           | I²C bus protocol error                   |
+| `Bus`                | Unexpected condition on the I²C bus      |
+| `NoAcknowledge`      | Target did not acknowledge               |
 | `ArbitrationLoss`    | Lost arbitration to another master       |
 | `Overrun`            | Data overrun on read                     |
 | `BufferTooLong`      | Request exceeds firmware buffer limit    |
 | `AddressOutOfRange`  | Address outside the 7-bit range          |
-| `Unsupported`        | Returned by firmware builds without I²C  |
-| `Other`              | Catch-all                                |
+| `Other`              | Unspecified firmware error               |
 
 The full status-code mapping for FFI lives in
 [`appendix/status-codes.md`](../appendix/status-codes.md).

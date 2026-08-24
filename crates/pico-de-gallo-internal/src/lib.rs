@@ -415,12 +415,26 @@ pub struct I2cScanRequest {
 ///
 /// Variants are serialized by **index**. Do **not** reorder or insert
 /// variants in the middle — only append at the end.
+// SCHEMA FREEZE: SpiError and DeviceInfo change shape on the `zephyr` branch
+// without changing SCHEMA_VERSION_*. Mixed peers are intentionally
+// incompatible despite reporting the same schema version. This branch is not
+// releasable or taggable until the maintainer performs the lockstep version
+// bump required by AGENTS.md §6.5.
 #[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpiError {
     /// Request exceeds the firmware buffer limit ([`MAX_TRANSFER_SIZE`]).
     BufferTooLong,
     /// An unspecified error occurred in the firmware.
     Other,
+    /// The requested chip-select pin is outside the bound reported by
+    /// [`DeviceInfo::num_gpios`].
+    InvalidCsPin,
+    /// The chip-select pin is explicitly configured as an input; it is left
+    /// unchanged.
+    CsPinUnavailable,
+    /// The chip-select pin is being monitored for GPIO events; it is left
+    /// unchanged.
+    CsPinMonitored,
 }
 
 impl core::fmt::Display for SpiError {
@@ -428,6 +442,13 @@ impl core::fmt::Display for SpiError {
         match self {
             Self::BufferTooLong => write!(f, "buffer exceeds firmware limit"),
             Self::Other => write!(f, "SPI error"),
+            Self::InvalidCsPin => write!(f, "invalid SPI chip-select pin"),
+            Self::CsPinUnavailable => {
+                write!(f, "SPI chip-select pin is configured as input")
+            }
+            Self::CsPinMonitored => {
+                write!(f, "SPI chip-select pin is being monitored for events")
+            }
         }
     }
 }
@@ -464,7 +485,7 @@ pub type SpiTransferError = SpiError;
 
 // --- GPIO
 
-/// Number of user-controllable GPIO pins exposed by the firmware.
+/// Compile-time default number of user-controllable GPIO pins.
 ///
 /// Pin indices 0–3 map to physical GPIO8–GPIO11 on the Pico 2 header.
 /// Requests naming an index at or above this bound are rejected with
@@ -474,7 +495,12 @@ pub type SpiTransferError = SpiError;
 /// [`SpiBatchRequest::cs_pin`]. Note the dedicated `SPI_CS` header pin
 /// (GPIO5) is *not* one of these and is not currently claimed by the
 /// firmware.
+///
+/// Host code must use [`DeviceInfo::num_gpios`] as the runtime-authoritative
+/// count. This constant is only the compile-time default.
 pub const NUM_GPIOS: usize = 4;
+
+const _: () = assert!(NUM_GPIOS <= u8::MAX as usize);
 
 /// Request to read the current level of a GPIO pin.
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
@@ -1310,8 +1336,11 @@ impl core::fmt::Display for I2cBatchError {
 /// Request to execute a batch of SPI operations as a single transaction.
 ///
 /// The firmware asserts CS on the specified pin before executing the
-/// operations, and deasserts CS after completion (even on error). This
-/// provides atomic [`SpiDevice::transaction`] semantics.
+/// operations, and deasserts CS after completion — including when an
+/// operation fails after CS was asserted. Failures raised *before* CS is
+/// driven (pin validation and refusals) leave the pin untouched; see
+/// [`SpiBatchRequest::cs_pin`] for the full contract. This provides atomic
+/// [`SpiDevice::transaction`] semantics.
 ///
 /// The `ops` field contains a sequence of postcard-serialized
 /// [`SpiBatchOp`] values. Use [`encode_spi_batch_ops`] on the host
@@ -1326,9 +1355,14 @@ impl core::fmt::Display for I2cBatchError {
 /// [`SpiDevice::transaction`]: embedded_hal::spi::SpiDevice::transaction
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct SpiBatchRequest<'a> {
-    /// GPIO pin index (0–3) to use as chip select. The firmware asserts
-    /// it low before the first operation and deasserts it high after the
-    /// last (or on error).
+    /// GPIO pin index to use as chip select.
+    ///
+    /// Firmware implementing this protocol revision drives the pin as an output
+    /// during a successful batch and leaves it configured as an output,
+    /// deasserted high; the prior direction is not restored. An execution failure
+    /// after assertion also leaves CS deasserted high. Pre-validation and refusal
+    /// failures leave the pin untouched. Pins explicitly configured as inputs are
+    /// refused; firmware predating this contract may instead reconfigure them.
     pub cs_pin: u8,
     /// Number of operations encoded in `ops`.
     pub count: u16,
@@ -1338,8 +1372,10 @@ pub struct SpiBatchRequest<'a> {
 
 /// Error returned when an SPI batch transaction fails.
 ///
-/// See [`I2cBatchError`] for the general pattern. For SPI batches,
-/// the firmware always deasserts CS before returning, even on error.
+/// See [`I2cBatchError`] for the general pattern. For SPI batches, the
+/// firmware deasserts CS before returning whenever it had already asserted
+/// it; errors raised before CS is driven leave the pin untouched. See
+/// [`SpiBatchRequest::cs_pin`] for the full contract.
 #[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SpiBatchError {
     /// Zero-based index of the operation that failed.
@@ -1504,6 +1540,10 @@ impl core::ops::BitAnd for Capabilities {
 /// This is returned by a separate endpoint from [`VersionInfo`] so that
 /// the existing `version` endpoint remains wire-stable for older hosts
 /// to parse.
+// SCHEMA FREEZE: This field addition is intentionally incompatible with older
+// peers even though both sides still report the same schema version. Do not
+// release or tag this branch until the maintainer performs the lockstep
+// version bump required by AGENTS.md §6.5.
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct DeviceInfo {
     /// Firmware version — major.
@@ -1522,12 +1562,19 @@ pub struct DeviceInfo {
     pub hw_version: u8,
     /// Peripheral capabilities of the connected device.
     pub capabilities: Capabilities,
+    /// Runtime-authoritative number of user-controllable GPIO pins.
+    ///
+    /// Valid GPIO and SPI chip-select indices are `0..num_gpios`; when this value
+    /// is zero, no index is valid. This supersedes the compile-time [`NUM_GPIOS`]
+    /// default and must never be synthesized or defaulted when `device/info`
+    /// decoding fails.
+    pub num_gpios: u8,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use postcard::{from_bytes, to_allocvec};
+    use postcard::{from_bytes, take_from_bytes, to_allocvec};
 
     // --- Schema version vs. Cargo.toml ---
 
@@ -1810,15 +1857,6 @@ mod tests {
     }
 
     #[test]
-    fn spi_error_variants_round_trip() {
-        for err in [SpiError::BufferTooLong, SpiError::Other] {
-            let bytes = to_allocvec(&err).unwrap();
-            let decoded: SpiError = from_bytes(&bytes).unwrap();
-            assert_eq!(err, decoded);
-        }
-    }
-
-    #[test]
     fn gpio_error_variants_round_trip() {
         for err in [
             GpioError::InvalidPin,
@@ -1865,6 +1903,72 @@ mod tests {
         assert_eq!(format!("{}", I2cError::Other), "I2C error");
     }
 
+    /// Compile-time exhaustiveness tripwire. Appending a variant to
+    /// [`SpiError`] is legal on the wire, but must not happen silently:
+    /// this stops compiling until the author has seen — and extended — the
+    /// hand-maintained tables below and the exhaustive match sites in
+    /// `pico-de-gallo-ffi`.
+    fn spi_error_variant_index_witness(e: SpiError) -> u8 {
+        match e {
+            SpiError::BufferTooLong => 0,
+            SpiError::Other => 1,
+            SpiError::InvalidCsPin => 2,
+            SpiError::CsPinUnavailable => 3,
+            SpiError::CsPinMonitored => 4,
+        }
+    }
+
+    const SPI_ERROR_VARIANTS: [SpiError; 5] = [
+        SpiError::BufferTooLong,
+        SpiError::Other,
+        SpiError::InvalidCsPin,
+        SpiError::CsPinUnavailable,
+        SpiError::CsPinMonitored,
+    ];
+
+    #[test]
+    fn spi_error_variants_round_trip() {
+        for variant in SPI_ERROR_VARIANTS {
+            let bytes = to_allocvec(&variant).unwrap();
+            let decoded: SpiError = from_bytes(&bytes).unwrap();
+            assert_eq!(variant, decoded);
+        }
+    }
+
+    #[test]
+    fn spi_error_variant_indices_are_stable() {
+        // These values are deployed wire ABI. This test must NOT be updated
+        // to accommodate an insertion, a swap, or a deletion — changing an
+        // index is a deployed wire break. Appending a new variant at index 5
+        // is the only legal change. See AGENTS.md §6.1 and §13.17.
+        for (index, variant) in SPI_ERROR_VARIANTS.iter().copied().enumerate() {
+            let n = u8::try_from(index).unwrap();
+            assert_eq!(to_allocvec(&variant).unwrap().as_slice(), &[n][..]);
+            let decoded: SpiError = from_bytes(&[n]).unwrap();
+            assert_eq!(decoded, variant);
+            assert_eq!(spi_error_variant_index_witness(variant), n);
+        }
+    }
+
+    #[test]
+    fn spi_error_encodings_are_distinct() {
+        for (i, a_variant) in SPI_ERROR_VARIANTS.iter().enumerate() {
+            for (j, b_variant) in SPI_ERROR_VARIANTS.iter().enumerate().skip(i + 1) {
+                let a = to_allocvec(a_variant).unwrap();
+                let b = to_allocvec(b_variant).unwrap();
+                assert_ne!(a, b, "SpiError variants {i} and {j} share an encoding");
+            }
+        }
+    }
+
+    #[test]
+    fn spi_error_rejects_unknown_variant_index() {
+        // Index 5 is one past the last defined variant. If a sixth variant
+        // is ever appended, this probe must move to the new first-unused
+        // index rather than being deleted.
+        assert!(from_bytes::<SpiError>(&[5u8]).is_err());
+    }
+
     #[test]
     #[cfg(feature = "use-std")]
     fn spi_error_display() {
@@ -1873,6 +1977,32 @@ mod tests {
             "buffer exceeds firmware limit"
         );
         assert_eq!(format!("{}", SpiError::Other), "SPI error");
+        assert_eq!(
+            format!("{}", SpiError::InvalidCsPin),
+            "invalid SPI chip-select pin"
+        );
+        assert_eq!(
+            format!("{}", SpiError::CsPinUnavailable),
+            "SPI chip-select pin is configured as input"
+        );
+        assert_eq!(
+            format!("{}", SpiError::CsPinMonitored),
+            "SPI chip-select pin is being monitored for events"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "use-std")]
+    fn spi_error_display_strings_are_distinct() {
+        for (i, a) in SPI_ERROR_VARIANTS.iter().enumerate() {
+            for (j, b) in SPI_ERROR_VARIANTS.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    format!("{a}"),
+                    format!("{b}"),
+                    "SpiError variants {i} and {j} render identically"
+                );
+            }
+        }
     }
 
     #[test]
@@ -3361,6 +3491,7 @@ mod tests {
                 | Capabilities::PWM
                 | Capabilities::ADC
                 | Capabilities::ONEWIRE,
+            num_gpios: NUM_GPIOS as u8,
         };
         let bytes = to_allocvec(&info).unwrap();
         let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
@@ -3378,9 +3509,143 @@ mod tests {
             schema_patch: 0,
             hw_version: 2,
             capabilities: Capabilities::NONE,
+            num_gpios: NUM_GPIOS as u8,
         };
         let bytes = to_allocvec(&info).unwrap();
         let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
         assert_eq!(info, decoded);
+    }
+
+    /// Mirrors the pre-`num_gpios` eight-field [`DeviceInfo`] shape so the
+    /// tests below can encode and decode what an older peer would put on
+    /// the wire. It deliberately reuses the real [`Capabilities`] type so
+    /// the mirror cannot drift from the production definition.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    struct LegacyDeviceInfo {
+        fw_major: u16,
+        fw_minor: u16,
+        fw_patch: u32,
+        schema_major: u16,
+        schema_minor: u16,
+        schema_patch: u32,
+        hw_version: u8,
+        capabilities: Capabilities,
+    }
+
+    /// Mirrors the pre-chip-select two-variant [`SpiError`] shape, i.e. what
+    /// an older decoder is able to accept.
+    #[derive(Serialize, Deserialize, Debug, PartialEq)]
+    enum LegacySpiError {
+        BufferTooLong,
+        Other,
+    }
+
+    #[test]
+    fn device_info_legacy_bytes_fail_new_shape_decode() {
+        let legacy = LegacyDeviceInfo {
+            fw_major: 1,
+            fw_minor: 2,
+            fw_patch: 3,
+            schema_major: 4,
+            schema_minor: 5,
+            schema_patch: 6,
+            hw_version: 7,
+            capabilities: Capabilities(8),
+        };
+        let bytes = to_allocvec(&legacy).unwrap();
+        let err = from_bytes::<DeviceInfo>(&bytes).unwrap_err();
+        assert_eq!(err, postcard::Error::DeserializeUnexpectedEnd);
+    }
+
+    #[test]
+    fn device_info_legacy_shape_decode_leaves_num_gpios_trailing() {
+        let info = DeviceInfo {
+            fw_major: 1,
+            fw_minor: 2,
+            fw_patch: 3,
+            schema_major: 4,
+            schema_minor: 5,
+            schema_patch: 6,
+            hw_version: 7,
+            capabilities: Capabilities(8),
+            num_gpios: 9,
+        };
+        let bytes = to_allocvec(&info).unwrap();
+        let (legacy, remaining) = take_from_bytes::<LegacyDeviceInfo>(&bytes).unwrap();
+        assert_eq!(legacy.fw_major, 1);
+        assert_eq!(legacy.fw_minor, 2);
+        assert_eq!(legacy.fw_patch, 3);
+        assert_eq!(legacy.schema_major, 4);
+        assert_eq!(legacy.schema_minor, 5);
+        assert_eq!(legacy.schema_patch, 6);
+        assert_eq!(legacy.hw_version, 7);
+        assert_eq!(legacy.capabilities, Capabilities(8));
+        assert_eq!(remaining, &[9u8]);
+    }
+
+    #[test]
+    fn spi_error_chip_select_indices_rejected_by_legacy_decode() {
+        // `is_err()` rather than a specific postcard error variant: postcard
+        // routes out-of-range enum discriminants through
+        // `serde::de::Error::custom`, which is an implementation detail.
+        for byte in [2u8, 3u8, 4u8] {
+            assert!(from_bytes::<LegacySpiError>(&[byte]).is_err());
+        }
+    }
+
+    #[test]
+    fn num_gpios_fits_in_u8() {
+        assert!(u8::try_from(NUM_GPIOS).is_ok());
+    }
+
+    #[test]
+    fn device_info_encodes_fields_in_declared_order() {
+        // A plain round-trip is self-consistent by construction: it would
+        // still pass if `num_gpios` were never serialized at all. This test
+        // pins the actual byte image, which is what proves the field is
+        // genuinely on the wire, in the declared position. Every value is
+        // below 128 so each postcard varint occupies exactly one byte.
+        let info = DeviceInfo {
+            fw_major: 1,
+            fw_minor: 2,
+            fw_patch: 3,
+            schema_major: 4,
+            schema_minor: 5,
+            schema_patch: 6,
+            hw_version: 7,
+            capabilities: Capabilities(8),
+            num_gpios: 9,
+        };
+        let bytes = to_allocvec(&info).unwrap();
+        assert_eq!(bytes.as_slice(), &[1u8, 2, 3, 4, 5, 6, 7, 8, 9][..]);
+        assert_eq!(bytes.len(), 9);
+        assert_eq!(*bytes.last().unwrap(), 9);
+        let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
+        assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn device_info_num_gpios_round_trips_full_u8_range() {
+        // A fixture that only ever uses `NUM_GPIOS` cannot distinguish
+        // "serialized the field" from "hardcoded the constant", so sweep
+        // values on both sides of the varint boundary.
+        for n in [0u8, 1, NUM_GPIOS as u8, 127, 128, 254, 255] {
+            let info = DeviceInfo {
+                fw_major: 1,
+                fw_minor: 2,
+                fw_patch: 3,
+                schema_major: 4,
+                schema_minor: 5,
+                schema_patch: 6,
+                hw_version: 7,
+                capabilities: Capabilities(8),
+                num_gpios: n,
+            };
+            let bytes = to_allocvec(&info).unwrap();
+            assert_eq!(bytes.len(), 9, "unexpected length for num_gpios {n}");
+            assert_eq!(*bytes.last().unwrap(), n);
+            let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
+            assert_eq!(decoded.num_gpios, n);
+        }
     }
 }

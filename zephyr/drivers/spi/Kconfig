@@ -12,6 +12,26 @@ config SPI_PICO_DE_GALLO
 	  Zephyr SPI API calls to a Pico de Gallo USB bridge attached to the host
 	  running native_sim via the Pico de Gallo C FFI.
 
+config SPI_PICO_DE_GALLO_INIT_PRIORITY
+	int "Pico de Gallo SPI controller initialization priority"
+	default 50
+	depends on SPI_PICO_DE_GALLO
+	help
+	  POST_KERNEL initialization priority of the Pico de Gallo SPI
+	  controller.
+
+	  It must be greater than CONFIG_GPIO_PICO_DE_GALLO_INIT_PRIORITY
+	  (default 45), which must in turn be greater than
+	  CONFIG_MFD_PICO_DE_GALLO_INIT_PRIORITY (default 40). This controller
+	  configures every pin named in its cs-gpios property as an inactive
+	  output at initialization, so the Pico de Gallo GPIO port owning those
+	  pins has to be ready first.
+
+	  Kconfig cannot check the arithmetic. Runtime readiness is
+	  authoritative instead: an inverted priority makes initialization
+	  return -ENODEV before any pin is configured, rather than actuating the
+	  wrong line.
+
 config HEAP_MEM_POOL_ADD_SIZE_PDG_SPI
 	int "Heap memory pool size for the Pico de Gallo SPI driver"
 	default 8192
@@ -19,8 +39,15 @@ config HEAP_MEM_POOL_ADD_SIZE_PDG_SPI
 	help
 	  pdg_spi_transceive() flattens the caller's scatter-gather buffers into
 	  contiguous ones with k_malloc(), one per direction, each at most
-	  PDG_SPI_MAX_BUFFER (4096) bytes. A full-size duplex transfer therefore
-	  needs about 8 KiB live at once.
+	  PDG_SPI_MAX_BUFFER (1013) bytes. Two maximum-sized scratch buffers can
+	  therefore need about 2 KiB live at once, plus sys_heap per-chunk
+	  metadata, the
+	  heap header and alignment padding. 8192 leaves a large margin over
+	  that. The 1013-byte check is containment, not a duplex-capacity
+	  guarantee: TX-only 1013 succeeded, TX-only 1015 wedges the firmware
+	  dispatcher, 1014 was not tested, full duplex succeeded at 512 and
+	  failed at 3072, and 513 through 1013 duplex was not tested. Applications
+	  needing a documented-safe duplex size must use 512 bytes or less.
 
 	  This has to be declared rather than assumed: k_malloc() lives in
 	  kernel/mempool.c, which Zephyr only compiles when the system heap is

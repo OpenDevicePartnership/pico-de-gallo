@@ -1,0 +1,38 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * M5 phase 5 topology: parent, GPIO and SPI okay, chip select on index 2.
+ *
+ * Same controller set as acceptance.overlay but a separate, independently
+ * reviewable file. The four images share only fixture-identity.dtsi; do not
+ * merge this with the acceptance overlay even though the two currently agree.
+ * This overlay is also used by the dedicated recovery run after an ABNORMAL
+ * acceptance or loopback exit, where its topology requirement -- SPI init must
+ * succeed, which proves pin 2 is no longer monitored -- is the actual test.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+#include "../fixture-identity.dtsi"
+
+&pdg0 {
+	status = "okay";
+};
+
+&pdg_gpio0 {
+	status = "okay";
+};
+
+&pdg_spi0 {
+	status = "okay";
+
+	cs-gpios = <&pdg_gpio0 2 GPIO_ACTIVE_LOW>;
+};
+
+/ {
+	zephyr,user {
+		m5-witness-gpios = <&pdg_gpio0 3 GPIO_ACTIVE_HIGH>;
+	};
+};

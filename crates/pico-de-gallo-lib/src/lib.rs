@@ -88,6 +88,25 @@ use postcard_rpc::{
     standard_icd::{ERROR_PATH, PingEndpoint},
 };
 use std::convert::Infallible;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
+
+/// Upper bound on how long a validated `device/info` round-trip may take
+/// before [`PicoDeGallo::validate`] gives up with [`ValidateError::Timeout`].
+///
+/// Firmware dispatch is serial: one legal 64-operation SPI batch made
+/// entirely of `DelayNs { ns: u32::MAX }` can occupy the dispatcher for
+/// roughly 275 seconds, and a `device/info` queued behind it would be
+/// delayed by that much without anything being wrong. Five minutes leaves
+/// about 25 seconds of headroom for dispatch and USB overhead, so a healthy
+/// maximum-length batch never produces a false timeout, while still giving
+/// operators a finite, comprehensible upper bound instead of an
+/// indefinite wait.
+///
+/// This is deliberately *not* a general RPC timeout: only the validated
+/// metadata fetch is bounded. Every other endpoint keeps its existing
+/// behaviour.
+pub const DEVICE_INFO_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Description of a connected Pico de Gallo device.
 #[derive(Debug, Clone)]
@@ -156,6 +175,15 @@ impl<E> From<HostErr<WireError>> for PicoDeGalloError<E> {
 pub enum ValidateError {
     /// Could not communicate with the device (USB disconnect, timeout, etc.).
     Comms(HostErr<WireError>),
+    /// The `device/info` round-trip did not complete within
+    /// [`DEVICE_INFO_TIMEOUT`].
+    ///
+    /// Distinct from [`ValidateError::Comms`] on purpose: when the timeout
+    /// expires postcard-rpc has produced no transport error at all — the
+    /// request is simply still outstanding — so there is no [`HostErr`] to
+    /// carry. Folding this into `Comms` would erase the only actionable
+    /// distinction the caller has.
+    Timeout,
     /// The firmware does not support the `device/info` endpoint (legacy firmware).
     LegacyFirmware,
     /// The schema (wire protocol) version does not match.
@@ -178,6 +206,12 @@ impl core::fmt::Display for ValidateError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Comms(e) => write!(f, "communication error: {e:?}"),
+            Self::Timeout => write!(
+                f,
+                "device/info did not respond within 300 seconds — retry, or \
+                 reconnect the board (unplug and replug) if it stays \
+                 unresponsive"
+            ),
             Self::LegacyFirmware => write!(
                 f,
                 "firmware does not support the device/info endpoint — upgrade firmware"
@@ -252,7 +286,77 @@ fn check_schema_compatible(info: &DeviceInfo) -> Result<(), ValidateError> {
     Ok(())
 }
 
-/// Async client for a Pico de Gallo USB bridge device.
+/// Error returned by [`PicoDeGallo::spi_batch`].
+///
+/// The five variants are deliberately disjoint so that a caller — and every
+/// downstream host surface — can tell a *local* refusal of the chip-select
+/// argument apart from a *failure to learn what the valid range even is*.
+/// Misreporting a metadata failure as an invalid chip-select would send
+/// users hunting for a bug in their own arguments; see issue #104.
+///
+/// Not `#[non_exhaustive]`: appending a variant must break every exhaustive
+/// match so each host surface makes a deliberate decision about how the new
+/// case reaches its callers.
+#[derive(Debug)]
+pub enum SpiBatchCallError {
+    /// The device-reported GPIO count could not be established.
+    ///
+    /// Carries the exact [`ValidateError`] — transport, timeout, legacy
+    /// firmware, or schema mismatch. **Never** a chip-select complaint.
+    DeviceInfo(ValidateError),
+    /// The device successfully reported that it exposes zero GPIOs, so no
+    /// chip-select pin exists. Distinct from [`Self::InvalidCsPin`]: the
+    /// caller's index is not the problem.
+    NoGpios,
+    /// The requested chip-select index is at or beyond the device-reported
+    /// GPIO count. Refused locally: no `spi/batch` RPC is sent.
+    InvalidCsPin {
+        /// The chip-select index the caller supplied, verbatim.
+        cs: u8,
+        /// The device-reported GPIO count that `cs` was checked against.
+        num_gpios: u8,
+    },
+    /// A transport-level failure of the `spi/batch` request itself, after
+    /// the chip-select was accepted.
+    Comms(HostErr<WireError>),
+    /// The firmware executed the batch and refused or failed an operation.
+    Endpoint(SpiBatchError),
+}
+
+impl core::fmt::Display for SpiBatchCallError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DeviceInfo(e) => write!(f, "failed to determine num_gpios: {e}"),
+            Self::NoGpios => write!(f, "device reports num_gpios=0; no SPI chip-select pin is available"),
+            Self::InvalidCsPin { cs, num_gpios } => write!(
+                f,
+                "invalid SPI chip-select pin {cs}; device reports {num_gpios} GPIOs (valid 0..{num_gpios})"
+            ),
+            Self::Comms(e) => write!(f, "communication error: {e:?}"),
+            Self::Endpoint(e) => write!(f, "endpoint error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for SpiBatchCallError {}
+
+/// Classify a chip-select index against a device-reported GPIO count.
+///
+/// `num_gpios` must come from an `Ok(_)` metadata read — never from a
+/// default, a cast, or the compile-time [`NUM_GPIOS`]. A count of zero is
+/// [`SpiBatchCallError::NoGpios`] for *every* index, including zero, so a
+/// board that genuinely exposes no GPIOs is diagnosable as exactly that
+/// rather than as an ordinary out-of-range index.
+fn classify_cs(cs: u8, num_gpios: u8) -> Result<(), SpiBatchCallError> {
+    if num_gpios == 0 {
+        return Err(SpiBatchCallError::NoGpios);
+    }
+    if cs >= num_gpios {
+        return Err(SpiBatchCallError::InvalidCsPin { cs, num_gpios });
+    }
+    Ok(())
+}
+
 ///
 /// This is the primary type for interacting with the hardware. It wraps a
 /// [`postcard_rpc::host_client::HostClient`] and provides typed async methods
@@ -273,6 +377,19 @@ fn check_schema_compatible(info: &DeviceInfo) -> Result<(), ValidateError> {
 #[derive(Clone)]
 pub struct PicoDeGallo {
     client: HostClient<WireError>,
+    /// Device-reported GPIO count, populated only after a successful,
+    /// timeout-bounded, schema-checked `device/info`.
+    ///
+    /// Shared by clones so a warm cache is not re-fetched per handle. A
+    /// failed fetch leaves it empty, so the next call retries. `std`'s
+    /// `OnceLock` rather than a Tokio cell: it is runtime-independent and
+    /// does not depend on a Tokio feature we only get transitively.
+    num_gpios_cache: Arc<OnceLock<u8>>,
+    /// Per-handle bound on the validated metadata fetch. Production
+    /// constructors set this to [`DEVICE_INFO_TIMEOUT`]; the private
+    /// test constructor uses a short one so the timeout path is
+    /// executable without waiting five minutes.
+    metadata_timeout: Duration,
 }
 
 impl Default for PicoDeGallo {
@@ -323,7 +440,27 @@ impl PicoDeGallo {
 
     fn try_new_inner<F: FnMut(&NusbDeviceInfo) -> bool>(func: F) -> Result<Self, String> {
         let client = HostClient::try_new_raw_nusb(func, ERROR_PATH, 8, VarSeqKind::Seq2)?;
-        Ok(Self { client })
+        Ok(Self {
+            client,
+            num_gpios_cache: Arc::new(OnceLock::new()),
+            metadata_timeout: DEVICE_INFO_TIMEOUT,
+        })
+    }
+
+    /// Build a handle over a caller-supplied transport with a caller-supplied
+    /// metadata timeout.
+    ///
+    /// Test-only seam: it is the only way to exercise the real public
+    /// [`spi_batch`](Self::spi_batch) / [`num_gpios`](Self::num_gpios)
+    /// paths — including the timeout — without opening USB or waiting
+    /// [`DEVICE_INFO_TIMEOUT`].
+    #[cfg(test)]
+    pub(crate) fn new_for_test(client: HostClient<WireError>, metadata_timeout: Duration) -> Self {
+        Self {
+            client,
+            num_gpios_cache: Arc::new(OnceLock::new()),
+            metadata_timeout,
+        }
     }
 
     fn new_inner<F: FnMut(&NusbDeviceInfo) -> bool>(func: F) -> Self {
@@ -466,13 +603,37 @@ impl PicoDeGallo {
     /// returns concatenated data from all Read and Transfer operations
     /// in order.
     ///
-    /// This is much faster than issuing individual SPI calls when
-    /// performing multi-step sequences.
-    pub async fn spi_batch(
-        &self,
-        cs_pin: u8,
-        ops: &[SpiBatchOp<'_>],
-    ) -> Result<Vec<u8>, PicoDeGalloError<SpiBatchError>> {
+    /// # Chip-select preflight
+    ///
+    /// `cs_pin` is checked against the device-reported GPIO count *before*
+    /// anything is encoded or transmitted. On a cold cache this performs
+    /// one implicit [`validate`](Self::validate); afterwards the count is
+    /// read locally from the clone-shared cache and no extra round-trip
+    /// occurs.
+    ///
+    /// The order is: obtain the bound; zero count is
+    /// [`SpiBatchCallError::NoGpios`]; `cs_pin >= bound` is
+    /// [`SpiBatchCallError::InvalidCsPin`]; only then encode and send
+    /// exactly one `spi/batch` RPC. A local refusal transmits nothing and
+    /// never fabricates a failed-operation index. This is defence in depth
+    /// in front of the firmware's own refusal (issue #104): it stops a
+    /// stray index from reaching a board whose firmware predates that
+    /// refusal and would silently reconfigure the pin as an output.
+    ///
+    /// If the bound cannot be established the call fails with
+    /// [`SpiBatchCallError::DeviceInfo`], carrying the exact
+    /// [`ValidateError`]. A metadata failure is *never* reported as an
+    /// invalid chip-select.
+    ///
+    /// A cached count belongs to the handle that learned it. If the board
+    /// is unplugged, the cached byte survives in that (now dead) handle and
+    /// a plausible-looking request will proceed to the batch RPC and fail
+    /// with [`SpiBatchCallError::Comms`]; the client never rebinds itself
+    /// to a different board. A freshly constructed handle starts cold.
+    pub async fn spi_batch(&self, cs_pin: u8, ops: &[SpiBatchOp<'_>]) -> Result<Vec<u8>, SpiBatchCallError> {
+        let num_gpios = self.num_gpios().await.map_err(SpiBatchCallError::DeviceInfo)?;
+        classify_cs(cs_pin, num_gpios)?;
+
         let encoded = encode_spi_batch_ops(ops);
         self.client
             .send_resp::<SpiBatch>(&SpiBatchRequest {
@@ -480,8 +641,9 @@ impl PicoDeGallo {
                 count: ops.len() as u16,
                 ops: &encoded,
             })
-            .await?
-            .map_err(PicoDeGalloError::Endpoint)
+            .await
+            .map_err(SpiBatchCallError::Comms)?
+            .map_err(SpiBatchCallError::Endpoint)
     }
 
     /// Read up to `count` bytes from the UART bus.
@@ -837,31 +999,98 @@ impl PicoDeGallo {
         Ok(self.client.send_resp::<GetDeviceInfo>(&()).await?)
     }
 
+    /// Fetch `device/info` under [`Self::metadata_timeout`] and check the
+    /// reported schema.
+    ///
+    /// Only the `send_resp` future is wrapped: expiry maps to
+    /// [`ValidateError::Timeout`], a completed transport failure keeps its
+    /// existing [`map_validate_error`] classification, and a decoded
+    /// response is schema-checked. No caching happens here, so every error
+    /// path leaves the cache untouched and therefore retryable.
+    async fn fetch_validated_info(&self) -> Result<DeviceInfo, ValidateError> {
+        let fut = self.client.send_resp::<GetDeviceInfo>(&());
+        let info = match tokio::time::timeout(self.metadata_timeout, fut).await {
+            Err(_elapsed) => return Err(ValidateError::Timeout),
+            Ok(Err(e)) => return Err(map_validate_error(e)),
+            Ok(Ok(info)) => info,
+        };
+
+        check_schema_compatible(&info)?;
+
+        Ok(info)
+    }
+
     /// Validate that the connected firmware is wire-compatible with this
     /// host library.
     ///
-    /// Queries the `device/info` endpoint and checks that the schema minor
-    /// version matches (pre-1.0 semver: minor bumps are breaking). Returns
-    /// the [`DeviceInfo`] on success so callers can inspect capabilities
-    /// without an extra round-trip.
+    /// Queries the `device/info` endpoint under a
+    /// [`DEVICE_INFO_TIMEOUT`] bound and checks that the schema major and
+    /// minor versions match (pre-1.0 semver: minor bumps are breaking).
+    /// Returns the [`DeviceInfo`] on success so callers can inspect
+    /// capabilities without an extra round-trip.
+    ///
+    /// On success the reported GPIO count is stored in the clone-shared
+    /// cache that [`num_gpios`](Self::num_gpios) and
+    /// [`spi_batch`](Self::spi_batch) read. The `num_gpios` field of the
+    /// returned `DeviceInfo` is the *stored* byte, re-read after the
+    /// store attempt — not this call's freshly fetched byte. When several
+    /// callers race on a cold cache, they therefore all observe the one
+    /// authoritative winner rather than each observing its own response.
+    ///
+    /// Note: during the schema freeze on this branch, a matching reported
+    /// schema version does not prove wire-*shape* compatibility, because
+    /// `DeviceInfo` changed while both peers still report 0.6.1. This
+    /// call bounds how long you can wait and checks the reported numbers;
+    /// it cannot make those numbers trustworthy.
     ///
     /// # Errors
     ///
     /// - [`ValidateError::Comms`] — could not reach the device.
+    /// - [`ValidateError::Timeout`] — no response within
+    ///   [`DEVICE_INFO_TIMEOUT`]. The cache stays empty; retry is allowed.
     /// - [`ValidateError::LegacyFirmware`] — firmware does not support
     ///   `device/info` (upgrade firmware).
     /// - [`ValidateError::SchemaMismatch`] — firmware and host disagree on
     ///   the wire protocol version.
     pub async fn validate(&self) -> Result<DeviceInfo, ValidateError> {
-        let info = self
-            .client
-            .send_resp::<GetDeviceInfo>(&())
-            .await
-            .map_err(map_validate_error)?;
+        let mut info = self.fetch_validated_info().await?;
 
-        check_schema_compatible(&info)?;
+        // Attempt the store, then *re-read*. The re-read is mandatory even
+        // when the store succeeded: on a concurrent cold-cache race only one
+        // value wins, and every racer must report the winner.
+        let _ = self.num_gpios_cache.set(info.num_gpios);
+        info.num_gpios = *self
+            .num_gpios_cache
+            .get()
+            .expect("cache is populated by the set() immediately above");
 
         Ok(info)
+    }
+
+    /// The number of GPIO pins the connected device reports.
+    ///
+    /// This is the runtime-authoritative bound for a chip-select index, and
+    /// it is what [`spi_batch`](Self::spi_batch) checks against. Prefer it
+    /// over the compile-time [`NUM_GPIOS`].
+    ///
+    /// On a warm cache this is a local read with no USB traffic. On a cold
+    /// cache it performs an implicit [`validate`](Self::validate) — one
+    /// bounded `device/info` round-trip — and returns the stored value. A
+    /// reported count of zero is a legitimate, cacheable answer, not a miss.
+    ///
+    /// # Errors
+    ///
+    /// Any [`ValidateError`]. A failure leaves the cache empty, so the next
+    /// call re-attempts the fetch.
+    pub async fn num_gpios(&self) -> Result<u8, ValidateError> {
+        if let Some(n) = self.num_gpios_cache.get() {
+            return Ok(*n);
+        }
+        self.validate().await?;
+        Ok(*self
+            .num_gpios_cache
+            .get()
+            .expect("a successful validate() always populates the cache"))
     }
 
     /// Tear down any GPIO subscriptions left over from a previous host
@@ -1125,6 +1354,229 @@ impl PicoDeGallo {
 mod tests {
     use super::*;
 
+    // -------------------------------------------------------------------
+    // Scripted transport harness
+    // -------------------------------------------------------------------
+    //
+    // A `HostClient` built from a local `WireTx`/`WireRx`/`WireSpawn` triple,
+    // so the *real* public `spi_batch()` / `num_gpios()` / `validate()`
+    // methods can be driven with no board attached. Pure classifier tests
+    // cannot prove which RPCs were emitted, in what order, or how many
+    // times, and those are precisely the properties issue #104 is about.
+    //
+    // Deliberately uses only `std` synchronisation plus tokio `time`/`rt`,
+    // all of which are direct dependencies. It does not use
+    // `tokio::sync`, which this crate only gets transitively through
+    // postcard-rpc, nor postcard-rpc's own `test-utils` feature, which is
+    // not enabled and could not be enabled without a manifest change.
+
+    use postcard_rpc::Endpoint;
+    use postcard_rpc::header::{VarHeader, VarKey};
+    use postcard_rpc::host_client::{RpcFrame, WireRx, WireSpawn, WireTx};
+    use std::collections::VecDeque;
+    use std::sync::Mutex;
+
+    /// One scripted reply for one inbound request, in arrival order.
+    #[derive(Debug)]
+    enum Reply {
+        /// Reply on `device/info`'s response key with a valid `DeviceInfo`.
+        DeviceInfo(DeviceInfo),
+        /// Reply on `device/info`'s response key with an undecodable body.
+        /// Surfaces as `HostErr::Postcard(..)` — a *decode* failure, which
+        /// (unlike a wire error) does not stop the client, so a retry can
+        /// still succeed.
+        TruncatedInfo,
+        /// Reply on the error path, producing `HostErr::Wire(..)`.
+        WireErr(WireError),
+        /// Reply on `spi/batch`'s response key with `Ok(bytes)`.
+        SpiBatchOk(Vec<u8>),
+        /// Reply on `spi/batch`'s response key with `Err(e)`.
+        SpiBatchErr(SpiBatchError),
+        /// Send nothing at all: the caller waits until its timeout.
+        Silent,
+        /// Send nothing and make the receive side fail permanently, which
+        /// stops the `HostClient` (postcard-rpc treats a `WireRx` error as
+        /// fatal) and closes every pending and future call.
+        CloseWire,
+    }
+
+    #[derive(Default)]
+    struct ScriptState {
+        /// Endpoint paths, in the order the host transmitted them.
+        order: Vec<&'static str>,
+        /// Encoded frames waiting to be handed to `WireRx::receive`.
+        inbox: VecDeque<Vec<u8>>,
+        /// Replies to apply, one per inbound request.
+        plan: VecDeque<Reply>,
+        /// Once set, `receive` fails and the client stops for good.
+        dead: bool,
+    }
+
+    #[derive(Clone, Default)]
+    struct Script(Arc<Mutex<ScriptState>>);
+
+    impl Script {
+        fn with(plan: Vec<Reply>) -> Self {
+            let me = Self::default();
+            me.0.lock().unwrap().plan = plan.into();
+            me
+        }
+
+        /// Fail every `receive` from the outset (an unplugged board).
+        fn dead_on_arrival(&self) {
+            self.0.lock().unwrap().dead = true;
+        }
+
+        fn order(&self) -> Vec<&'static str> {
+            self.0.lock().unwrap().order.clone()
+        }
+
+        fn count(&self, path: &str) -> usize {
+            self.0.lock().unwrap().order.iter().filter(|p| **p == path).count()
+        }
+    }
+
+    #[derive(Debug)]
+    struct WireDead;
+
+    impl core::fmt::Display for WireDead {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+            write!(f, "scripted wire is closed")
+        }
+    }
+
+    impl std::error::Error for WireDead {}
+
+    fn reply_frame(header: VarHeader, key: postcard_rpc::Key, body: Vec<u8>) -> Vec<u8> {
+        RpcFrame {
+            header: VarHeader {
+                // Echo the request's sequence verbatim: postcard-rpc matches
+                // a response on the exact (seq_no, key) pair.
+                seq_no: header.seq_no,
+                key: VarKey::Key8(key),
+            },
+            body,
+        }
+        .to_bytes()
+    }
+
+    struct ScriptedTx(Script);
+
+    impl WireTx for ScriptedTx {
+        type Error = WireDead;
+
+        async fn send(&mut self, data: Vec<u8>) -> Result<(), Self::Error> {
+            let (hdr, _body) = VarHeader::take_from_slice(&data).expect("scripted wire got an undecodable header");
+
+            let path = if hdr.key == VarKey::Key8(GetDeviceInfo::REQ_KEY) {
+                "device/info"
+            } else if hdr.key == VarKey::Key8(SpiBatch::REQ_KEY) {
+                "spi/batch"
+            } else {
+                "other"
+            };
+
+            let mut st = self.0.0.lock().unwrap();
+            st.order.push(path);
+            let reply = st.plan.pop_front().unwrap_or(Reply::Silent);
+
+            let frame = match reply {
+                Reply::DeviceInfo(info) => Some(reply_frame(
+                    hdr,
+                    GetDeviceInfo::RESP_KEY,
+                    postcard::to_stdvec(&info).unwrap(),
+                )),
+                Reply::TruncatedInfo => Some(reply_frame(hdr, GetDeviceInfo::RESP_KEY, vec![0x00])),
+                Reply::WireErr(e) => Some(reply_frame(
+                    hdr,
+                    postcard_rpc::Key::for_path::<WireError>(ERROR_PATH),
+                    postcard::to_stdvec(&e).unwrap(),
+                )),
+                Reply::SpiBatchOk(bytes) => Some(reply_frame(
+                    hdr,
+                    SpiBatch::RESP_KEY,
+                    postcard::to_stdvec(&Ok::<Vec<u8>, SpiBatchError>(bytes)).unwrap(),
+                )),
+                Reply::SpiBatchErr(e) => Some(reply_frame(
+                    hdr,
+                    SpiBatch::RESP_KEY,
+                    postcard::to_stdvec(&Err::<Vec<u8>, SpiBatchError>(e)).unwrap(),
+                )),
+                Reply::Silent => None,
+                Reply::CloseWire => {
+                    st.dead = true;
+                    None
+                }
+            };
+
+            if let Some(f) = frame {
+                st.inbox.push_back(f);
+            }
+            Ok(())
+        }
+    }
+
+    struct ScriptedRx(Script);
+
+    impl WireRx for ScriptedRx {
+        type Error = WireDead;
+
+        async fn receive(&mut self) -> Result<Vec<u8>, Self::Error> {
+            loop {
+                {
+                    let mut st = self.0.0.lock().unwrap();
+                    if st.dead {
+                        return Err(WireDead);
+                    }
+                    if let Some(frame) = st.inbox.pop_front() {
+                        return Ok(frame);
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+    }
+
+    struct ScriptedSpawn;
+
+    impl WireSpawn for ScriptedSpawn {
+        fn spawn(&mut self, fut: impl Future<Output = ()> + Send + 'static) {
+            tokio::task::spawn(fut);
+        }
+    }
+
+    /// Build a handle on the scripted transport, using the *production*
+    /// sequence kind, error path and queue depth so the harness exercises
+    /// the real configuration rather than a convenient one.
+    fn scripted(plan: Vec<Reply>, metadata_timeout: Duration) -> (PicoDeGallo, Script) {
+        let script = Script::with(plan);
+        let client = HostClient::<WireError>::new_with_wire(
+            ScriptedTx(script.clone()),
+            ScriptedRx(script.clone()),
+            ScriptedSpawn,
+            VarSeqKind::Seq2,
+            ERROR_PATH,
+            8,
+        );
+        (PicoDeGallo::new_for_test(client, metadata_timeout), script)
+    }
+
+    /// A `DeviceInfo` that passes `check_schema_compatible` and reports `n`
+    /// GPIOs.
+    fn good_info(n: u8) -> DeviceInfo {
+        let mut info = make_device_info(SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR);
+        info.num_gpios = n;
+        info
+    }
+
+    fn one_read_op() -> Vec<SpiBatchOp<'static>> {
+        vec![SpiBatchOp::Read { len: 1 }]
+    }
+
+    /// Long enough that no healthy scripted exchange can trip it, short
+    /// enough that the timeout tests finish in milliseconds.
+    const TEST_TIMEOUT: Duration = Duration::from_millis(200);
+
     // --- PicoDeGalloError tests ---
 
     #[test]
@@ -1334,6 +1786,7 @@ mod tests {
             schema_patch: 0,
             hw_version: 1,
             capabilities: Capabilities::NONE,
+            num_gpios: NUM_GPIOS as u8,
         }
     }
 
@@ -1407,5 +1860,479 @@ mod tests {
         let s = format!("{err}");
         assert!(s.contains("0.7"), "expected '0.7' in display, got: {s}");
         assert!(s.contains("1.0"), "expected '1.0' in display, got: {s}");
+    }
+
+    // ===================================================================
+    // M3 — SPI chip-select bounds (issue #104)
+    // ===================================================================
+
+    // --- L1-L5: error-type shape and diagnostics ---
+
+    #[test]
+    fn device_info_timeout_constant_is_three_hundred_seconds() {
+        // L25/L26 drive the timeout path through a millisecond seam, so the
+        // production value is only pinned here. Changing it silently would
+        // otherwise pass the whole suite.
+        assert_eq!(DEVICE_INFO_TIMEOUT, Duration::from_secs(300));
+    }
+
+    #[test]
+    fn validate_error_timeout_display_names_endpoint_and_bound() {
+        let s = format!("{}", ValidateError::Timeout);
+        assert!(s.contains("device/info"), "got: {s}");
+        assert!(s.contains("300"), "got: {s}");
+        let lower = s.to_lowercase();
+        assert!(lower.contains("retry") || lower.contains("reconnect"), "got: {s}");
+    }
+
+    fn all_validate_errors() -> Vec<ValidateError> {
+        vec![
+            ValidateError::Comms(HostErr::Closed),
+            ValidateError::Timeout,
+            ValidateError::LegacyFirmware,
+            ValidateError::SchemaMismatch {
+                expected_major: 0,
+                actual_major: 0,
+                expected_minor: 7,
+                actual_minor: 6,
+            },
+        ]
+    }
+
+    #[test]
+    fn validate_error_display_variants_are_pairwise_distinct() {
+        let msgs: Vec<String> = all_validate_errors().iter().map(|e| format!("{e}")).collect();
+        let unique: std::collections::HashSet<&String> = msgs.iter().collect();
+        assert_eq!(unique.len(), msgs.len(), "collision in {msgs:?}");
+        for m in &msgs {
+            let lower = m.to_lowercase();
+            assert!(!lower.contains("chip-select"), "metadata error leaked CS wording: {m}");
+            assert!(!lower.contains("cs_pin"), "metadata error leaked CS wording: {m}");
+        }
+    }
+
+    #[test]
+    fn validate_error_witness_is_exhaustive() {
+        // Compile-time witness (the M1 technique): appending a variant to
+        // ValidateError must fail to *compile* here, forcing a deliberate
+        // decision at every host surface, rather than silently falling
+        // through a wildcard.
+        fn witness(e: &ValidateError) -> u8 {
+            match e {
+                ValidateError::Comms(_) => 0,
+                ValidateError::Timeout => 1,
+                ValidateError::LegacyFirmware => 2,
+                ValidateError::SchemaMismatch { .. } => 3,
+            }
+        }
+        let tags: std::collections::HashSet<u8> = all_validate_errors().iter().map(witness).collect();
+        assert_eq!(tags.len(), 4);
+    }
+
+    fn all_spi_batch_call_errors() -> Vec<SpiBatchCallError> {
+        vec![
+            SpiBatchCallError::DeviceInfo(ValidateError::Timeout),
+            SpiBatchCallError::NoGpios,
+            SpiBatchCallError::InvalidCsPin { cs: 255, num_gpios: 4 },
+            SpiBatchCallError::Comms(HostErr::Closed),
+            SpiBatchCallError::Endpoint(SpiBatchError {
+                failed_op: 0,
+                kind: SpiError::Other,
+            }),
+        ]
+    }
+
+    #[test]
+    fn spi_batch_call_error_witness_is_exhaustive() {
+        fn witness(e: &SpiBatchCallError) -> u8 {
+            match e {
+                SpiBatchCallError::DeviceInfo(_) => 0,
+                SpiBatchCallError::NoGpios => 1,
+                SpiBatchCallError::InvalidCsPin { .. } => 2,
+                SpiBatchCallError::Comms(_) => 3,
+                SpiBatchCallError::Endpoint(_) => 4,
+            }
+        }
+        let tags: std::collections::HashSet<u8> = all_spi_batch_call_errors().iter().map(witness).collect();
+        assert_eq!(tags.len(), 5);
+    }
+
+    #[test]
+    fn spi_batch_call_error_display_variants_are_pairwise_distinct() {
+        let msgs: Vec<String> = all_spi_batch_call_errors().iter().map(|e| format!("{e}")).collect();
+        let unique: std::collections::HashSet<&String> = msgs.iter().collect();
+        assert_eq!(unique.len(), msgs.len(), "collision in {msgs:?}");
+
+        let device_info = format!(
+            "{}",
+            SpiBatchCallError::DeviceInfo(ValidateError::Comms(HostErr::Closed))
+        );
+        let lower = device_info.to_lowercase();
+        assert!(!lower.contains("chip-select"), "got: {device_info}");
+        assert!(!lower.contains("pin"), "got: {device_info}");
+    }
+
+    // --- L6-L13: pure classifier boundaries ---
+
+    #[test]
+    fn classify_cs_accepts_zero_at_n_four() {
+        classify_cs(0, 4).expect("pin 0 is valid when the device reports 4 GPIOs");
+    }
+
+    #[test]
+    fn classify_cs_accepts_upper_boundary_at_n_four() {
+        classify_cs(3, 4).expect("pin 3 is the last valid pin when n == 4");
+    }
+
+    #[test]
+    fn classify_cs_rejects_exact_bound_at_n_four() {
+        match classify_cs(4, 4) {
+            Err(SpiBatchCallError::InvalidCsPin { cs, num_gpios }) => {
+                assert_eq!((cs, num_gpios), (4, 4));
+            }
+            other => panic!("expected InvalidCsPin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_cs_rejects_max_u8_without_truncation() {
+        // The payload must carry 255, not 3. A `cs & 3` truncation would
+        // classify 255 as pin 3 and *accept* it — driving the wrong GPIO.
+        // Asserting the payload is the only thing that kills that mutant.
+        match classify_cs(255, 4) {
+            Err(SpiBatchCallError::InvalidCsPin { cs, num_gpios }) => {
+                assert_eq!(cs, 255);
+                assert_eq!(num_gpios, 4);
+            }
+            other => panic!("expected InvalidCsPin{{cs:255}}, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_cs_accepts_upper_boundary_at_n_seven() {
+        classify_cs(6, 7).expect("nothing may hardcode NUM_GPIOS == 4");
+    }
+
+    #[test]
+    fn classify_cs_rejects_exact_bound_at_n_seven() {
+        match classify_cs(7, 7) {
+            Err(SpiBatchCallError::InvalidCsPin { cs, num_gpios }) => {
+                assert_eq!((cs, num_gpios), (7, 7));
+            }
+            other => panic!("expected InvalidCsPin, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn classify_cs_accepts_pin_four_only_when_bound_exceeds_four() {
+        assert!(classify_cs(4, 4).is_err());
+        classify_cs(4, 7).expect("the bound is read from the device, not assumed");
+    }
+
+    #[test]
+    fn classify_cs_zero_bound_rejects_every_pin_as_no_gpios() {
+        for cs in 0..=u8::MAX {
+            match classify_cs(cs, 0) {
+                Err(SpiBatchCallError::NoGpios) => {}
+                other => panic!("cs {cs} at n=0 must be NoGpios, got {other:?}"),
+            }
+        }
+    }
+
+    // --- L14-L30: transport-backed `spi_batch` ---
+
+    #[tokio::test]
+    async fn spi_batch_unvalidated_fetches_info_then_sends_batch() {
+        let (pg, script) = scripted(
+            vec![Reply::DeviceInfo(good_info(4)), Reply::SpiBatchOk(vec![0xAA])],
+            TEST_TIMEOUT,
+        );
+        let out = pg.spi_batch(0, &one_read_op()).await.expect("valid CS must succeed");
+        assert_eq!(out, vec![0xAA]);
+        assert_eq!(script.order(), vec!["device/info", "spi/batch"]);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_out_of_range_sends_no_batch_rpc() {
+        let (pg, script) = scripted(vec![Reply::DeviceInfo(good_info(4))], TEST_TIMEOUT);
+        match pg.spi_batch(4, &one_read_op()).await {
+            Err(SpiBatchCallError::InvalidCsPin { cs, num_gpios }) => assert_eq!((cs, num_gpios), (4, 4)),
+            other => panic!("expected InvalidCsPin, got {other:?}"),
+        }
+        assert_eq!(script.count("spi/batch"), 0, "a local refusal must transmit nothing");
+        assert_eq!(script.count("device/info"), 1);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_max_u8_cs_sends_no_batch_rpc() {
+        let (pg, script) = scripted(vec![Reply::DeviceInfo(good_info(4))], TEST_TIMEOUT);
+        match pg.spi_batch(255, &one_read_op()).await {
+            Err(SpiBatchCallError::InvalidCsPin { cs, .. }) => assert_eq!(cs, 255),
+            other => panic!("expected InvalidCsPin{{cs:255}}, got {other:?}"),
+        }
+        assert_eq!(script.count("spi/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_zero_bound_sends_no_batch_rpc() {
+        for cs in [0u8, 255u8] {
+            let (pg, script) = scripted(vec![Reply::DeviceInfo(good_info(0))], TEST_TIMEOUT);
+            match pg.spi_batch(cs, &one_read_op()).await {
+                Err(SpiBatchCallError::NoGpios) => {}
+                other => panic!("cs {cs} at n=0 must be NoGpios, got {other:?}"),
+            }
+            assert_eq!(script.count("spi/batch"), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn spi_batch_upper_boundary_sends_exactly_one_batch_rpc() {
+        let (pg, script) = scripted(
+            vec![Reply::DeviceInfo(good_info(4)), Reply::SpiBatchOk(vec![])],
+            TEST_TIMEOUT,
+        );
+        pg.spi_batch(3, &one_read_op()).await.expect("pin 3 is valid at n = 4");
+        assert_eq!(script.count("spi/batch"), 1);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_second_call_reuses_cached_bound() {
+        let (pg, script) = scripted(
+            vec![
+                Reply::DeviceInfo(good_info(4)),
+                Reply::SpiBatchOk(vec![]),
+                Reply::SpiBatchOk(vec![]),
+            ],
+            TEST_TIMEOUT,
+        );
+        pg.spi_batch(0, &one_read_op()).await.expect("first batch");
+        pg.spi_batch(0, &one_read_op()).await.expect("second batch");
+        assert_eq!(script.count("device/info"), 1, "cache hit must not re-query");
+        assert_eq!(script.count("spi/batch"), 2);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_clone_shares_metadata_cache() {
+        let (pg, script) = scripted(
+            vec![
+                Reply::DeviceInfo(good_info(4)),
+                Reply::SpiBatchOk(vec![]),
+                Reply::SpiBatchOk(vec![]),
+            ],
+            TEST_TIMEOUT,
+        );
+        pg.spi_batch(0, &one_read_op()).await.expect("first batch");
+        let clone = pg.clone();
+        clone.spi_batch(0, &one_read_op()).await.expect("clone batch");
+        assert_eq!(script.count("device/info"), 1, "clones share the Arc<OnceLock<u8>>");
+    }
+
+    #[tokio::test]
+    async fn spi_batch_metadata_decode_failure_stays_device_info_comms() {
+        // THE BINDING CONSTRAINT. cs = 0 is in range for any plausible bound,
+        // so an implementation that fell back to NUM_GPIOS would happily
+        // transmit the batch, and one that fell back to 0 would report
+        // NoGpios. Both are wrong: the bound was never learned.
+        let (pg, script) = scripted(vec![Reply::TruncatedInfo], TEST_TIMEOUT);
+        match pg.spi_batch(0, &one_read_op()).await {
+            Err(SpiBatchCallError::DeviceInfo(ValidateError::Comms(HostErr::Postcard(_)))) => {}
+            other => panic!("expected DeviceInfo(Comms(Postcard(_))), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_metadata_failure_leaves_cache_empty_and_retries() {
+        // A *decode* failure is recoverable; a WireRx error is not (it stops
+        // the HostClient permanently), which is why this scripts a truncated
+        // body rather than a transport error.
+        let (pg, script) = scripted(
+            vec![
+                Reply::TruncatedInfo,
+                Reply::DeviceInfo(good_info(4)),
+                Reply::SpiBatchOk(vec![]),
+            ],
+            TEST_TIMEOUT,
+        );
+        assert!(matches!(
+            pg.spi_batch(0, &one_read_op()).await,
+            Err(SpiBatchCallError::DeviceInfo(ValidateError::Comms(_)))
+        ));
+        pg.spi_batch(0, &one_read_op()).await.expect("retry must succeed");
+        assert_eq!(script.count("device/info"), 2, "a failure must not be cached");
+        assert_eq!(script.count("spi/batch"), 1);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_metadata_wire_error_unknown_key_is_legacy_firmware() {
+        let (pg, script) = scripted(vec![Reply::WireErr(WireError::UnknownKey)], TEST_TIMEOUT);
+        match pg.spi_batch(0, &one_read_op()).await {
+            Err(SpiBatchCallError::DeviceInfo(ValidateError::LegacyFirmware)) => {}
+            other => panic!("expected DeviceInfo(LegacyFirmware), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_metadata_schema_mismatch_is_not_invalid_cs() {
+        let mut info = good_info(4);
+        info.schema_minor = SCHEMA_VERSION_MINOR.wrapping_add(1);
+        let (pg, script) = scripted(vec![Reply::DeviceInfo(info)], TEST_TIMEOUT);
+        match pg.spi_batch(0, &one_read_op()).await {
+            Err(SpiBatchCallError::DeviceInfo(ValidateError::SchemaMismatch { .. })) => {}
+            other => panic!("expected DeviceInfo(SchemaMismatch), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_metadata_timeout_is_device_info_timeout() {
+        let (pg, script) = scripted(vec![Reply::Silent], Duration::from_millis(50));
+        match pg.spi_batch(0, &one_read_op()).await {
+            Err(SpiBatchCallError::DeviceInfo(ValidateError::Timeout)) => {}
+            other => panic!("expected DeviceInfo(Timeout), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_metadata_timeout_leaves_cache_empty_and_retries() {
+        let (pg, script) = scripted(
+            vec![
+                Reply::Silent,
+                Reply::DeviceInfo(good_info(4)),
+                Reply::SpiBatchOk(vec![]),
+            ],
+            Duration::from_millis(50),
+        );
+        assert!(matches!(
+            pg.spi_batch(0, &one_read_op()).await,
+            Err(SpiBatchCallError::DeviceInfo(ValidateError::Timeout))
+        ));
+        pg.spi_batch(0, &one_read_op()).await.expect("retry after timeout");
+        assert_eq!(script.count("device/info"), 2);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_closed_transport_is_device_info_comms_not_invalid_cs() {
+        let (pg, script) = scripted(vec![], TEST_TIMEOUT);
+        script.dead_on_arrival();
+        match pg.spi_batch(0, &one_read_op()).await {
+            Err(SpiBatchCallError::DeviceInfo(ValidateError::Comms(HostErr::Closed))) => {}
+            other => panic!("expected DeviceInfo(Comms(Closed)), got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spi_batch_endpoint_error_preserves_failed_op() {
+        let (pg, _script) = scripted(
+            vec![
+                Reply::DeviceInfo(good_info(4)),
+                Reply::SpiBatchErr(SpiBatchError {
+                    failed_op: 2,
+                    kind: SpiError::Other,
+                }),
+            ],
+            TEST_TIMEOUT,
+        );
+        match pg.spi_batch(0, &one_read_op()).await {
+            Err(SpiBatchCallError::Endpoint(e)) => assert_eq!(e.failed_op, 2),
+            other => panic!("expected Endpoint, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn spi_batch_local_refusals_carry_no_failed_op() {
+        let (pg, _s) = scripted(vec![Reply::DeviceInfo(good_info(4))], TEST_TIMEOUT);
+        let range = pg.spi_batch(4, &one_read_op()).await;
+        assert!(!matches!(range, Err(SpiBatchCallError::Endpoint(_))));
+
+        let (pg0, _s0) = scripted(vec![Reply::DeviceInfo(good_info(0))], TEST_TIMEOUT);
+        let zero = pg0.spi_batch(0, &one_read_op()).await;
+        assert!(!matches!(zero, Err(SpiBatchCallError::Endpoint(_))));
+    }
+
+    #[tokio::test]
+    async fn spi_batch_transport_error_after_metadata_is_comms_not_device_info() {
+        let (pg, _script) = scripted(vec![Reply::DeviceInfo(good_info(4)), Reply::CloseWire], TEST_TIMEOUT);
+        match pg.spi_batch(0, &one_read_op()).await {
+            Err(SpiBatchCallError::Comms(_)) => {}
+            other => panic!("batch-phase transport failure must be Comms, got {other:?}"),
+        }
+    }
+
+    // --- L31-L36: `num_gpios` accessor and cache authority ---
+
+    #[tokio::test]
+    async fn num_gpios_returns_cached_value_without_second_fetch() {
+        let (pg, script) = scripted(vec![Reply::DeviceInfo(good_info(4))], TEST_TIMEOUT);
+        pg.validate().await.expect("validate");
+        assert_eq!(pg.num_gpios().await.expect("cached"), 4);
+        assert_eq!(script.count("device/info"), 1);
+    }
+
+    #[tokio::test]
+    async fn num_gpios_on_unvalidated_handle_fetches_and_caches() {
+        let (pg, script) = scripted(vec![Reply::DeviceInfo(good_info(7))], TEST_TIMEOUT);
+        assert_eq!(pg.num_gpios().await.expect("lazy fetch"), 7);
+        assert_eq!(script.count("device/info"), 1);
+        assert_eq!(pg.num_gpios().await.expect("cache hit"), 7);
+        assert_eq!(script.count("device/info"), 1);
+    }
+
+    #[tokio::test]
+    async fn num_gpios_zero_is_cached_and_returned_as_zero() {
+        // Zero is a legitimate answer, not a cache miss. An implementation
+        // using 0 as an "empty" sentinel would re-query here.
+        let (pg, script) = scripted(vec![Reply::DeviceInfo(good_info(0))], TEST_TIMEOUT);
+        assert_eq!(pg.num_gpios().await.expect("zero is a success"), 0);
+        assert_eq!(pg.num_gpios().await.expect("zero is cached"), 0);
+        assert_eq!(script.count("device/info"), 1);
+    }
+
+    #[tokio::test]
+    async fn num_gpios_failure_is_not_cached() {
+        let (pg, script) = scripted(
+            vec![Reply::TruncatedInfo, Reply::DeviceInfo(good_info(4))],
+            TEST_TIMEOUT,
+        );
+        assert!(pg.num_gpios().await.is_err());
+        assert_eq!(pg.num_gpios().await.expect("retry"), 4);
+        assert_eq!(script.count("device/info"), 2);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn num_gpios_concurrent_misses_return_stored_winner() {
+        // Amendment A3. The script answers the two racing requests with
+        // *different* counts. An implementation that returns its own fetched
+        // byte yields 4 and 7; the post-`set` re-read yields one winner to
+        // both.
+        let (pg, _script) = scripted(
+            vec![Reply::DeviceInfo(good_info(4)), Reply::DeviceInfo(good_info(7))],
+            TEST_TIMEOUT,
+        );
+        let a = pg.clone();
+        let b = pg.clone();
+        let ta = tokio::spawn(async move { a.num_gpios().await });
+        let tb = tokio::spawn(async move { b.num_gpios().await });
+        let ra = ta.await.unwrap().expect("racer a");
+        let rb = tb.await.unwrap().expect("racer b");
+        assert_eq!(ra, rb, "both racers must observe the stored winner");
+        assert!(ra == 4 || ra == 7, "unexpected value {ra}");
+    }
+
+    #[tokio::test]
+    async fn validate_returns_stored_bound_not_fetched_bound() {
+        let (pg, _script) = scripted(
+            vec![Reply::DeviceInfo(good_info(4)), Reply::DeviceInfo(good_info(7))],
+            TEST_TIMEOUT,
+        );
+        let first = pg.validate().await.expect("first validate");
+        assert_eq!(first.num_gpios, 4);
+        let second = pg.validate().await.expect("second validate");
+        assert_eq!(
+            second.num_gpios, 4,
+            "validate() must report the stored byte, not the freshly fetched one"
+        );
     }
 }

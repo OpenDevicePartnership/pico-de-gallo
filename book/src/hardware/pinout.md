@@ -15,7 +15,7 @@ which revision PCB they're routed to.
 | I²C SDA       | GPIO 2      | v1.0+        | I²C1, async DMA             |
 | I²C SCL       | GPIO 3      | v1.0+        |                             |
 | SPI RX (MISO) | GPIO 4      | v1.0+        | SPI0, DMA full-duplex       |
-| SPI CS        | GPIO 5      | v1.1+        | Active-low chip-select      |
+| SPI_CS net    | GPIO 5      | v1.1+        | Routed to pin 8; firmware never drives it |
 | SPI SCK       | GPIO 6      | v1.0+        |                             |
 | SPI TX (MOSI) | GPIO 7      | v1.0+        |                             |
 | GPIO 0        | GPIO 8      | v1.0+        | User pin, in/out/edge       |
@@ -40,7 +40,9 @@ channels (`0`–`2` → GPIO 26–28) and PWM channels (`0`–`3` → GPIO
 
 v1.0 uses seven separate 0.1″ pin headers, one per logical bus.
 Refer to the silkscreen on the board for the exact layout. Signals
-**not** brought out on v1.0: UART TX/RX, SPI CS, 1-Wire, ADC 0–2.
+**not** brought out on v1.0: UART TX/RX, 1-Wire, and ADC 0–2. The
+physical SPI_CS net to GPIO 5 is also absent; on v1.1 it is routed
+to the header, but current firmware does not drive it.
 
 ## v1.1 Box Header
 
@@ -76,7 +78,7 @@ left; odd-numbered pins (top row) are on the right.
 | 5          | SPI_MISO | GPIO 4      | Input     | SPI0 RX                   |
 | 6          | SPI_MOSI | GPIO 7      | Output    | SPI0 TX                   |
 | 7          | SPI_SCK  | GPIO 6      | Output    | SPI0 SCK                  |
-| 8          | SPI_CS   | GPIO 5      | Output    | SPI0 CSn                  |
+| 8          | SPI_CS   | GPIO 5      | Not driven by firmware | PCB net; GPIO 5 remains in its reset state |
 | 9          | UART_TX  | GPIO 0      | Output    | UART0 TX                  |
 | 10         | UART_RX  | GPIO 1      | Input     | UART0 RX                  |
 | 11         | GPIO0    | GPIO 8      | Bidir     | User GPIO 0               |
@@ -93,6 +95,17 @@ left; odd-numbered pins (top row) are on the right.
 | 22         | ADC2     | GPIO 28     | Input     | Via 100 Ω series resistor |
 | 23         | +3V3     | —           | Power out | Direct 3.3 V              |
 | 24         | GND      | —           | Power     | Ground                    |
+
+Header pin 8 carries the PCB's SPI_CS net to RP2350 GPIO 5, but
+current firmware never claims or drives that pad. It is not a valid
+`spi/batch` chip-select index or user GPIO index. Use firmware GPIO
+indices 0–3, which map to RP2350 GPIO 8–11, for chip-select instead.
+No pull or stable inactive level is guaranteed on GPIO 5.
+
+The device currently reports `num_gpios == 4`, so host validation
+refuses `--cs 5` before transmitting anything. If that validation is
+bypassed, firmware returns `SpiError::InvalidCsPin` without touching
+a pin.
 
 > [!NOTE]
 >

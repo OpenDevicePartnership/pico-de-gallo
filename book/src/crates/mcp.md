@@ -256,7 +256,7 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 |---|---|
 | `list_devices` | List connected Pico de Gallo boards |
 | `status` | Which board is reachable, why not when none is, plus firmware/schema version |
-| `device_info` | Firmware version, schema version, capabilities |
+| `device_info` | Firmware version, schema version, capabilities, runtime GPIO count |
 | `version` | Firmware version |
 | `ping` | Echo a value (liveness check) |
 
@@ -283,6 +283,29 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 | `spi_flush` | Flush the SPI buffer | destructive |
 | `spi_set_config` | Set frequency, phase, and polarity | destructive |
 | `spi_batch` | Atomic multi-step transaction under chip-select | destructive |
+
+> [!WARNING]
+> MCP SPI tools are not protected by the Zephyr driver's 1013-byte containment.
+> A 1015-byte TX-only request reproduced a device-wide firmware-dispatcher
+> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
+`spi_batch` takes `cs` as a `u8` and runs its steps in a fixed order:
+parse every operation payload, connect exactly once, read the GPIO count
+from the `DeviceInfo` that connection already validated, classify `cs`,
+then call the library once. No second metadata query is issued.
+
+Parsing comes first on purpose. `connect` runs
+`system_reset_subscriptions`, which tears down every GPIO subscription on
+the board — including ones owned by other host processes — so a malformed
+request must not reach it. A payload that fails to parse returns
+`-32602` (invalid params) without connecting.
+
+An out-of-range `cs` and a device reporting zero GPIOs are also `-32602`,
+with distinct messages, and nothing is transmitted. A failure to
+establish the count — transport, 300-second `device/info` timeout, legacy
+firmware, or schema mismatch — is `-32603` (internal error), never
+`-32602`: it is not a complaint about your argument.
 
 ### uart
 

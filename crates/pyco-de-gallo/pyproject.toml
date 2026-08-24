@@ -4,7 +4,7 @@ build-backend = "maturin"
 
 [project]
 name = "pyco-de-gallo"
-version = "0.4.2"
+version = "0.5.0"
 description = "Rust-powered Pico de Gallo bindings"
 readme = "README.md"
 requires-python = ">=3.8"

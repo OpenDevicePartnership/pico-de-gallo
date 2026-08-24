@@ -70,12 +70,40 @@ A short slice of the endpoint catalog looks like this:
 |------|--------------|
 | `ping` | Echo test payload |
 | `version` | Report firmware version |
-| `device/info` | Report firmware, schema, and capabilities |
+| `device/info` | Report firmware/schema versions, hardware revision, capabilities, and the runtime GPIO count |
 | `i2c/read` | Read from an I<sup>2</sup>C target |
 | `spi/transfer` | Full-duplex SPI transfer |
 | `gpio/subscribe` | Start GPIO event monitoring |
 
 For the full list, see the [Endpoint Catalog](../appendix/endpoints.md).
+
+## SPI chip-select contract
+
+`SpiError` is serialized by variant index. The deployed indices are:
+
+| Index | Variant | Meaning |
+|-------|---------|---------|
+| 0 | `BufferTooLong` | Request exceeds the firmware buffer limit |
+| 1 | `Other` | Unspecified firmware-reported SPI failure |
+| 2 | `InvalidCsPin` | Chip-select index outside `0..DeviceInfo::num_gpios` |
+| 3 | `CsPinUnavailable` | Chip-select pin is explicitly configured as an input |
+| 4 | `CsPinMonitored` | Chip-select pin is monitored for GPIO events |
+
+For `spi/batch`, the chip-select pin behaves as follows:
+
+- the pin is driven as an **output** for the duration of the batch,
+- on success it is left configured as an output, deasserted high; the prior
+  direction is **not** restored,
+- on an execution failure *after* CS was asserted, it is likewise left
+  deasserted high,
+- on a pre-validation failure or a refusal, the pin is left **untouched**,
+- pins explicitly configured as inputs are **refused** — firmware predating
+  this contract may instead reconfigure them.
+
+`DeviceInfo::num_gpios` is the runtime-authoritative pin count. Valid GPIO and
+SPI chip-select indices are `0..num_gpios`; when it is zero, no index is
+valid. It supersedes the compile-time `NUM_GPIOS` default and must never be
+synthesized or defaulted when `device/info` decoding fails.
 
 ## Schema versioning
 
@@ -96,6 +124,16 @@ That means a pre-1.0 bump is required when you:
 - change a request or response type,
 - append a new wire enum variant.
 
+> **Warning** — schema freeze on the `zephyr` branch.
+> This branch intentionally changes the shape of `SpiError` and `DeviceInfo`
+> **without** changing the reported schema version. Mixed peers are therefore
+> incompatible even when both sides report the same schema: a new host cannot
+> decode an old eight-field `DeviceInfo`, while an old decoder accepts only the
+> eight-field prefix of a new response. Because postcard-rpc response keys
+> include the response schema, a mismatched peer may wait indefinitely rather
+> than fail fast. This branch is not releasable or taggable until the
+> maintainer performs the lockstep version bump required by AGENTS.md §6.5.
+
 ## Host/firmware compatibility checks
 
 The host library exposes `PicoDeGallo::validate()`. It calls `device/info`,
@@ -106,8 +144,9 @@ If validation fails, the host returns:
 - `LegacyFirmware` when the firmware is too old to support `device/info`, or
 - `SchemaMismatch` when the host and firmware disagree on the schema version.
 
-This turns an otherwise confusing runtime failure into an explicit compatibility
-error.
+For released components with honest schema versions, this turns an otherwise
+confusing runtime failure into an explicit compatibility error. It cannot detect
+the intentional schema freeze described above.
 
 ## Lockstep releases for protocol changes
 
@@ -120,7 +159,8 @@ cycle must update:
 4. `pico-de-gallo-hal`,
 5. `pico-de-gallo-ffi`,
 6. `pico-de-gallo-app`,
-7. `pyco-de-gallo`.
+7. `pico-de-gallo-mcp`,
+8. `pyco-de-gallo`.
 
 > [!IMPORTANT]
 > Nothing automated knows that the protocol crate and firmware are

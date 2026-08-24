@@ -21,9 +21,9 @@
    `system_profiler SPUSBDataType` (macOS) for VID `045E` and
    PID `067D`.
 
-### `gallo ping` fails with a comms error
+### `gallo version` fails with a comms error
 
-A successful `gallo list` followed by a failing `gallo ping`
+A successful `gallo list` followed by a failing `gallo version`
 usually means another process has the device open — typically a
 previous `gallo` instance that didn''t exit cleanly, or a Python
 script holding a `PycoDeGallo`. Close it.
@@ -34,6 +34,8 @@ The host library was built against a different
 `SCHEMA_VERSION_MINOR` than the running firmware. Re-flash the
 matching firmware release, or upgrade/downgrade the host crates
 to match. See [Releases & Compatibility](../internals/releases.md).
+On the `zephyr` branch, matching schema 0.6.1 does not prove wire-shape
+compatibility; see the schema-freeze warning on that page.
 
 ### `LegacyFirmware` (status code −64)
 
@@ -45,8 +47,39 @@ recent firmware build.
 ### `Unsupported` (status code −65)
 
 The peripheral exists in the protocol but isn''t wired on this
-hardware revision. Check the capability bitfield from
-`gallo info`. See [Revisions](../hardware/revisions.md).
+hardware revision. Confirm discovery with `gallo list` and firmware
+communication with `gallo version`, then see
+[Revisions](../hardware/revisions.md).
+
+### `GpioTimeout` (status code −70)
+
+A bounded GPIO wait expired before the requested level or edge arrived.
+Check the wiring and increase the timeout only if the expected event is slow.
+
+### `SpiInvalidCsPin` (status code −71)
+
+The chip-select index is outside `0..num_gpios`. Query the connected device's
+runtime GPIO count and choose an index below it.
+
+### `SpiCsPinUnavailable` (status code −72)
+
+The selected chip-select pin is explicitly configured as an input. Configure
+it as an output, or select another user GPIO.
+
+### `SpiCsPinMonitored` (status code −73)
+
+The selected chip-select pin has an active GPIO event subscription. Unsubscribe
+it before using the pin as chip-select.
+
+### `SpiNoGpios` (status code −74)
+
+The device reports zero user GPIOs, so no firmware-managed SPI chip-select is
+available. Use a device or firmware build that exposes user GPIOs.
+
+### `DeviceInfoTimeout` (status code −75)
+
+The `device/info` query did not complete within 300 seconds. Check the USB
+connection and peer compatibility before retrying.
 
 ### I²C `Nack` (−18)
 
@@ -65,9 +98,34 @@ collisions). Try a slower clock with `gallo i2c set-config --frequency standard`
 
 ### `BufferTooLong` (−22)
 
-The firmware caps a single transfer at 4096 bytes. Split larger
-transfers, or use batch operations to keep them in one USB
-round-trip even when broken into smaller chunks.
+Two different limits are involved here, and conflating them is a common
+source of confusion:
+
+- **The protocol constant, 4096 bytes** (`MAX_TRANSFER_SIZE`). This is the
+  firmware's per-packet **buffer budget**, not a usable payload size — the
+  same buffer must also hold the postcard-rpc header, the length varint and
+  the COBS framing, and it covers the request frame *and* the response
+  frame.
+- **The usable payload, which is smaller and shape-dependent.** In measured SPI
+  tests, 4096-byte TX-only and 3072-byte full-duplex requests passed their local
+  checks, reached the transport, and failed `-ECOMM`.
+
+Split larger transfers. Batch operations still occupy one framed request and
+response; batching does not make an otherwise undeliverable aggregate fit.
+
+The Zephyr SPI driver rejects clocked lengths above 1013 bytes. That is
+containment, not a duplex-capacity guarantee: TX-only 1013 succeeded, TX-only
+1015 wedges the dispatcher, and 1014 was not tested. Full duplex succeeded at
+512, failed at 3072, and was not tested from 513 through 1013. Applications
+needing a documented-safe duplex size must use 512 bytes or less. Do not infer
+1013-byte duplex support from `PDG_SPI_MAX_BUFFER`.
+
+The Zephyr limit does not protect CLI, Rust, C, Python, or MCP callers. In the
+reproduced SPI tests the device resumed after USB re-enumeration (`usbipd
+detach`/attach on Windows/WSL). This is an observation, not proof that detach
+cancels the handler. On Linux/macOS reconnect the cable or use USB
+unbind/rebind; power-cycle if unavailable or ineffective.
+`system/reset-subscriptions` cannot run while dispatch is blocked.
 
 ### GPIO `WrongDirection` (−28)
 

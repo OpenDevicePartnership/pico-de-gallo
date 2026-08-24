@@ -12,7 +12,7 @@ use pico_de_gallo_internal::{
 };
 use postcard_rpc::header::VarHeader;
 
-use crate::context::Context;
+use crate::context::{Context, NUM_GPIOS, PinMode};
 
 /// Handler for `spi/read` — reads bytes from the SPI bus.
 pub(crate) async fn spi_read_handler<'a>(
@@ -72,8 +72,10 @@ pub(crate) async fn spi_transfer_handler<'a>(
 
 /// Handler for `spi/batch` — executes multiple SPI operations atomically under CS.
 ///
-/// The firmware asserts CS on the specified GPIO pin before executing
-/// operations, and deasserts it after completion (even on error).
+/// The firmware validates the encoded operations first, then its chip-select
+/// pin. Refusals raised before chip-select is driven leave the pin untouched.
+/// For an accepted transaction, CS is configured as an output, asserted low,
+/// and deasserted high after execution even when an operation fails.
 /// Read and Transfer data is accumulated in `context.buf`.
 pub(crate) async fn spi_batch_handler<'a>(
     context: &'a mut Context,
@@ -122,18 +124,40 @@ pub(crate) async fn spi_batch_handler<'a>(
         });
     }
 
-    // Validate and get the CS pin
+    if cs_idx >= NUM_GPIOS {
+        debug!(
+            "spi batch refused: cs_pin={=u8} num_gpios={=usize} reason=invalid",
+            req.cs_pin, NUM_GPIOS
+        );
+        return Err(SpiBatchError {
+            failed_op: 0,
+            kind: SpiError::InvalidCsPin,
+        });
+    }
+
+    if context.gpios.get(cs_idx).is_none_or(Option::is_none) {
+        debug!("spi batch refused: cs_pin={=u8} reason=monitored", req.cs_pin);
+        return Err(SpiBatchError {
+            failed_op: 0,
+            kind: SpiError::CsPinMonitored,
+        });
+    }
+
+    if context.pin_modes.get(cs_idx) == Some(&PinMode::ExplicitInput) {
+        debug!("spi batch refused: cs_pin={=u8} reason=explicit-input", req.cs_pin);
+        return Err(SpiBatchError {
+            failed_op: 0,
+            kind: SpiError::CsPinUnavailable,
+        });
+    }
+
     let cs = context
         .gpios
         .get_mut(cs_idx)
+        .and_then(Option::as_mut)
         .ok_or(SpiBatchError {
             failed_op: 0,
-            kind: SpiError::Other,
-        })?
-        .as_mut()
-        .ok_or(SpiBatchError {
-            failed_op: 0,
-            kind: SpiError::Other,
+            kind: SpiError::CsPinMonitored,
         })?;
     cs.set_as_output();
     cs.set_high();
@@ -144,13 +168,27 @@ pub(crate) async fn spi_batch_handler<'a>(
     );
 
     // Assert CS (active low)
-    let cs = context.gpios[cs_idx].as_mut().unwrap();
+    let cs = context
+        .gpios
+        .get_mut(cs_idx)
+        .and_then(Option::as_mut)
+        .ok_or(SpiBatchError {
+            failed_op: 0,
+            kind: SpiError::CsPinMonitored,
+        })?;
     cs.set_low();
 
     let result = spi_batch_execute(&mut context.spi, &mut context.buf, ops).await;
 
     // Deassert CS (always, even on error)
-    let cs = context.gpios[cs_idx].as_mut().unwrap();
+    let cs = context
+        .gpios
+        .get_mut(cs_idx)
+        .and_then(Option::as_mut)
+        .ok_or(SpiBatchError {
+            failed_op: 0,
+            kind: SpiError::CsPinMonitored,
+        })?;
     cs.set_high();
 
     result

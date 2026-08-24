@@ -40,9 +40,10 @@ planned. The revision determines two things:
   ambiguity. Adapter boards (informally called "toppings") can be
   designed against a stable connector instead of wrangling seven
   separate jumper bundles.
-- **All 20 firmware signals routed.** v1.0 only brings out 13 of
-  the firmware's 20 GPIO signals. UART, SPI chip-select, 1-Wire,
-  and the three ADC inputs are physically absent on v1.0.
+- **All implemented peripheral signals routed.** UART, 1-Wire, and
+  the three ADC inputs are physically absent on v1.0. v1.1 also
+  routes the PCB's SPI_CS net from RP2350 GPIO 5, but current
+  firmware never claims or drives that pad.
 - **On-board passives.**
   - 4.7 kΩ pull-ups on I²C (no more dangling resistors).
   - 100 Ω series resistors on each ADC input for protection and a
@@ -74,14 +75,19 @@ Planned but not yet released:
 </p>
 
 The v1.0 board predates the consolidated header and lacks routing
-for UART (GPIO 0–1), SPI CS (GPIO 5), 1-Wire (GPIO 16), and ADC
-(GPIO 26–28). The firmware still validates inputs and returns
-`Unsupported` for those endpoints, so calling them won't crash —
-you just won't get data.
+for UART (GPIO 0-1), 1-Wire (GPIO 16), and ADC (GPIO 26-28).
+Firmware validates those endpoints and returns `Unsupported`, so
+calling them won't crash — you just won't get data.
 
 If you're stuck on v1.0 and need one of the missing signals, you
 can solder a wire directly to the corresponding Pico 2 castellated
-pad. It's not pretty, but it works.
+pad. It's not pretty, but it works for UART, 1-Wire, and ADC.
+
+SPI_CS is different. Its physical GPIO 5 net is present on the v1.1
+header but absent on v1.0, and current firmware does not claim or
+drive GPIO 5 on either revision. Soldering to that pad does not make
+it usable as firmware-controlled chip-select; use a user GPIO index
+reported by `device/info` instead.
 
 ## Identifying Your Board
 

@@ -1,0 +1,30 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * M5 reset image topology: parent okay, BOTH children explicitly disabled.
+ *
+ * This is not decoration. Acceptance spec §3 resolves an init-order conflict:
+ * the firmware may still own chip-select pin 2 through an orphaned GPIO event
+ * subscription, and pdg_spi_init()'s gpio_pin_configure_dt(GPIO_OUTPUT_INACTIVE)
+ * would then fail -EBUSY before main() ever gets to clear it. Disabling both
+ * children means nothing touches pin 2 before the reset endpoint runs.
+ *
+ * The four M5 images therefore share only fixture-identity.dtsi. Do not factor
+ * this topology into a common fragment.
+ */
+
+#include "../fixture-identity.dtsi"
+
+&pdg0 {
+	status = "okay";
+};
+
+&pdg_gpio0 {
+	status = "disabled";
+};
+
+&pdg_spi0 {
+	status = "disabled";
+};

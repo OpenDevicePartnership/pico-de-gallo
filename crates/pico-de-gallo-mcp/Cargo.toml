@@ -1,6 +1,6 @@
 [package]
 name = "gallo-mcp"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Model Context Protocol server exposing a Pico de Gallo device to AI agents"
@@ -12,7 +12,7 @@ repository = "https://github.com/OpenDevicePartnership/pico-de-gallo"
 documentation = "https://docs.rs/gallo-mcp"
 
 [dependencies]
-pico-de-gallo-lib = { version = "0.7.1", path = "../pico-de-gallo-lib" }
+pico-de-gallo-lib = { version = "0.8.0", path = "../pico-de-gallo-lib" }
 rmcp = { version = "2.2.0", features = ["server", "macros", "transport-io", "schemars"] }
 schemars = "1"
 serde = { version = "1", features = ["derive"] }

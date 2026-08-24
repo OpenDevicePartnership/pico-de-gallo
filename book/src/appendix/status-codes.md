@@ -2,8 +2,12 @@
 
 Every `gallo_*` FFI function (except the lifecycle calls
 `gallo_init`, `gallo_init_with_serial_number`, and `gallo_free`)
-returns a `Status` value. `Status` is a C enum backed by
-`int32_t`.
+returns a `Status` value. For C11/C17, cbindgen emits
+`typedef int32_t Status` together with integer constants, rather than making
+`Status` a true C `enum` type. To catch appended statuses at compile time,
+cast the scrutinee (`switch ((enum Status)x)`), omit any `default:` label
+inside the switch, and build with `-Werror=switch`. A post-switch fallback
+for an unknown numeric value is intentional and correct.
 
 - **`Ok` (0)** — success.
 - **Negative values** — errors, grouped roughly by peripheral.
@@ -95,6 +99,20 @@ that doesn't appear in your header means success.
 | `SpiBatchFailed`           |   −67 | SPI batch transaction failed                             |
 | `SpiTransferFailed`        |   −68 | SPI full-duplex transfer failed                          |
 | `SystemResetSubscriptionsFailed` | −69 | `system/reset-subscriptions` call failed              |
+| `GpioTimeout`              |   −70 | GPIO wait timed out                                      |
+| `SpiInvalidCsPin`          |   −71 | SPI chip-select index is outside the reported GPIO range |
+| `SpiCsPinUnavailable`      |   −72 | SPI chip-select pin is configured as an input            |
+| `SpiCsPinMonitored`        |   −73 | SPI chip-select pin is monitored for GPIO events         |
+| `SpiNoGpios`               |   −74 | Device reports zero GPIOs, so no chip-select pin exists  |
+| `DeviceInfoTimeout`        |   −75 | `device/info` did not respond within 300 seconds         |
+
+`SpiInvalidCsPin` (−71) and `SpiNoGpios` (−74) are host-side refusals: the
+chip-select was rejected before anything was transmitted, and no pin was
+driven. `DeviceInfoFailed` (−62), `SchemaMismatch` (−63),
+`LegacyFirmware` (−64) and `DeviceInfoTimeout` (−75) mean the host could
+not establish the device-reported GPIO count at all. Those four are never
+reported as a chip-select error: a failure to learn the valid range is not
+a complaint about the caller's pin.
 
 ## Source of Truth
 

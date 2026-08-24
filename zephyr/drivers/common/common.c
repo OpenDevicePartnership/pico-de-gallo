@@ -15,7 +15,7 @@ void pdg_common_bottom_close(void *ctx)
 int pdg_common_status_to_errno(Status status)
 {
     // big big list
-	switch (status) {
+	switch ((enum Status)status) {
         case Ok:                      return 0;
         case I2cAddressOutOfRange:    return -EINVAL;
         case GpioInvalidPin:          return -EINVAL;
@@ -24,18 +24,23 @@ int pdg_common_status_to_errno(Status status)
         case PwmInvalidDutyCycle:     return -EINVAL;
         case PwmInvalidConfiguration: return -EINVAL;
         case InvalidArgument:         return -EINVAL;
+        case SpiInvalidCsPin:         return -EINVAL;
         case BufferTooLong:           return -EMSGSIZE;
         case SchemaMismatch:          return -EMSGSIZE;
         case InvalidResponse:         return -EPROTO;
         case CommsFailed:             return -ECOMM;
         case OneWireNoPresence:       return -ECOMM;
         case Uninitialized:           return -ENODEV;
+        case SpiNoGpios:              return -ENODEV;
         case I2cNack:                 return -ENXIO;
         case I2cArbitrationLoss:      return -EAGAIN;
         case GpioWrongDirection:      return -EACCES;
+        case SpiCsPinUnavailable:     return -EACCES;
         case GpioPinMonitored:        return -EBUSY;
+        case SpiCsPinMonitored:       return -EBUSY;
         case GpioPinNotMonitored:     return -ENOENT;
         case GpioTimeout:             return -ETIMEDOUT;
+        case DeviceInfoTimeout:       return -ETIMEDOUT;
         case LegacyFirmware:          return -ENOSYS;
         case Unsupported:             return -ENOTSUP;
         case I2cReadFailed:           return -EIO;
@@ -87,6 +92,12 @@ int pdg_common_status_to_errno(Status status)
         case OneWireWriteFailed:      return -EIO;
         case OneWireSearchFailed:     return -EIO;
         case SystemResetSubscriptionsFailed: return -EIO;
-        default:                      return -EIO;
 	}
+
+	/*
+	 * Reached only for a numeric status outside the enum, e.g. a newer FFI
+	 * than this module was built against. Omitted enum members are caught
+	 * at build time by -Werror=switch instead of falling through here.
+	 */
+	return -EIO;
 }

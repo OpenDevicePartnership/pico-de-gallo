@@ -5,6 +5,21 @@ All notable changes to `pico-de-gallo-lib` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-08-24
+
+### Added
+
+- Added cached, runtime-authoritative `PicoDeGallo::num_gpios()`.
+  Closes #104.
+
+### Changed
+
+- `spi_batch` now refuses `cs_pin >= num_gpios` locally without
+  transmitting. A `device/info` failure remains a metadata error rather
+  than becoming an invalid chip-select, and `num_gpios == 0` is distinct.
+  The implicit metadata request uses the existing 300-second
+  `DEVICE_INFO_TIMEOUT`. Closes #104.
+
 ## [0.7.1] — 2026-07-28
 
 ### Added

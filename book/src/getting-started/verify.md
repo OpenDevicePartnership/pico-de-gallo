@@ -93,6 +93,9 @@ The fix is to update whichever side is behind. See
 [Releases & Compatibility](../internals/releases.md) for the rules
 on which versions are compatible.
 
+On the `zephyr` branch, also read the schema-freeze warning there: matching
+schema 0.6.1 does not prove that branch-built and released peers are compatible.
+
 ## Next
 
 You're up and running. Pick an interface to play with — start

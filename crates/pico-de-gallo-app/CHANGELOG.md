@@ -5,6 +5,20 @@ All notable changes to `gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-08-24
+
+### Breaking Changes
+
+- Replaced `gallo gpio put --high` with the required
+  `--level <high|low>`. There is no `-h` alias: the old derived short
+  option collided with clap's `--help`, causing startup to panic and
+  making it impossible to request a low level. Closes #104.
+
+### Changed
+
+- `spi batch --cs` is validated against device-reported metadata before
+  operations are parsed or anything is transmitted. Closes #104.
+
 ## [0.8.0] — 2026-08-19
 
 ### Breaking Changes

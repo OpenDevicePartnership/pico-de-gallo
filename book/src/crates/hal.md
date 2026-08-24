@@ -38,7 +38,8 @@ The current public API is:
 |---|---|---|
 | `i2c()` | `I2c` | I<sup>2</sup>C bus handle implementing blocking and async traits |
 | `spi()` | `Spi` | Raw SPI bus handle |
-| `spi_device(cs_pin)` | `Result<SpiDev, SpiHalError>` | SPI device handle that manages chip-select for you |
+| `spi_device(cs_pin)` | `Result<SpiDev, SpiHalError>` | SPI device handle that manages chip-select for you; validates `cs_pin` before driving it |
+| `num_gpios()` | `Result<u8, HalInitError>` | Device-reported GPIO count — the runtime bound for a pin index or chip select |
 | `uart()` | `Uart` | UART handle implementing `embedded_io` and `embedded_io_async` |
 | `gpio(pin)` | `Gpio` | GPIO pin handle implementing digital traits |
 | `pwm_channel(channel)` | `PwmChannel` | PWM channel handle implementing `SetDutyCycle` |
@@ -135,6 +136,38 @@ fn read_register(hal: &Hal) -> Result<[u8; 2], Box<dyn std::error::Error>> {
 
 For SPI devices, `spi_device(cs_pin)` wraps the same idea with automatic CS
 assert/deassert around the whole transaction.
+
+## Chip-select bounds
+
+`spi_device(cs_pin)` validates `cs_pin` against the GPIO count the
+connected board reports **before** it drives the pin, so a refused
+chip-select leaves the pin exactly as you configured it. Read the count
+yourself with `num_gpios()`; prefer it over the compile-time
+`pico_de_gallo_lib::NUM_GPIOS`, which is only this build's default.
+
+The first lookup performs one implicit validated `device/info`
+round-trip, bounded at 300 seconds; the value is then cached and shared
+by every handle cloned from the same connection. `SpiHalError` keeps the
+outcomes disjoint:
+
+| Variant | Meaning |
+|---|---|
+| `InvalidCsPin { cs, num_gpios }` | index at or beyond the reported count |
+| `NoGpios` | the board reports zero GPIOs |
+| `DeviceInfo(ValidateError)` | the count could not be established — transport, 300-second timeout, legacy firmware, or schema mismatch |
+| `Comms(String)` | the CS-high drive or the batch transport failed |
+| `Spi(SpiError)` | the firmware refused or failed the transfer |
+
+`DeviceInfo(_)` is never reported as an invalid chip-select: a failure to
+learn the valid range is a connectivity or compatibility problem, not an
+argument problem.
+
+`num_gpios()` returns `HalInitError::Validate(_)` on failure, including
+`ValidateError::Timeout`. Failures are not cached, so retrying is fine.
+
+> **Schema-freeze caveat.** On this branch a successful validation does
+> not prove wire-*shape* compatibility: `DeviceInfo` changed while both
+> host and firmware still report schema 0.6.1.
 
 ## When to Reach for This Crate
 

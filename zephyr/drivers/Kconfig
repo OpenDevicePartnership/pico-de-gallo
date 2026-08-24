@@ -1,5 +1,7 @@
 # Copyright (c) 2026 Open Device Partnership and Contributors
 # SPDX-License-Identifier: MIT
 
+rsource "mfd/Kconfig"
+rsource "gpio/Kconfig"
 rsource "i2c/Kconfig"
 rsource "spi/Kconfig"

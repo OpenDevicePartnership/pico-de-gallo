@@ -1,0 +1,28 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+config MFD_PICO_DE_GALLO
+	bool "Pico de Gallo MFD parent"
+	default y
+	depends on DT_HAS_ODP_PICO_DE_GALLO_ENABLED
+	depends on ARCH_POSIX
+	help
+	  Enable the Pico de Gallo multi-function device parent. One enabled
+	  node represents one physical USB-attached Pico de Gallo board. The
+	  parent owns the host connection and exposes its opaque context to
+	  child peripheral controller drivers.
+
+if MFD_PICO_DE_GALLO
+
+config MFD_PICO_DE_GALLO_INIT_PRIORITY
+	int "Pico de Gallo MFD parent initialization priority"
+	default KERNEL_INIT_PRIORITY_DEFAULT
+	help
+	  POST_KERNEL initialization priority of the Pico de Gallo MFD parent.
+	  It must run after libc and before any child peripheral controller.
+
+module = MFD_PICO_DE_GALLO
+module-str = Pico de Gallo MFD parent
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # MFD_PICO_DE_GALLO

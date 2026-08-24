@@ -23,8 +23,20 @@ RP2350 **GPIO 8–11**.
 
 ## Pin Configuration
 
-Before using a GPIO pin, configure its direction and pull resistor. Pins
-default to input with no pull resistor after power-on.
+Before using a GPIO pin, configure its direction and pull resistor. After
+power-on a pin is in the firmware's `LegacyAuto` mode: it has no explicit
+direction, and the firmware lazily selects one per operation — a read switches
+the pad to input, a write drives it. An explicit `set-config` leaves that mode
+and pins the direction, after which a write to an explicit input, or a read of
+an explicit output, is rejected.
+
+> **Warning.** Do not use the RP2350 internal pull-down as proof that an
+> input is low. It can hold a node that was previously driven low, but may
+> not discharge a node that is already high; an unpulled floating input can
+> also drift high within seconds. For a deterministic low state, drive the
+> node low first and verify it before releasing it to pull-down, or use an
+> external pull-down. Configuring pull-down alone does not guarantee that
+> `gpio/get` returns Low.
 
 ### CLI
 
@@ -87,11 +99,14 @@ gallo gpio get --pin 0
 # Output: Pin 0: High
 
 # Drive pin 2 high
-gallo gpio put --pin 2 --high
+gallo gpio put --pin 2 --level high
 
 # Drive pin 2 low
-gallo gpio put --pin 2 --high false
+gallo gpio put --pin 2 --level low
 ```
+
+`--level` is required and takes `high` or `low`; there is no short option
+for it, because `-h` is `--help`.
 
 ### Rust Library
 
@@ -351,7 +366,7 @@ gallo gpio set-config --pin 2 --direction output --pull none
 
 # Read button, toggle LED manually
 STATE=$(gallo gpio get --pin 0)
-gallo gpio put --pin 2 --high
+gallo gpio put --pin 2 --level high
 
 # Or monitor button presses
 gallo gpio monitor --pin 0 --edge falling
@@ -484,10 +499,101 @@ All functions return `GalloStatus`:
 | Command | Description |
 |---------|-------------|
 | `gallo gpio get --pin N` | Read pin state |
-| `gallo gpio put --pin N --high` | Drive pin high |
-| `gallo gpio put --pin N --high false` | Drive pin low |
+| `gallo gpio put --pin N --level high` | Drive pin high |
+| `gallo gpio put --pin N --level low` | Drive pin low |
 | `gallo gpio set-config --pin N --direction DIR --pull PULL` | Configure pin |
 | `gallo gpio monitor --pin N --edge EDGE` | Stream edge events until Ctrl+C |
+
+## Zephyr
+
+The `pico-de-gallo/zephyr` module ships an `odp,pico-de-gallo-gpio` controller
+so a Zephyr application running on `native_sim` can drive these pins through
+the standard Zephyr GPIO API. Full build instructions live in
+[`zephyr/README.md`](https://github.com/OpenDevicePartnership/pico-de-gallo/blob/main/zephyr/README.md).
+
+**Topology.** The controller is a direct child of the `odp,pico-de-gallo` MFD
+parent, which owns the USB connection. Enable both:
+
+```dts
+&pdg0 {
+	status = "okay";
+	serial-number = "E6614C311B8C9E37";
+};
+
+&pdg_gpio0 {
+	status = "okay";
+};
+```
+
+**`serial-number` on the parent is mandatory** for an enabled GPIO child and is
+enforced at build time. GPIO actuates physical pins, and a connection opened
+without a selector cannot report which attached board it chose. Presence is not
+uniqueness: two parents naming the same serial still alias to one board.
+
+**Pin indices** are the firmware GPIO indices 0–3 above, not RP2350 numbers.
+`ngpios` must equal the firmware-reported GPIO count or initialization fails
+with `-EINVAL`.
+
+**Supported flags:** `GPIO_INPUT`, `GPIO_OUTPUT`, `GPIO_PULL_UP`,
+`GPIO_PULL_DOWN`, `GPIO_OUTPUT_INIT_LOW`, `GPIO_OUTPUT_INIT_HIGH` and
+`GPIO_ACTIVE_LOW`.
+
+**Rejected:** `GPIO_DISCONNECTED` and `GPIO_INPUT | GPIO_OUTPUT` together
+(`-ENOTSUP`); single-ended, open-source and open-drain (`-ENOTSUP`);
+interrupt-mode flags including `GPIO_INT_WAKEUP` (`-ENOTSUP`); any flag bit
+outside the supported set (`-ENOTSUP`); both pulls, both init levels, or an
+init level without `GPIO_OUTPUT` (`-EINVAL`).
+
+**Blocking.** Every operation that reaches hardware is a USB round trip. Calls from interrupt context
+return `-EWOULDBLOCK`; transport failure is `-EIO`.
+Configuration and writes may return `-EBUSY` when a live firmware event
+subscription owns the pin. Write paths may return `-EACCES` when firmware
+records the pin as an explicit input. During a read, `gpio_pin_get()` normalizes
+subscription `-EBUSY` to `-EIO` and treats `-EACCES` from an explicit output as
+a zero bit.
+
+**Reads are destructive on unconfigured pins.** `gpio_port_get_raw()` scans
+every pin. Firmware `gpio/get` switches a `LegacyAuto` pad to input, so
+`gpio_pin_get()` can reconfigure unrelated unconfigured pins as a side effect.
+Configure all pins explicitly and do not treat reads as state-neutral queries.
+
+**Non-atomic.** Multi-pin writes are ascending per-pin round trips with no
+rollback: on failure the acknowledged prefix definitely changed, the failed pin
+is indeterminate, and later pins were never issued. Output initialization is
+two round trips, so the previous level can briefly appear before the requested
+one.
+
+**No toggle, no interrupts.** `gpio_pin_toggle()` returns `-ENOTSUP`, because
+an explicit output cannot be read back and the driver deliberately caches no
+pin state. Interrupt configuration, callback management and the
+pending-interrupt query return `-ENOSYS`. Generic toggle consumers — **blinky**,
+the **GPIO shell**, the **TPS382x watchdog** and the **LS0xx display** —
+therefore do not work with this controller.
+
+### Serving as SPI chip select
+
+This controller is also how the `odp,pico-de-gallo-spi` controller drives chip
+select. Each `cs-gpios` entry on an enabled SPI controller must name an
+**enabled** `odp,pico-de-gallo-gpio` controller under the **same**
+`odp,pico-de-gallo` parent; a foreign controller, a disabled sibling, or a
+Pico de Gallo GPIO controller belonging to a *different* parent is rejected at
+build time with an assertion naming the `cs-gpios` array index. Enabling
+`pdg_gpio0` is therefore now a prerequisite for using SPI, not an optional
+extra. See [SPI](./spi.md).
+
+At initialization the SPI controller configures every declared chip-select pin
+as an **explicit output, inactive**, in ascending array order. That is two USB
+round trips per pin (set-config, then put), and there is no rollback: if a pin
+fails, earlier entries are acknowledged inactive, that entry's state is
+indeterminate, and later entries were never issued. A pin under a live firmware
+GPIO event subscription fails with `-EBUSY`; reset it explicitly with
+`gallo_system_reset_subscriptions()` after a strict open, then reinitialize, or
+power-cycle the board.
+
+A declared chip-select pin must be owned **exclusively** by SPI. The GPIO child
+being the sole *driver path* for the pin's mode is not an ownership
+reservation: a direct GPIO consumer in the same application can reconfigure or
+drive that pin between SPI operations, and nothing detects it.
 
 ## Limitations
 

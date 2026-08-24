@@ -5,18 +5,31 @@
  */
 
 / {
-	pdg_i2c0: pdg-i2c {
-		compatible = "odp,pico-de-gallo-i2c";
-		clock-frequency = <400000>;
-		#address-cells = <1>;
-		#size-cells = <0>;
+	pdg0: pico-de-gallo {
+		compatible = "odp,pico-de-gallo";
 		status = "disabled";
-	};
 
-	pdg_spi0: pdg-spi {
-		compatible = "odp,pico-de-gallo-spi";
-		#address-cells = <1>;
-		#size-cells = <0>;
-		status = "disabled";
+		pdg_gpio0: gpio {
+			compatible = "odp,pico-de-gallo-gpio";
+			gpio-controller;
+			#gpio-cells = <2>;
+			ngpios = <4>;
+			status = "disabled";
+		};
+
+		pdg_i2c0: i2c {
+			compatible = "odp,pico-de-gallo-i2c";
+			clock-frequency = <400000>;
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
+
+		pdg_spi0: spi {
+			compatible = "odp,pico-de-gallo-spi";
+			#address-cells = <1>;
+			#size-cells = <0>;
+			status = "disabled";
+		};
 	};
 };

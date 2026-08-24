@@ -263,7 +263,22 @@ pin as chip-select. This is the common case — most drivers expect an
 `SpiDevice` that wraps CS handling for them.
 
 **HAL accessor:** `hal.spi_device(cs_pin)` → returns
-`Result<SpiDev, SpiHalError>`. CS pin range: `0..=3`.
+`Result<SpiDev, SpiHalError>`. CS pin range: `0..num_gpios`, where
+`num_gpios` is the count the connected board reports — read it with
+`hal.num_gpios()`. On current hardware that is 4, but do not hardcode it.
+
+`spi_device` validates `cs_pin` against that count **before** it drives
+the pin, so an out-of-range chip-select leaves the pin exactly as you
+configured it. The distinct failures are:
+
+- `SpiHalError::InvalidCsPin { cs, num_gpios }` — index at or beyond the
+  reported count;
+- `SpiHalError::NoGpios` — the board reports zero GPIOs;
+- `SpiHalError::DeviceInfo(_)` — the count could not be established
+  (transport failure, 300-second `device/info` timeout, legacy firmware,
+  or schema mismatch). This is **never** reported as an invalid
+  chip-select; treat it as a connectivity/compatibility problem, not an
+  argument problem.
 
 **Traits implemented:** `embedded_hal::spi::SpiDevice`,
 `embedded_hal_async::spi::SpiDevice`.
@@ -304,7 +319,8 @@ fn driver_who_am_i_matches_datasheet() {
 
 #### Gotchas
 
-- CS pin range is `0..=3`. The pin **must not** also be used as a
+- CS pin range is `0..num_gpios` (read it with `hal.num_gpios()`; do not
+  assume 4). The pin **must not** also be used as a
   `Gpio` elsewhere in the program (no concurrent ownership).
 - The async `SpiDevice::transaction` is **not** cancellation-safe:
   if the future is dropped after CS is asserted low but before it is

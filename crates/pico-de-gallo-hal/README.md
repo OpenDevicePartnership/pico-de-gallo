@@ -38,8 +38,10 @@ for more usage patterns.
 | Delay      | `DelayNs`                                    | `DelayNs`             |
 
 `SpiDevice` manages chip-select (CS) automatically via a GPIO pin.
-Use `hal.spi_device(cs_pin)` to create one. For raw bus access without
-CS management, use `hal.spi()`.
+Use `hal.spi_device(cs_pin)` to create one. It returns
+`Result<SpiDev, SpiHalError>` after validating the pin against the
+device-reported GPIO count. For raw bus access without CS management,
+use `hal.spi()`.
 
 # License
 

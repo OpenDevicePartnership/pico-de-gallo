@@ -161,6 +161,30 @@ See the [I<sup>2</sup>C chapter](../interfaces/i2c.md) and
 | `get-config` | Show the active SPI configuration |
 | `batch` | Run atomic multi-step SPI transactions under chip-select |
 
+> [!WARNING]
+> The CLI is not protected by the Zephyr driver's 1013-byte containment. A
+> 1015-byte TX-only SPI request reproduced a device-wide firmware-dispatcher
+> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
+`batch --cs <PIN>` accepts any `u8`. The pin is checked at run time
+against the GPIO count the connected device reports — not against a fixed
+range — before the operations are parsed and before anything is
+transmitted, so an out-of-range chip-select drives no pin:
+
+```text
+invalid SPI chip-select pin 7; device reports 4 GPIOs (valid 0..4)
+device reports num_gpios=0; no SPI chip-select pin is available
+```
+
+Every subcommand except `list` and `version` validates the firmware
+before doing anything else, and that validation supplies the count. If it
+fails — including a `device/info` timeout after 300 seconds — the error
+appears under `firmware validation failed`, never as an invalid
+chip-select. On this branch a successful validation still cannot prove
+wire-*shape* compatibility, because `DeviceInfo` changed while both peers
+report schema 0.6.1.
+
 See the [SPI chapter](../interfaces/spi.md) and
 [Transaction Batching](../interfaces/batching.md).
 
@@ -169,7 +193,7 @@ See the [SPI chapter](../interfaces/spi.md) and
 | Subcommand | Purpose |
 |---|---|
 | `get` | Read the current level of a pin |
-| `put` | Drive a pin high or low |
+| `put` | Drive a pin high or low - `put --pin <PIN> --level <high\|low>` |
 | `set-config` | Set direction and pull resistor |
 | `monitor` | Subscribe to edge events until you stop the process |
 

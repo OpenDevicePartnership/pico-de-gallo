@@ -4,8 +4,33 @@
  * SPDX-License-Identifier: MIT
  */
 
+#include <zephyr/dt-bindings/gpio/gpio.h>
+
+&pdg0 {
+	status = "okay";
+
+	/*
+	 * REQUIRED: replace this placeholder with this board's serial from
+	 * `gallo list`. SPI chip select actuates GPIO, so R11 forbids
+	 * selector-less operation: with multiple boards attached, it could
+	 * drive the wrong board's pins.
+	 */
+	serial-number = "REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL";
+};
+
+&pdg_gpio0 {
+	status = "okay";
+};
+
 &pdg_spi0 {
 	status = "okay";
+
+	/*
+	 * Chip select on firmware user GPIO0 (RP2350 GPIO8, header pin 11).
+	 * The cell is a firmware user GPIO index, not an RP2350 GPIO number
+	 * and not a header pin number.
+	 */
+	cs-gpios = <&pdg_gpio0 0 GPIO_ACTIVE_LOW>;
 
 	led_matrix: is31fl3743b@0 {
 		compatible = "issi,is31fl3743b";

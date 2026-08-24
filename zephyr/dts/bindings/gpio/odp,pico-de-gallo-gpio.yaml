@@ -1,0 +1,94 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Pico de Gallo USB-attached GPIO controller.
+
+  This controller forwards Zephyr GPIO API calls to a Pico de Gallo USB bridge
+  connected to the host running native_sim.
+
+  Topology. This controller must be a direct child of an enabled
+  odp,pico-de-gallo MFD parent. It borrows the parent's host connection and
+  inherits the parent's board selection; serial-number is not valid on the
+  child controller. A controller that is not a direct child of an enabled
+  odp,pico-de-gallo node is rejected at build time.
+
+  Board identity is mandatory. Because this controller actuates physical pins,
+  the parent of every enabled GPIO child must define serial-number. A
+  selector-less connection cannot report which attached board it selected, so
+  it would actuate unidentifiable hardware; that case is rejected at build
+  time. Presence is not uniqueness: two parents carrying the same explicit
+  serial-number still alias to one board. The configured serial-number is
+  logged on successful GPIO initialization.
+
+  Blocking. Every operation that reaches hardware is a blocking USB round trip.
+  Calls rejected before any I/O -- interrupt context, invalid arguments, a zero
+  pin mask, and toggle -- do not reach the bridge at all. Calls made from
+  interrupt context return -EWOULDBLOCK without touching hardware. A transport
+  failure is reported as -EIO. Configuration and writes can also return -EBUSY
+  when a live firmware event subscription owns the pin. Writes can return
+  -EACCES when the firmware records the pin as an explicit input. While scanning
+  the port, gpio_pin_get() normalizes subscription -EBUSY to -EIO and treats
+  -EACCES from an explicit output as a zero bit.
+
+  Supported configuration flags. A pin is either an input or an output.
+  GPIO_DISCONNECTED, and GPIO_INPUT | GPIO_OUTPUT together, return -ENOTSUP.
+  Pull resistors none, up and down are supported; requesting both pulls
+  returns -EINVAL. Single-ended drive, open-source and open-drain return
+  -ENOTSUP. Interrupt-mode flags, including GPIO_INT_WAKEUP, return -ENOTSUP,
+  as does any flag bit outside the supported set. Requesting both output
+  initialization levels, or an initialization level without GPIO_OUTPUT,
+  returns -EINVAL. GPIO_ACTIVE_LOW is supported and handled by Zephyr's common
+  GPIO layer.
+
+  ngpios is required and must equal the firmware-reported GPIO count from
+  device/info. A mismatch is a local devicetree/firmware configuration error
+  and fails initialization with -EINVAL. Zephyr evaluates the
+  devicetree-derived pin mask assertion before dispatching to this driver, so
+  an out-of-range pin normally fails there first.
+
+  Non-atomicity. Multi-pin writes are deterministic ascending, non-atomic,
+  per-pin USB round trips. On a partial failure the acknowledged prefix
+  definitely changed, the failed pin is indeterminate because its request may
+  have executed with only the response lost, and later selected pins were never
+  issued; the driver logs the operation, the failed pin, the requested mask and
+  value, and the acknowledged prefix, and does not roll back. Output
+  initialization is likewise two non-atomic round trips: the pin becomes an
+  output before the requested level arrives, so the previous or HAL-defined
+  level may briefly appear. After a failed pin_configure, the requested
+  direction and pull may nevertheless have been applied, and logical polarity
+  is unreliable until a successful reconfiguration.
+
+  Reads are scoped to input pins. A pin the firmware has recorded as an
+  explicit output contributes a zero bit and the scan continues, exactly as
+  Zephyr's reference controller behaves. This is only sound because
+  GPIO_INPUT | GPIO_OUTPUT is rejected, so a reported zero is provably not an
+  input pin. Direction-query APIs are unavailable on this controller;
+  gpio_pin_is_input() and gpio_pin_is_output() return -ENOSYS.
+
+  Reads are not state-neutral. gpio_port_get_raw() scans every pin, and reading
+  a LegacyAuto pin invokes firmware gpio/get, which switches that pad to input.
+  Consequently gpio_pin_get() can reconfigure unrelated unconfigured pins as a
+  side effect. Configure every pin explicitly before reading.
+
+  Unsupported operations. Interrupt configuration, callback management and the
+  pending-interrupt query are not implemented and return -ENOSYS. Toggle
+  dispatch exists but returns -ENOTSUP: an explicit output cannot be read back
+  and no pin state is cached. Generic toggle consumers, including blinky, the
+  GPIO shell, the TPS382x watchdog and the LS0xx display, therefore do not work
+  with this controller.
+
+compatible: "odp,pico-de-gallo-gpio"
+
+include: [gpio-controller.yaml, base.yaml]
+
+properties:
+  ngpios:
+    required: true
+
+  "#gpio-cells":
+    const: 2
+
+gpio-cells:
+  - pin
+  - flags

@@ -5,6 +5,10 @@
  */
 
 
+&pdg0 {
+	status = "okay";
+};
+
 &pdg_i2c0 {
 	status = "okay";
 

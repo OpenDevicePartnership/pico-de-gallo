@@ -35,7 +35,9 @@
 
 use clap::{Parser, Subcommand, ValueEnum};
 use color_eyre::{Result, eyre::eyre};
-use pico_de_gallo_lib::{AdcChannel, GpioEdge, I2cFrequency, PicoDeGallo, SpiPhase, SpiPolarity, list_devices};
+use pico_de_gallo_lib::{
+    AdcChannel, DeviceInfo, GpioEdge, I2cFrequency, PicoDeGallo, SpiPhase, SpiPolarity, ValidateError, list_devices,
+};
 use pico_de_gallo_lib::{GpioDirection, GpioPull, GpioState};
 use std::num::ParseIntError;
 use tabled::builder::Builder;
@@ -119,6 +121,28 @@ impl From<GpioEdgeArg> for GpioEdge {
             GpioEdgeArg::Rising => GpioEdge::Rising,
             GpioEdgeArg::Falling => GpioEdge::Falling,
             GpioEdgeArg::Any => GpioEdge::Any,
+        }
+    }
+}
+
+/// GPIO output level for CLI argument parsing.
+///
+/// Used by `gallo gpio put --level <high|low>`. This is an explicit value
+/// enum rather than a boolean flag so that both levels are settable and so
+/// that no short option is derived (`-h` belongs to `--help`).
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GpioLevelArg {
+    /// Drive the pin high
+    High,
+    /// Drive the pin low
+    Low,
+}
+
+impl From<GpioLevelArg> for GpioState {
+    fn from(arg: GpioLevelArg) -> Self {
+        match arg {
+            GpioLevelArg::High => GpioState::High,
+            GpioLevelArg::Low => GpioState::Low,
         }
     }
 }
@@ -357,7 +381,10 @@ enum SpiCommands {
     ///
     /// Example: gallo spi batch --cs 0 --op write:0x9F --op read:3
     Batch {
-        /// GPIO pin to use as chip-select (0–3)
+        /// GPIO pin to use as chip-select
+        ///
+        /// Checked at run time against the GPIO count the connected device
+        /// reports, not against a fixed range.
         #[arg(long)]
         cs: u8,
 
@@ -382,9 +409,11 @@ enum GpioCommands {
         #[arg(short, long)]
         pin: u8,
 
-        /// Desired level: true = high, false = low
-        #[arg(short, long)]
-        high: bool,
+        /// Desired level: high or low
+        ///
+        /// Deliberately has no short option: `-h` is reserved for `--help`.
+        #[arg(long)]
+        level: GpioLevelArg,
     },
 
     /// Configure a GPIO pin's direction and pull resistor
@@ -603,16 +632,17 @@ impl Cli {
     /// skew), and `ping` (the transport-level liveness check, which must
     /// stay answerable on a board whose schema does not match).
     ///
+    /// Returns the [`pico_de_gallo_lib::DeviceInfo`] so `run` can retain
+    /// the device-reported GPIO count and hand it to the handlers that
+    /// need a runtime-authoritative pin bound, without a second query.
+    ///
+    /// The `device/info` round-trip is bounded at 300 seconds by the
+    /// library; on expiry the message below reports a validation timeout
+    /// rather than hanging forever.
+    ///
     /// Closes Category A finding #4 (reviewer R4) at the CLI layer.
-    async fn validate_firmware(&self, pg: &PicoDeGallo) -> Result<()> {
-        pg.validate().await.map(|_info| ()).map_err(|e| {
-            eyre!(
-                "firmware validation failed: {e}\n\n\
-                                Re-flash the firmware to a version matching this `gallo` build, \
-                                or install a `gallo` build matching the firmware. \
-                                Run `gallo version` for the current device-reported schema."
-            )
-        })
+    async fn validate_firmware(&self, pg: &PicoDeGallo) -> Result<DeviceInfo> {
+        pg.validate().await.map_err(|e| eyre!(validation_failure_message(&e)))
     }
 
     /// Execute the CLI command.
@@ -644,9 +674,14 @@ impl Cli {
         // a board whose USB path is exactly what the operator is trying to
         // test). Without this, a schema mismatch would manifest as a
         // confusing CommsFailed on the first RPC. See Category A finding #4.
-        if !matches!(self.command, Commands::Version | Commands::Ping) {
-            self.validate_firmware(&pg).await?;
-        }
+        //
+        // The returned metadata is retained so handlers that need the
+        // device-reported GPIO count get it without a second query.
+        let info = if matches!(self.command, Commands::Version | Commands::Ping) {
+            None
+        } else {
+            Some(self.validate_firmware(&pg).await?)
+        };
 
         match &self.command {
             Commands::List => unreachable!("handled before connecting"),
@@ -670,11 +705,17 @@ impl Cli {
                 SpiCommands::WriteRead { count, bytes } => self.spi_write_then_read(&pg, bytes, count).await,
                 SpiCommands::SetConfig { frequency, mode } => self.spi_set_config(&pg, *frequency, *mode).await,
                 SpiCommands::GetConfig => self.spi_get_config(&pg).await,
-                SpiCommands::Batch { cs, op } => self.spi_batch(&pg, *cs, op).await,
+                SpiCommands::Batch { cs, op } => {
+                    let num_gpios = info
+                        .as_ref()
+                        .expect("validation runs for every subcommand except version")
+                        .num_gpios;
+                    self.spi_batch(&pg, *cs, op, num_gpios).await
+                }
             },
             Commands::Gpio { command } => match command {
                 GpioCommands::Get { pin } => self.gpio_get(&pg, *pin).await,
-                GpioCommands::Put { pin, high } => self.gpio_put(&pg, *pin, *high).await,
+                GpioCommands::Put { pin, level } => self.gpio_put(&pg, *pin, *level).await,
                 GpioCommands::SetConfig { pin, direction, pull } => {
                     self.gpio_set_config(&pg, *pin, *direction, *pull).await
                 }
@@ -982,10 +1023,20 @@ impl Cli {
         Ok(())
     }
 
-    async fn spi_batch(&self, pg: &PicoDeGallo, cs: u8, ops: &[String]) -> Result<()> {
+    /// Execute an SPI batch.
+    ///
+    /// `num_gpios` is the count the connected device reported during the
+    /// up-front validation in [`Cli::run`]; the chip-select is classified
+    /// against it *before* any operation string is parsed, so a bad
+    /// chip-select is reported as such rather than as a parse error, and
+    /// nothing is transmitted.
+    async fn spi_batch(&self, pg: &PicoDeGallo, cs: u8, ops: &[String], num_gpios: u8) -> Result<()> {
         use pico_de_gallo_lib::SpiBatchOp;
 
+        classify_cs(cs, num_gpios)?;
+
         let batch_ops = parse_spi_batch_ops(ops)?;
+
         let refs: Vec<SpiBatchOp<'_>> = batch_ops
             .iter()
             .map(|(kind, data)| match kind {
@@ -1024,13 +1075,19 @@ impl Cli {
         Ok(())
     }
 
-    async fn gpio_put(&self, pg: &PicoDeGallo, pin: u8, high: bool) -> Result<()> {
-        let state = if high { GpioState::High } else { GpioState::Low };
+    async fn gpio_put(&self, pg: &PicoDeGallo, pin: u8, level: GpioLevelArg) -> Result<()> {
+        let state: GpioState = level.into();
         pg.gpio_put(pin, state)
             .await
             .map_err(|e| eyre!("{:?}", e).wrap_err("gpio put failed"))?;
 
-        println!("GPIO pin {pin} set to {}", if high { "HIGH" } else { "LOW" });
+        println!(
+            "GPIO pin {pin} set to {}",
+            match level {
+                GpioLevelArg::High => "HIGH",
+                GpioLevelArg::Low => "LOW",
+            }
+        );
         Ok(())
     }
 
@@ -1433,6 +1490,41 @@ fn parse_i2c_batch_ops(ops: &[String]) -> Result<Vec<(I2cBatchKind, Vec<u8>)>> {
 /// Parse SPI batch operation strings into owned intermediate values.
 ///
 /// Format: `read:N`, `write:B1,B2,...`, `transfer:B1,B2,...`, or `delay:NS`
+/// Classify an SPI chip-select index against the device-reported GPIO count.
+///
+/// `num_gpios` comes from the up-front `device/info` validation in
+/// [`Cli::run`], so it is always a value the device actually reported: a
+/// validation failure aborts before any handler runs and is surfaced as a
+/// validation error, never as an invalid chip-select (issue #104).
+///
+/// A count of zero is its own message for every index, so a board with no
+/// GPIOs is diagnosable as exactly that.
+fn classify_cs(cs: u8, num_gpios: u8) -> Result<()> {
+    if num_gpios == 0 {
+        return Err(eyre!("device reports num_gpios=0; no SPI chip-select pin is available"));
+    }
+    if cs >= num_gpios {
+        return Err(eyre!(
+            "invalid SPI chip-select pin {cs}; device reports {num_gpios} GPIOs (valid 0..{num_gpios})"
+        ));
+    }
+    Ok(())
+}
+
+/// Render the user-facing message for a failed firmware validation.
+///
+/// Extracted from [`Cli::validate_firmware`] so the exact text — including
+/// the 300-second [`ValidateError::Timeout`] diagnostic — is testable
+/// without a device.
+fn validation_failure_message(e: &ValidateError) -> String {
+    format!(
+        "firmware validation failed: {e}\n\n\
+         Re-flash the firmware to a version matching this `gallo` build, \
+         or install a `gallo` build matching the firmware. \
+         Run `gallo version` for the current device-reported schema."
+    )
+}
+
 fn parse_spi_batch_ops(ops: &[String]) -> Result<Vec<(SpiBatchKind, Vec<u8>)>> {
     ops.iter()
         .map(|op| {
@@ -1995,6 +2087,19 @@ mod tests {
         }
     }
 
+    // ===================================================================
+    // M3 — SPI chip-select bounds (issue #104)
+    // ===================================================================
+
+    fn parsed_batch_cs(args: &[&str]) -> Option<u8> {
+        match Cli::try_parse_from(args).ok()?.command {
+            Commands::Spi {
+                command: SpiCommands::Batch { cs, .. },
+            } => Some(cs),
+            _ => None,
+        }
+    }
+
     #[test]
     fn cli_spi_set_config_accepts_every_mode() {
         for m in 0u8..=3 {
@@ -2025,5 +2130,166 @@ mod tests {
                 "--mode {bad} should be rejected"
             );
         }
+    }
+
+    #[test]
+    fn cli_spi_batch_accepts_max_u8_cs_at_the_clap_layer() {
+        // 255 must survive parsing so the *runtime* bound check reports it,
+        // with the real device-reported count in the message.
+        assert_eq!(
+            parsed_batch_cs(&["gallo", "spi", "batch", "--cs", "255", "--op", "read:1"]),
+            Some(255)
+        );
+    }
+
+    #[test]
+    fn cli_spi_batch_accepts_zero_cs_at_the_clap_layer() {
+        assert_eq!(
+            parsed_batch_cs(&["gallo", "spi", "batch", "--cs", "0", "--op", "read:1"]),
+            Some(0)
+        );
+    }
+
+    #[test]
+    fn cli_spi_batch_rejects_cs_above_u8_at_the_clap_layer() {
+        assert!(Cli::try_parse_from(["gallo", "spi", "batch", "--cs", "256", "--op", "read:1"]).is_err());
+    }
+
+    #[test]
+    fn spi_batch_help_does_not_claim_a_fixed_zero_to_three_range() {
+        use clap::CommandFactory;
+        let mut cmd = Cli::command();
+        let help = cmd
+            .find_subcommand_mut("spi")
+            .expect("spi subcommand")
+            .find_subcommand_mut("batch")
+            .expect("batch subcommand")
+            .render_long_help()
+            .to_string();
+        assert!(!help.contains("0–3"), "stale fixed range in help:\n{help}");
+        assert!(!help.contains("0-3"), "stale fixed range in help:\n{help}");
+        assert!(
+            help.to_lowercase().contains("gpio count"),
+            "help must point at the device-reported GPIO count:\n{help}"
+        );
+    }
+
+    #[test]
+    fn classify_cs_out_of_range_message_is_exact() {
+        let e = classify_cs(4, 4).expect_err("pin 4 is out of range at n = 4");
+        assert_eq!(
+            format!("{e}"),
+            "invalid SPI chip-select pin 4; device reports 4 GPIOs (valid 0..4)"
+        );
+    }
+
+    #[test]
+    fn classify_cs_max_u8_message_reports_two_five_five() {
+        // A `cs & 3` truncation would report pin 3 — and, worse, accept it.
+        let e = classify_cs(255, 4).expect_err("pin 255 is out of range at n = 4");
+        let msg = format!("{e}");
+        assert!(msg.contains("255"), "got: {msg}");
+        assert!(!msg.contains("pin 3"), "truncated the caller's index: {msg}");
+    }
+
+    #[test]
+    fn classify_cs_zero_bound_message_is_exact() {
+        for cs in [0u8, 255u8] {
+            let e = classify_cs(cs, 0).expect_err("no pin is valid at n = 0");
+            assert_eq!(
+                format!("{e}"),
+                "device reports num_gpios=0; no SPI chip-select pin is available"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_cs_boundaries_at_n_four_and_n_seven() {
+        classify_cs(3, 4).expect("pin 3 is valid at n = 4");
+        assert!(classify_cs(4, 4).is_err());
+        classify_cs(6, 7).expect("pin 6 is valid at n = 7");
+        assert!(classify_cs(7, 7).is_err());
+    }
+
+    #[test]
+    fn validation_timeout_text_appears_under_firmware_validation_failed() {
+        let msg = validation_failure_message(&ValidateError::Timeout);
+        assert!(msg.contains("firmware validation failed"), "got: {msg}");
+        assert!(msg.contains("device/info"), "got: {msg}");
+        assert!(msg.contains("300"), "got: {msg}");
+    }
+
+    #[test]
+    fn list_and_version_subcommands_still_parse_unchanged() {
+        assert!(matches!(
+            Cli::try_parse_from(["gallo", "list"]).unwrap().command,
+            Commands::List
+        ));
+        assert!(matches!(
+            Cli::try_parse_from(["gallo", "version"]).unwrap().command,
+            Commands::Version
+        ));
+    }
+
+    /// The bug this fixes: `#[arg(short, long)] high: bool` derived `-h`,
+    /// which collides with clap's auto-generated `-h` for `--help`. That is
+    /// a builder assertion, so it fired before any parsing and made
+    /// `gallo gpio put` unusable. This guards every subcommand, not just it.
+    #[test]
+    fn cli_command_builder_is_well_formed() {
+        use clap::CommandFactory;
+        Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn cli_gpio_put_level_high_parses() {
+        let cli = Cli::try_parse_from(["gallo", "gpio", "put", "--pin", "2", "--level", "high"]).unwrap();
+        match cli.command {
+            Commands::Gpio {
+                command: GpioCommands::Put { pin, level },
+            } => {
+                assert_eq!(pin, 2);
+                assert_eq!(level, GpioLevelArg::High);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_gpio_put_level_low_parses() {
+        let cli = Cli::try_parse_from(["gallo", "gpio", "put", "--pin", "2", "--level", "low"]).unwrap();
+        match cli.command {
+            Commands::Gpio {
+                command: GpioCommands::Put { pin, level },
+            } => {
+                assert_eq!(pin, 2);
+                assert_eq!(level, GpioLevelArg::Low);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cli_gpio_put_rejects_an_invalid_level() {
+        assert!(Cli::try_parse_from(["gallo", "gpio", "put", "--pin", "2", "--level", "true"]).is_err());
+    }
+
+    #[test]
+    fn cli_gpio_put_requires_level() {
+        // `--level` has no default: omitting it is a parse error, never a
+        // silent "drive it high".
+        assert!(Cli::try_parse_from(["gallo", "gpio", "put", "--pin", "2"]).is_err());
+    }
+
+    #[test]
+    fn cli_gpio_put_short_h_is_help_not_level() {
+        let err = Cli::try_parse_from(["gallo", "gpio", "put", "-h"]).expect_err("-h prints help");
+        assert_eq!(err.kind(), clap::error::ErrorKind::DisplayHelp);
+        let help = err.to_string();
+        assert!(help.contains("--level"), "help must list --level:\n{help}");
+        assert!(
+            help.contains("<HIGH|LOW>") || help.contains("high"),
+            "help must list the choices:\n{help}"
+        );
     }
 }

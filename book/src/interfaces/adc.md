@@ -72,6 +72,7 @@ struct AdcConfigurationInfo {
 enum AdcError {
     ConversionFailed,
     Other,
+    Unsupported,
 }
 ```
 
@@ -138,6 +139,7 @@ fn main() {
 
 - **`ConversionFailed`** — the ADC hardware reported a conversion error.
 - **`Other`** — an unspecified ADC error.
+- **`Unsupported`** — ADC is not available on this hardware revision.
 
 ```rust,no_run
 use pico_de_gallo_lib::{PicoDeGallo, AdcChannel, AdcError, PicoDeGalloError};

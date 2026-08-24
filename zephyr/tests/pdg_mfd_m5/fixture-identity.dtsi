@@ -1,0 +1,24 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * M5 lab fixture identity.
+ *
+ * This is the ONLY fragment the four M5 images share. Topology -- which of the
+ * parent's children are okay or disabled -- is deliberately per-image and lives
+ * in each application's own overlay, so that the reset image can prove both
+ * children disabled before its executable runs.
+ *
+ * M5 lab fixture only; do not copy this serial into user overlays.
+ *
+ * This serial is lab-fixture metadata, not a credential. zephyr/module.yml
+ * exports zephyr/tests, so this file ships in clones and source archives. It is
+ * intentionally excluded from the portable samples under zephyr/samples, which
+ * keep REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL. The board is hardware revision 2
+ * and is attached to WSL by usbipd.
+ */
+
+&pdg0 {
+	serial-number = "5256657D8A5D7F03";
+};

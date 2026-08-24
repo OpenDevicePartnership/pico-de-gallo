@@ -29,6 +29,32 @@ attached; tools begin working as soon as a Pico de Gallo is plugged in. Logs
 go to stderr; stdout carries the
 MCP protocol.
 
+## SPI chip-select preflight
+
+`spi_batch` runs its steps in a fixed order: parse every operation
+payload, connect exactly once, read the GPIO count from the `DeviceInfo`
+that connection already validated, classify `cs`, then call the library
+once. No second metadata query is issued.
+
+Parsing precedes connecting on purpose. `connect` runs
+`system_reset_subscriptions`, which tears down every GPIO subscription on
+the board — including ones owned by other host processes — so a merely
+malformed request must not reach it. A payload that fails to parse
+returns `-32602` (invalid params) without opening the device at all.
+
+Error codes stay disjoint:
+
+- `-32602` — malformed payload, a `cs` at or beyond the reported GPIO
+  count, or a device reporting zero GPIOs (its own distinct message).
+  Nothing is transmitted and no pin is driven.
+- `-32603` — the GPIO count could not be established: transport failure,
+  a `device/info` timeout after 300 seconds, legacy firmware, or a schema
+  mismatch. Never reported as an invalid argument.
+
+On this branch a successful validation cannot prove wire-*shape*
+compatibility, because `DeviceInfo` changed while both host and firmware
+still report schema 0.6.1.
+
 ## Choosing a board
 
 Every tool that touches a device takes an optional `serial_number`, and every
