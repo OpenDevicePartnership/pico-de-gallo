@@ -706,3 +706,108 @@ HOLD-requires-LOCK — remain source-shape assertions. The latch is currently
 
 **Nothing on this branch has ever executed. M5 is the first milestone that runs
 anything, and it is where these four stop being claims.**
+---
+
+## 12. M5 outcome — first execution, and its verdict was FAIL
+
+M5 landed as `abb32fe3f42f` (acceptance suite) + `0bb4b6afae3b` (ceiling fix).
+**Its own verdict is FAIL**, correctly: the suite found three real defects, one
+crash-class. That is what a first execution is for.
+
+**Conductor-verified:** `PDG_SPI_MAX_BUFFER 1013U` with an explanatory comment;
+`crates/` untouched; only `zephyr/drivers/spi/{Kconfig,pdg_spi.c}` changed;
+`spi_nor_id` still builds clean at 121/121 with all three drivers compiled; tree
+clean; nothing pushed.
+
+One M5 claim was **wrong**: `book/book/` is **not** committed — it is ignored by
+`book/.gitignore:1`. Nothing to fix.
+
+### 12.1 The 3072 value was falsified — and my brief propagated it
+
+The maintainer supplied 3072 and I sanctioned it in the M5 brief without
+challenge. **It does not hold.**
+
+| Arm | Request | Result | Failed where |
+| --- | --- | --- | --- |
+| before (`4096U`) | 4096 TX-only | `-70` `-ECOMM` | **transport** — reached the wire |
+| 3072 candidate | 3072 TX **+ 3072 RX** | `-70` `-ECOMM` | still transport |
+| after (`1013U`) | 4096 | `-90` `-EMSGSIZE` | **local**, no CS edge |
+
+Every estimate — the maintainer's, mine, the architect's, and the reviewer's
+`MAX_TRANSFER_SIZE + 1024` — reasoned about **one direction**. The original
+failing case was TX-only; a loopback transfer is **full-duplex**, so both buffers
+ride the same frame. A binary sweep measured the true ceiling at **~1013**,
+roughly **4× below** the advertised 4096.
+
+M5 refused to guess a third number and measured instead. The constant now carries
+a comment saying **do not raise this by guesswork either** — the defensible fix is
+deriving the ceiling from worst-case request and response framing, expressed as
+one shared contract rather than a constant duplicated per consumer. That needs a
+wire-crate change with schema and lockstep implications, which D7 excludes.
+
+**Lesson for future briefs:** a measured boundary from one direction does not
+bound a duplex operation. Do not sanction a magic number without asking which
+direction produced it.
+
+### 12.2 Defect: a 1015-byte transfer wedges the device — crash-class
+
+**A 1015-byte TX-only `spi/transfer` never returns and wedges the firmware
+dispatcher device-wide.** Deterministic, reproduced twice with byte-identical
+logs. It **survives host process death** — every subsequent RPC from a *fresh*
+process hangs, including `system/reset-subscriptions`. The 2 s watchdog does
+**not** catch it: the feeder task keeps feeding while a handler blocks.
+
+That is exactly the gap AGENTS.md §13.17's 2026-06-03 row leaves open. Root cause
+is in `crates/`, reachable from the CLI, Python and FFI — **not** a Zephyr defect.
+
+**`1013` is containment, not a fix.** Decision: file it as its own issue, keep the
+containment, finish SP1.
+
+**Recovery is `usbipd detach`/attach, not a power cycle** — which corrects
+§13.17's 2026-06-03 row. **Do not run `--ceiling-sweep`**: it is non-converging
+and steps into the hang.
+
+### 12.3 Third defect, reported not fixed
+
+`pdg_spi_cs_control_checked()` returns `0` when `cs_is_gpio` is false, so a
+malformed config yields a **fully successful transfer with CS never asserted** and
+no diagnostic. Upstream has the same shape so it is not a regression — but on this
+controller `cs-gpios` is structurally mandatory, making the state
+self-contradictory. Recommend a `LOG_WRN`; behaviour unchanged.
+
+### 12.4 What passed
+
+`M5_ACCEPTANCE_PASS`. CS edges **observed** via `SPI_HOLD_ON_CS | SPI_LOCK_ON`:
+witness LOW while held, `LOW_TO_HIGH` across `spi_release()` in one process,
+`-EINVAL` on a second release, `-ENOTSUP` for HOLD-without-LOCK **with the witness
+unchanged**, proving rejection before any CS edge. The `-EHOSTDOWN` latch was
+entered and recovered. Loopback echo is **exact** across all four modes, measured
+not assumed — though a MOSI↔MISO short is **mode-blind**, so this proves byte
+exactness, **not** CPOL/CPHA wire mapping.
+
+Fixture validated in both directions before any measurement was trusted, honouring
+the RP2350 pull-down trap.
+
+### 12.5 Corrections
+
+- **R7 and §11.4 were stale:** `M5_RESET_COUNT=0` — the orphaned pin-2
+  subscription was **not present**. The reset step stays (its necessity is
+  conditional on board state) but the premise was wrong.
+- **§11.5 overstated M5.** T4 landed behaviourally; the other three properties did
+  not. M5 records them in a committed `explicitly_untested` array — the right
+  outcome.
+- **M4's C-18 "4096 is a local boundary" is disproven** — `4096 > 4096 - 0` is
+  false, so it passed locally and died at transport.
+- **`native_sim`'s simulated clock does not advance during blocking USB calls**, so
+  upstream `test_spi_complete_multiple_timed` is structurally unrunnable here — a
+  lower-bound assert no multiplier can satisfy. Not flaky.
+- **§3's inventory was short again** — sixth milestone running.
+- **A `tee` pipeline masks the program's exit status**, which both reviewers caught
+  independently: a failed reset or invalid fixture gate would have reported green
+  and continued into physical actuation.
+
+### 12.6 Board state
+
+Subscriptions **0**; pin 2 `ExplicitOutput` witnessed **HIGH** (deasserted); pin 3
+`Input/PullUp`; SPI left at mode3 @ 8 MHz by the loopback FAST spec; both jumpers
+fitted; **no wedge**; `usbipd` detached; `/tmp` at 0%.
