@@ -33,11 +33,13 @@ void pdg_i2c_bottom_close(void *ctx);
 /* Set the bus frequency: 0 = Standard, 1 = Fast, 2 = Fast+. */
 int pdg_i2c_bottom_set_config(void *ctx, uint8_t frequency);
 
-int pdg_i2c_bottom_write(void *ctx, uint16_t addr, const uint8_t *buf, size_t len);
+int pdg_i2c_bottom_write(void *ctx, uint16_t addr, const uint8_t *buf,
+		size_t len);
 
 int pdg_i2c_bottom_read(void *ctx, uint16_t addr, uint8_t *buf, size_t len);
 
-int pdg_i2c_bottom_write_read(void *ctx, uint16_t addr, const uint8_t *tx, size_t txlen, uint8_t *rx, size_t rxlen);
+int pdg_i2c_bottom_write_read(void *ctx, uint16_t addr, const uint8_t *tx,
+		size_t txlen, uint8_t *rx, size_t rxlen);
 
 #ifdef __cplusplus
 }

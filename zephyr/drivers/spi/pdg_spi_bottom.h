@@ -34,7 +34,7 @@ int pdg_spi_bottom_set_config(void *ctx, uint32_t frequency, bool phase, bool po
  * Returns 0, -EINVAL, -EMSGSIZE, -EPROTO, -EIO or -ECOMM.
  */
 int pdg_spi_bottom_transfer(void *ctx, const uint8_t *write_buf,
-			    uint8_t *read_buf, size_t len);
+		uint8_t *read_buf, size_t len);
 
 #ifdef __cplusplus
 }

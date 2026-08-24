@@ -5,21 +5,21 @@
  *
  * Zephyr SPI controller driver for the Pico de Gallo USB bridge.
  *
- * This file runs in the embedded/Zephyr context. Note that "embedded" here
- * just means the embedded part of `native-sim`, not something that actually
- * gets flashed to hardware. It translates Zephyr SPI API transactions into the
- * small host-context shim declared in pdg_spi_bottom.h, which forwards them to
- * the Pico de Gallo C FFI.
+ * This file runs in the embedded/Zephyr context. Note that "embedded" here just
+ * means the embedded part of `native-sim`, not something that actually gets
+ * flashed to hardware. It translates Zephyr SPI API transactions into the small
+ * host-context shim declared in pdg_spi_bottom.h, which forwards them to the
+ * Pico de Gallo C FFI.
  *
- * Chip select is ordinary Zephyr cs-gpios. Every enabled controller declares
- * at least one entry, each entry targets an enabled odp,pico-de-gallo-gpio
- * sibling under the exact same odp,pico-de-gallo parent, and a child node's
- * reg is a plain index into that array. Selection is therefore no longer
- * atomic with the data phase: an ordinary successful transceive is four USB
- * round trips (set-config, assert, transfer, deassert) instead of one firmware
- * batch. The trade buys standard devicetree composition, SPI_LOCK_ON and a
- * safe SPI_HOLD_ON_CS | SPI_LOCK_ON, at the cost of the batch's chip-select
- * interval guarantee.
+ * Chip select is ordinary Zephyr cs-gpios. Every enabled controller declares at
+ * least one entry, each entry targets an enabled odp,pico-de-gallo-gpio sibling
+ * under the exact same odp,pico-de-gallo parent, and a child node's reg is a
+ * plain index into that array. Selection is therefore no longer atomic with the
+ * data phase: an ordinary successful transceive is four USB round trips
+ * (set-config, assert, transfer, deassert) instead of one firmware batch. The
+ * trade buys standard devicetree composition, SPI_LOCK_ON and a safe
+ * SPI_HOLD_ON_CS | SPI_LOCK_ON, at the cost of the batch's chip-select interval
+ * guarantee.
  */
 
 #define DT_DRV_COMPAT odp_pico_de_gallo_spi
@@ -43,17 +43,17 @@
  * Zephyr's SPI subsystem dispatches transceive_async() and iodev_submit()
  * straight through the driver API with no NULL check -- unlike I2C, which
  * returns -ENOSYS. Compiling this driver into an image that enables either
- * option would turn any async use into a jump through a NULL function
- * pointer, which on native_sim is a segfault rather than an error return.
- * CONFIG_SPI_RTIO is also selected transitively by CONFIG_SENSOR_ASYNC_API,
- * so an application can reach it without asking.
+ * option would turn any async use into a jump through a NULL function pointer,
+ * which on native_sim is a segfault rather than an error return.
+ * CONFIG_SPI_RTIO is also selected transitively by CONFIG_SENSOR_ASYNC_API, so
+ * an application can reach it without asking.
  *
  * This is deliberately a BUILD_ASSERT rather than a Kconfig "depends on
  * !SPI_ASYNC". Both SPI_ASYNC and SPI_RTIO depend on SPI, which this driver
- * selects, so expressing the constraint in Kconfig produces a dependency
- * loop and refuses to parse. A BUILD_ASSERT also fails loudly with the
- * reason, where "depends on" would silently drop the driver and surface as
- * an unresolved __device_dts_ord_N at link time.
+ * selects, so expressing the constraint in Kconfig produces a dependency loop
+ * and refuses to parse. A BUILD_ASSERT also fails loudly with the reason, where
+ * "depends on" would silently drop the driver and surface as an unresolved
+ * __device_dts_ord_N at link time.
  */
 BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_ASYNC),
 	     "The Pico de Gallo SPI driver does not implement transceive_async(); "
@@ -71,7 +71,9 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
  *   1. compatible -- a foreign controller (native_sim's zephyr,gpio-emul, for
  *      instance) is an enabled, bound, perfectly functional GPIO port that
  *      simply is not on this board at all.
+ *
  *   2. status okay -- a disabled sibling has no device object to reach.
+ *
  *   3. same parent -- this is the discriminating one. A genuine, enabled
  *      odp,pico-de-gallo-gpio controller under a *different* odp,pico-de-gallo
  *      parent passes both checks above while living on a different physical
@@ -104,13 +106,13 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
  * __device_dts_ord_N at link time.
  *
  * This controller borrows its host connection from an odp,pico-de-gallo MFD
- * parent reached through DT_INST_PARENT(). Runtime readiness alone cannot
- * prove the parent's *type*: a child under an unrelated but enabled and ready
- * device would pass device_is_ready(), and pdg_mfd_ctx() would then
- * reinterpret that foreign driver's dev->data as struct pdg_mfd_data and
- * return an arbitrary pointer no NULL check can catch. DT_INST_PARENT() on a
- * stale root-level child yields `/`, so status alone is not sufficient either;
- * the compatible must be asserted separately.
+ * parent reached through DT_INST_PARENT(). Runtime readiness alone cannot prove
+ * the parent's *type*: a child under an unrelated but enabled and ready device
+ * would pass device_is_ready(), and pdg_mfd_ctx() would then reinterpret that
+ * foreign driver's dev->data as struct pdg_mfd_data and return an arbitrary
+ * pointer no NULL check can catch. DT_INST_PARENT() on a stale root-level child
+ * yields `/`, so status alone is not sufficient either; the compatible must be
+ * asserted separately.
  *
  * The order compatible -> parent status -> parent serial -> Kconfig -> per-CS
  * is deliberate and is the normative contract. Disabling the parent also drops
@@ -140,7 +142,7 @@ BUILD_ASSERT(!IS_ENABLED(CONFIG_SPI_RTIO),
 	BUILD_ASSERT(								\
 		DT_NODE_HAS_STATUS_OKAY(DT_INST_PARENT(inst)),			\
 		"Enabled odp,pico-de-gallo-spi controllers require their "	\
-		"odp,pico-de-gallo parent to have status okay");			\
+		"odp,pico-de-gallo parent to have status okay");		\
 	BUILD_ASSERT(								\
 		DT_NODE_HAS_PROP(DT_INST_PARENT(inst), serial_number),		\
 		"odp,pico-de-gallo-spi parent must define serial-number");	\
@@ -273,7 +275,8 @@ static uint8_t pdg_spi_cs_pin(const struct spi_context *ctx)
  * explicit output to zero in port_get_raw(), and a legacy-mode read mutates the
  * pin's direction, so a readback would either lie or corrupt the line.
  */
-static int pdg_spi_cs_control_checked(struct spi_context *ctx, bool on, bool force_off)
+static int pdg_spi_cs_control_checked(struct spi_context *ctx, bool on,
+		bool force_off)
 {
 	const struct spi_config *config = ctx->config;
 	int ret;
@@ -340,9 +343,11 @@ static void pdg_spi_unlock_defanged(struct spi_context *ctx, bool deassert_faile
 	}
 }
 
-// helper to calculate the total byte length of every buffer in a `spi_buf_set`
-// used when flattening Zephyr `spi_buf_set`s into a normal contiguous buffer to pass into the pico-de-gallo ffi
-// (the `direction` parameter isn't part of the actual calculation, it is just for debugging verbosity)
+/* helper to calculate the total byte length of every buffer in a `spi_buf_set`
+ * used when flattening Zephyr `spi_buf_set`s into a normal contiguous buffer to
+ * pass into the pico-de-gallo ffi (the `direction` parameter isn't part of the
+ * actual calculation, it is just for debugging verbosity)
+ */
 static int bufset_len_(const struct spi_buf_set *bufs, size_t *total_len, const char *direction)
 {
 	*total_len = 0U;
@@ -351,13 +356,15 @@ static int bufset_len_(const struct spi_buf_set *bufs, size_t *total_len, const 
 		return 0;
 	}
 	if (bufs->count != 0U && bufs->buffers == NULL) {
-		LOG_ERR("SPI %s buffer set has count %zu but no buffer array. Returning -EINVAL.", direction, bufs->count);
+		LOG_ERR("SPI %s buffer set has count %zu but no buffer array. Returning -EINVAL.",
+				direction, bufs->count);
 		return -EINVAL;
 	}
 
 	for (size_t i = 0U; i < bufs->count; ++i) {
 		if (bufs->buffers[i].len > PDG_SPI_MAX_BUFFER - *total_len) {
-			LOG_WRN("SPI %s buffers exceed maximum transfer size of %u bytes. Returning -EMSGSIZE", direction, PDG_SPI_MAX_BUFFER);
+			LOG_WRN("SPI %s buffers exceed maximum transfer size of %u bytes. Returning -EMSGSIZE",
+					direction, PDG_SPI_MAX_BUFFER);
 			return -EMSGSIZE;
 		}
 		*total_len += bufs->buffers[i].len;
@@ -366,7 +373,7 @@ static int bufset_len_(const struct spi_buf_set *bufs, size_t *total_len, const 
 	return 0;
 }
 
-// helper that flattens a set of `spi_buf_set`s into a single buffer
+/* helper that flattens a set of `spi_buf_set`s into a single buffer */
 static void flatten_tx_(const struct spi_buf_set *tx_bufs, uint8_t *flat, size_t flat_len)
 {
 	size_t offset = 0U;
@@ -386,8 +393,9 @@ static void flatten_tx_(const struct spi_buf_set *tx_bufs, uint8_t *flat, size_t
 	}
 }
 
-// helper that takes in a normal flat buffer from pico-de-gallo and organizes it into the multiple
-// buffer sets provided by zephyr
+/* helper that takes in a normal flat buffer from pico-de-gallo and organizes it
+ * into the multiple buffer sets provided by zephyr
+ */
 static void unflatten_rx_(const struct spi_buf_set *rx_bufs, const uint8_t *flat)
 {
 	size_t offset = 0U;
@@ -406,10 +414,13 @@ static void unflatten_rx_(const struct spi_buf_set *rx_bufs, const uint8_t *flat
 	}
 }
 
-// helper macro for `pdg_spi_transceive()`'s op flag checks.
+/* helper macro for `pdg_spi_transceive()`'s op flag checks. */
 #define OP_HAS_FLAG_(flag) (((config)->operation & (flag)) != 0U)
 
-static int pdg_spi_transceive(const struct device *dev, const struct spi_config *config, const struct spi_buf_set *tx_bufs, const struct spi_buf_set *rx_bufs)
+static int pdg_spi_transceive(const struct device *dev,
+		const struct spi_config *config,
+		const struct spi_buf_set *tx_bufs,
+		const struct spi_buf_set *rx_bufs)
 {
 	struct pdg_spi_data *data = dev->data;
 	const struct pdg_spi_config *dev_config = dev->config;
@@ -470,8 +481,8 @@ static int pdg_spi_transceive(const struct device *dev, const struct spi_config 
 
 	/*
 	 * SPI_HOLD_ON_CS leaves a slave selected after this call returns. On a
-	 * bridge whose chip select is a separate, fallible USB operation that is
-	 * only safe while nothing else can start a transfer to a *different*
+	 * bridge whose chip select is a separate, fallible USB operation that
+	 * is only safe while nothing else can start a transfer to a *different*
 	 * slave -- which is precisely what SPI_LOCK_ON guarantees. Holding
 	 * without locking would let the next caller select a second slave while
 	 * the first is still asserted.
@@ -727,19 +738,19 @@ static int pdg_spi_init(const struct device *dev)
 	/*
 	 * spi_context's lock/sync semaphores and its cs_gpios array are
 	 * statically initialized by the SPI_CONTEXT_* macros below, and the
-	 * fault latch is zero-initialized, so every device object that exists at
-	 * all is usable before this function runs. Zephyr's spi_transceive()
-	 * dispatches into the driver without checking readiness; the
-	 * data->ctx == NULL guard at the top of pdg_spi_transceive() turns such
-	 * a call on a failed device into -ENODEV.
+	 * fault latch is zero-initialized, so every device object that exists
+	 * at all is usable before this function runs. Zephyr's spi_transceive()
+	 * dispatches into the driver without checking readiness; the data->ctx
+	 * == NULL guard at the top of pdg_spi_transceive() turns such a call on
+	 * a failed device into -ENODEV.
 	 */
 
 	/*
 	 * Mandatory MFD child sequence (pdg_mfd.h): require parent readiness
 	 * first, then borrow the context. A NULL context *after* a passing
 	 * readiness check is an ownership invariant failure, not an expected
-	 * case, so it is logged distinctly. The context is borrowed: this driver
-	 * must never close or free it.
+	 * case, so it is logged distinctly. The context is borrowed: this
+	 * driver must never close or free it.
 	 */
 	if (!device_is_ready(config->mfd)) {
 		LOG_ERR("%s: Pico de Gallo parent %s is not ready. Returning -ENODEV.",
@@ -762,14 +773,14 @@ static int pdg_spi_init(const struct device *dev)
 	 * readiness check, then gpio_pin_configure_dt(GPIO_OUTPUT_INACTIVE), in
 	 * ascending array order -- but returns only an errno and discards the
 	 * failing iterator, so it cannot name the cs-gpios array index or the
-	 * GPIO pin this driver's diagnostics are specified to report. Calling it
-	 * and then re-probing to recover the index would issue duplicate,
+	 * GPIO pin this driver's diagnostics are specified to report. Calling
+	 * it and then re-probing to recover the index would issue duplicate,
 	 * state-changing, unbounded USB round trips. The behaviour and ordering
 	 * are identical; only the diagnostics differ.
 	 *
-	 * Readiness is checked before any configuration, so a priority inversion
-	 * (this controller running before the GPIO child) fails loudly with
-	 * -ENODEV having actuated no pin.
+	 * Readiness is checked before any configuration, so a priority
+	 * inversion (this controller running before the GPIO child) fails
+	 * loudly with -ENODEV having actuated no pin.
 	 *
 	 * There is deliberately no rollback on failure: init has no trustworthy
 	 * record of the prior configuration, and another unbounded RPC could

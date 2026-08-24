@@ -19,14 +19,24 @@
 #include "common.h"
 #include "pdg_spi_bottom.h"
 
-int pdg_spi_bottom_set_config(void *ctx, uint32_t frequency, bool phase, bool polarity)
+int pdg_spi_bottom_set_config(void *ctx, uint32_t frequency, bool phase,
+		bool polarity)
 {
-	return pdg_common_status_to_errno(gallo_spi_set_config((const struct PicoDeGallo *)ctx, frequency, phase, polarity));
+	const struct PicoDeGallo *pdg = ctx;
+	int ret;
+
+	ret = gallo_spi_set_config(pdg, frequency, phase, polarity);
+
+	return pdg_common_status_to_errno(ret);
 }
 
 int pdg_spi_bottom_transfer(void *ctx, const uint8_t *write_buf,
 			    uint8_t *read_buf, size_t len)
 {
-	return pdg_common_status_to_errno(gallo_spi_transfer(
-		(const struct PicoDeGallo *)ctx, write_buf, read_buf, len));
+	const struct PicoDeGallo *pdg = ctx;
+	int ret;
+
+	ret = gallo_spi_transfer(pdg, write_buf, read_buf, len);
+
+	return pdg_common_status_to_errno(ret);
 }
