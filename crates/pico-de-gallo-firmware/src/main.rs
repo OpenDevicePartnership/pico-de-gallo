@@ -271,21 +271,22 @@ fn usb_config() -> Config<'static> {
 
     static SERIAL_STRING: StaticCell<[u8; 16]> = StaticCell::new();
     let mut ser_buf = [b'0'; 16];
-    unique_id
-        .to_be_bytes()
-        .iter()
-        .zip(ser_buf.chunks_exact_mut(2))
-        .for_each(|(b, chs)| {
-            let mut b = *b;
-            for c in chs {
-                *c = match b >> 4 {
-                    v @ 0..10 => b'0' + v,
-                    v @ 10..16 => b'A' + (v - 10),
-                    _ => b'X',
-                };
-                b <<= 4;
-            }
-        });
+    // `as_chunks_mut::<2>()` rather than `chunks_exact_mut(2)`: the chunk
+    // size is a compile-time constant, so this yields `&mut [[u8; 2]]` with
+    // no runtime remainder to discard. 16 is an exact multiple of 2, so the
+    // remainder is statically empty.
+    let (ser_pairs, _) = ser_buf.as_chunks_mut::<2>();
+    unique_id.to_be_bytes().iter().zip(ser_pairs).for_each(|(b, chs)| {
+        let mut b = *b;
+        for c in chs {
+            *c = match b >> 4 {
+                v @ 0..10 => b'0' + v,
+                v @ 10..16 => b'A' + (v - 10),
+                _ => b'X',
+            };
+            b <<= 4;
+        }
+    });
     let ser_buf = SERIAL_STRING.init(ser_buf);
     // Safety: ser_buf contains only ASCII hex digits, which are valid UTF-8.
     let ser_buf = core::str::from_utf8(ser_buf.as_slice()).unwrap();
