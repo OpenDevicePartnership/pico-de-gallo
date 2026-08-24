@@ -1029,7 +1029,7 @@ checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 
 [[package]]
 name = "pico-de-gallo-firmware"
-version = "0.10.1"
+version = "0.11.0"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -1055,7 +1055,7 @@ dependencies = [
 
 [[package]]
 name = "pico-de-gallo-internal"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "postcard",
  "postcard-rpc",

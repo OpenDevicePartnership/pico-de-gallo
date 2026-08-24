@@ -667,7 +667,7 @@ dependencies = [
 
 [[package]]
 name = "gallo"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -679,7 +679,7 @@ dependencies = [
 
 [[package]]
 name = "gallo-mcp"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -1144,7 +1144,7 @@ checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "pico-de-gallo-ffi"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "cbindgen",
  "pico-de-gallo-lib",
@@ -1153,7 +1153,7 @@ dependencies = [
 
 [[package]]
 name = "pico-de-gallo-hal"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "embedded-graphics",
  "embedded-hal",
@@ -1170,7 +1170,7 @@ dependencies = [
 
 [[package]]
 name = "pico-de-gallo-internal"
-version = "0.6.1"
+version = "0.7.0"
 dependencies = [
  "postcard",
  "postcard-rpc",
@@ -1180,7 +1180,7 @@ dependencies = [
 
 [[package]]
 name = "pico-de-gallo-lib"
-version = "0.7.1"
+version = "0.8.0"
 dependencies = [
  "embedded-hal",
  "nusb",
@@ -1342,7 +1342,7 @@ dependencies = [
 
 [[package]]
 name = "pyco-de-gallo"
-version = "0.4.2"
+version = "0.5.0"
 dependencies = [
  "pico-de-gallo-lib",
  "pyo3",
