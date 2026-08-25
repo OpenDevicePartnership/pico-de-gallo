@@ -63,8 +63,9 @@ typed methods for every firmware endpoint. Requires the tokio runtime.
 
 Implements both `embedded-hal` and `embedded-hal-async` traits — including
 `I2c`, `SpiBus`, `SpiDevice`, GPIO digital I/O, delay, and `embedded-io`
-Read/Write for UART — so embedded device drivers written against those traits
-can be tested on a host machine with real hardware attached to the Pico de Gallo.
+Read/Write for UART (0.6 and 0.7, selectable by Cargo feature) — so embedded
+device drivers written against those traits can be tested on a host machine
+with real hardware attached to the Pico de Gallo.
 
 ### App
 

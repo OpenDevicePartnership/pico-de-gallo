@@ -737,6 +737,9 @@ debug-port-on-UART chip, AT-command modem.
 
 **HAL accessor:** `hal.uart()` → returns `Uart`. Implements
 `embedded_io::{Read,Write}` and `embedded_io_async::{Read,Write}`.
+The `embedded-io-06` Cargo feature remains enabled by default, while
+`embedded-io-07` can be enabled additively when a driver targets 0.7
+or both majors must be supported.
 
 ```rust
 use embedded_io::Write as _;

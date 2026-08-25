@@ -40,7 +40,7 @@ The current public API is:
 | `spi()` | `Spi` | Raw SPI bus handle |
 | `spi_device(cs_pin)` | `Result<SpiDev, SpiHalError>` | SPI device handle that manages chip-select for you; validates `cs_pin` before driving it |
 | `num_gpios()` | `Result<u8, HalInitError>` | Device-reported GPIO count — the runtime bound for a pin index or chip select |
-| `uart()` | `Uart` | UART handle implementing `embedded_io` and `embedded_io_async` |
+| `uart()` | `Uart` | UART handle implementing `embedded_io` and `embedded_io_async` (0.6 by default, additive 0.7 — see [Feature Flags](#feature-flags)) |
 | `gpio(pin)` | `Gpio` | GPIO pin handle implementing digital traits |
 | `pwm_channel(channel)` | `PwmChannel` | PWM channel handle implementing `SetDutyCycle` |
 | `delay()` | `Delay` | Delay provider |
@@ -72,12 +72,35 @@ The current public API is:
 | PWM | `SetDutyCycle` | — |
 | Delay | `DelayNs` | `DelayNs` |
 
+The UART row is feature-gated by `embedded-io` major version — see
+[Feature Flags](#feature-flags) below.
+
 And two project-specific surfaces sit alongside the trait-based ones:
 
 | Type / method | Why it exists |
 |---|---|
 | `OneWire` via `hal.onewire()` | there is no standard `embedded-hal` 1-Wire trait |
 | `adc_read()` / `adc_get_config()` | there is no stable `embedded-hal` ADC trait in 1.0 |
+
+## Feature Flags
+
+`embedded-io` 0.6 and 0.7 are both supported through additive features:
+
+| Feature | Default | `hal.uart()` implements |
+|---|---|---|
+| `embedded-io-07` | no | `embedded-io` 0.7 + `embedded-io-async` 0.7 traits |
+| `embedded-io-06` | yes | `embedded-io` 0.6 + `embedded-io-async` 0.6 traits |
+
+```toml
+# 0.6 only (default)
+pico-de-gallo-hal = "0.7"
+
+# 0.7 only
+pico-de-gallo-hal = { version = "0.7", default-features = false, features = ["embedded-io-07"] }
+
+# both majors at once
+pico-de-gallo-hal = { version = "0.7", features = ["embedded-io-07"] }
+```
 
 ## Minimal Example
 

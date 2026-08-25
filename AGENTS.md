@@ -464,6 +464,18 @@ exact pin, add a row here in the same commit.**
 - `nusb` on **0.1.x** (postcard-rpc dep).
 - `pyo3` on **0.28.x** (via maturin).
 - `embassy-usb-driver` = **=0.2.0** in firmware (see §13).
+- `embedded-io` / `embedded-io-async` in `pico-de-gallo-hal` are
+  **multi-major by design**, not a single pinned version. The deps are
+  renamed and optional (`embedded-io-06`, `embedded-io-async-06`,
+  `embedded-io-07`, `embedded-io-async-07`) behind two additive
+  features. `embedded-io-06` remains enabled by default for compatibility;
+  `embedded-io-07` is opt-in. When a new major lands upstream, **add a
+  feature and a cfg-gated impl set**
+  for `Uart` — do not migrate the existing one, or you silently strand
+  every driver written against the older traits. All impls delegate to
+  the shared private helpers on `Uart`, and the whole feature powerset
+  (including *neither* feature) must keep compiling warning-free; that
+  is why `Uart` carries a `cfg_attr(not(any(...)), allow(dead_code))`.
 
 ### 7.4 cargo-deny
 
