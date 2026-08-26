@@ -270,7 +270,7 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 | `i2c_get_config` | Show the active I<sup>2</sup>C frequency | read-only |
 | `i2c_write` | Write bytes to a target address | destructive |
 | `i2c_set_config` | Set the I<sup>2</sup>C frequency | destructive |
-| `i2c_batch` | Execute several I<sup>2</sup>C operations in one transfer | destructive |
+| `i2c_batch` | Atomic multi-step transaction under one I<sup>2</sup>C address | destructive |
 
 ### spi
 

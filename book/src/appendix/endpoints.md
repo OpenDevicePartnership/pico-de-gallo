@@ -29,7 +29,7 @@ from.
 | `i2c/write`               | Write bytes to a target address.                             |
 | `i2c/write-read`          | Write then read on the same target (repeated start).         |
 | `i2c/scan`                | Probe every address on the bus.                              |
-| `i2c/batch`               | Sequence of I²C ops in one USB round-trip.                   |
+| `i2c/batch`               | One I²C transaction: gather same-direction ops, repeated START on direction changes, one final STOP. See the contract below. |
 | `i2c/set-config`          | Set I²C frequency (`I2cFrequency` enum).                     |
 | `i2c/get-config`          | Query current I²C frequency.                                 |
 | `spi/read`                | Clock in N bytes (MISO).                                     |
@@ -69,6 +69,15 @@ from.
 | `onewire/search`          | Start a ROM search (returns first ROM).                      |
 | `onewire/search-next`     | Continue a ROM search.                                       |
 | `system/reset-subscriptions` | Tear down any GPIO subscriptions left over from a prior host. |
+
+### `i2c/batch` transaction contract
+
+Firmware schema 0.7 and newer executes the entire batch as one I²C
+transaction. A START and address precede the first operation. Adjacent
+operations in the same direction run back to back without a STOP or repeated
+START, so two adjacent writes form one gather write. A direction change emits
+a repeated START and re-addresses the target. Only the final operation is
+followed by a STOP. Zero-length writes are rejected.
 
 ### `spi/batch` chip-select contract
 

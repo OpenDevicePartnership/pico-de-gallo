@@ -209,14 +209,20 @@ Status gallo_i2c_batch(const PicoDeGallo *gallo,
                        uint16_t *out_failed_op);  // may be NULL
 ```
 
-Operations run sequentially with a STOP between each (this is *not*
-repeated-start; for write-then-read to the same device use
-`gallo_i2c_write_read`). Concatenated read data is written to `out_buf`
-and the total length to `*out_len`. On failure, `*out_failed_op` (if
-non-NULL) receives the zero-based index of the operation that failed,
-and the status reflects the underlying I<sup>2</sup>C error
-(`I2cNack`, `I2cBusError`, etc.). `BufferTooLong` means `out_buf` was
-too small; `*out_len` still receives the required capacity.
+The batch executes as a single I<sup>2</sup>C transaction. A START and address
+precede the first operation; adjacent operations of the same type are sent back
+to back with no STOP and no repeated START between them, so two adjacent Write
+ops form one gather write; a direction change emits a repeated START and
+re-addresses the target; and only the last operation is followed by a STOP.
+
+This requires firmware built from schema 0.7 or newer. Older firmware executes
+each operation as a separate transaction. Zero-length writes are rejected.
+
+Concatenated read data is written to `out_buf` and the total length to
+`*out_len`. On failure, `*out_failed_op` (if non-NULL) receives the zero-based
+index of the operation that failed, and the status reflects the underlying
+I<sup>2</sup>C error (`I2cNack`, `I2cBusError`, etc.). `BufferTooLong` means
+`out_buf` was too small; `*out_len` still receives the required capacity.
 
 ### SPI
 

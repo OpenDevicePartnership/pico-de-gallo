@@ -144,7 +144,7 @@ Error: ping echo mismatch: sent 0x9f2c41ab, received 0x00000000
 | `write-read` | Write first, then read from the same target without releasing the bus |
 | `set-config` | Set the I<sup>2</sup>C frequency |
 | `get-config` | Show the active I<sup>2</sup>C frequency |
-| `batch` | Execute several I<sup>2</sup>C operations in one USB transfer |
+| `batch` | Execute multiple I2C operations as a single transaction |
 
 See the [I<sup>2</sup>C chapter](../interfaces/i2c.md) and
 [Transaction Batching](../interfaces/batching.md) for examples.

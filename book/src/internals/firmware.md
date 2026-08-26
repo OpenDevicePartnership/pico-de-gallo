@@ -155,6 +155,31 @@ The RP2350 pin map matches the hardware docs in
 - ADC reads are single-shot samples on GPIO 26-29 in firmware, with board
   routing exposing ADC0-2 on current hardware.
 
+### I²C batch transaction handling
+
+`i2c/batch` uses two decode passes. The first validates the operation count,
+encoding, declared count, total read size, and every write payload before the
+bus is accessed. A malformed operation or zero-length write therefore reports
+the exact offending index without putting a START on the bus.
+
+After validation, the handler borrows the I<sup>2</sup>C peripheral and shared
+scratch buffer as disjoint fields. Its second pass materialises the decoded
+list into a `heapless::Vec<Operation, MAX_BATCH_OPS>`, carving non-overlapping
+read slices from the scratch buffer while write operations borrow their
+request data.
+
+The handler then makes one
+`embedded_hal_async::i2c::I2c::transaction()` call for the entire list.
+Adjacent same-direction operations have no intervening STOP or repeated
+START, a direction change re-addresses under a documented repeated START,
+and only the last operation carries a STOP. The repeated START is documented
+by the RP2350 vendor SVD: `IC_CON` resets to `0x00000065` with
+`IC_RESTART_EN` (bit 5) set, and embassy-rp does not write that register.
+
+Because a bus error is returned for the atomic transaction as a whole,
+firmware reports it with `failed_op = 0`. Pre-bus validation errors retain
+their exact zero-based operation index.
+
 ### SPI chip-select arbitration
 
 `spi/batch` validates the operation count, encoding, declared count, and
