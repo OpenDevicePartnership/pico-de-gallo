@@ -38,10 +38,13 @@ Copied verbatim from the spec and from AGENTS.md. Every task's requirements impl
   ```
   **Never** add `Signed-off-by:`. (AGENTS.md §4 rule 7)
 - **Do not bump any `[package].version`.** (AGENTS.md §4 rule 12)
-- **Local linters** (already downloaded, use these exact paths):
+- **Local linters and shells** (verified present; use these exact paths):
   - `C:\Users\febalbi\AppData\Local\Temp\opencode\tools\actionlint\actionlint.exe`
   - `C:\Users\febalbi\AppData\Local\Temp\opencode\tools\shellcheck\shellcheck.exe`
-- **No local Zephyr environment and no WSL distro exists.** `bash` cannot be run on this machine. The `--self-test` mode is therefore verified by CI, not locally. Locally, `shellcheck` is the only executable gate on the script.
+  - `C:\Program Files\Git\bin\bash.exe` — Git Bash, **bash 5.3.15** with GNU `grep`, `sed`, `sort`, `awk`, `find`, `wc`, `tr`, `cut`, `paste`. The `--self-test` mode **runs locally**; execute it, do not defer it to CI.
+  - Invoke as: `& 'C:\Program Files\Git\bin\bash.exe' -lc "cd /c/Users/febalbi/workspace/pico-de-gallo/.worktrees/issue-130-zephyr-ci && zephyr/scripts/ci-build.sh --self-test"` (note the POSIX-style path).
+- **No local Zephyr environment and no WSL distro.** The eight `west build` targets cannot be run locally under any circumstances; only CI executes those. Git Bash covers `--self-test` and nothing more.
+- **Git Bash is MSYS2, not Linux.** A local `--self-test` pass is strong evidence but not proof: utility flags and path handling differ. The parsers read file *contents*, not paths, so the exposure is small — but CI's `selftest` job is still the authoritative run.
 - **Working directory:** the worktree at `C:\Users\febalbi\workspace\pico-de-gallo\.worktrees\issue-130-zephyr-ci`, branch `felipebalbi/ci/issue-130-zephyr-build-gate`.
 
 ---
@@ -204,19 +207,26 @@ main() {
 main "$@"
 ```
 
-- [ ] **Step 2: Verify it lints clean**
+- [ ] **Step 2: Verify it lints and runs clean**
 
-Run:
 ```powershell
 & 'C:\Users\febalbi\AppData\Local\Temp\opencode\tools\shellcheck\shellcheck.exe' -S warning zephyr/scripts/ci-build.sh
+"shellcheck=$LASTEXITCODE"
+& 'C:\Program Files\Git\bin\bash.exe' -lc "cd /c/Users/febalbi/workspace/pico-de-gallo/.worktrees/issue-130-zephyr-ci && zephyr/scripts/ci-build.sh --self-test"
+"selftest=$LASTEXITCODE"
 ```
-Expected: exit 0, no output. `run-m5.sh` is clean at this severity, so the new script must be too.
 
-Also confirm the LSP-free structural check:
+Expected: shellcheck exit 0 with no output — `run-m5.sh` is clean at this
+severity, so the new script must be too. Self-test prints `5 passed, 0 failed`
+and exits 0.
+
+Then confirm the argument dispatch rejects the not-yet-implemented path:
+
 ```powershell
-Select-String -Path zephyr/scripts/ci-build.sh -Pattern 'set -o pipefail' -Quiet
+& 'C:\Program Files\Git\bin\bash.exe' -lc "cd /c/Users/febalbi/workspace/pico-de-gallo/.worktrees/issue-130-zephyr-ci && zephyr/scripts/ci-build.sh"
+"exit=$LASTEXITCODE"
 ```
-Expected: `True`.
+Expected: `ci-build: not implemented yet` on stderr, exit 1.
 
 - [ ] **Step 3: Normalise line endings and mark executable**
 
@@ -245,8 +255,10 @@ non-vacuity assertions in the next task check against.
 
 The self-test harness runs without a Zephyr workspace so the parsing
 logic can be gated in CI in seconds rather than behind a multi-gigabyte
-west checkout. No local bash exists on the authoring machine, so this
-mode is how the assertion logic gets executed at all before merge.
+west checkout. It also runs under Git Bash on the authoring machine,
+which is what lets the assertion logic be tested at all before merge --
+no local Zephyr environment exists, so the eight build targets cannot
+be exercised outside CI.
 
 Refs: #130" -m "Assisted-by: OpenCode:claude-opus-5
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
@@ -366,12 +378,17 @@ Insert these `st_check` calls into `self_test()` in `zephyr/scripts/ci-build.sh`
 
 - [ ] **Step 3: Run the self-test to verify it fails**
 
-There is no local `bash`, so this step is executed by CI once Task 4 lands the workflow. Until then, run the static gate and confirm shellcheck reports the three functions as undefined-but-referenced only if it can — shellcheck does not flag unknown commands, so the meaningful local check is:
+This is the "red" state of the TDD cycle. Run it and record the output:
 
 ```powershell
-Select-String -Path zephyr/scripts/ci-build.sh -Pattern '^undefined_ords\(\)|^resolve_ord_defines\(\)|^tu_set\(\)'
+& 'C:\Program Files\Git\bin\bash.exe' -lc "cd /c/Users/febalbi/workspace/pico-de-gallo/.worktrees/issue-130-zephyr-ci && zephyr/scripts/ci-build.sh --self-test"
+"exit=$LASTEXITCODE"
 ```
-Expected before Step 4: **no matches** — the self-tests reference functions that do not yet exist. This is the "red" state. Record it.
+
+Expected: the five Task 1 checks print `ok`, then the new checks fail with
+`command not found` for `undefined_ords`, `resolve_ord_defines` and `tu_set`,
+and the run exits non-zero. Do **not** proceed to Step 4 until you have seen
+that failure — a test that has never failed proves nothing.
 
 - [ ] **Step 4: Write the minimal implementation**
 
@@ -428,15 +445,20 @@ tu_set() {
 }
 ```
 
-- [ ] **Step 5: Verify the static gate passes**
+- [ ] **Step 5: Run the self-test to verify it passes**
 
 ```powershell
+& 'C:\Program Files\Git\bin\bash.exe' -lc "cd /c/Users/febalbi/workspace/pico-de-gallo/.worktrees/issue-130-zephyr-ci && zephyr/scripts/ci-build.sh --self-test"
+"exit=$LASTEXITCODE"
 & 'C:\Users\febalbi\AppData\Local\Temp\opencode\tools\shellcheck\shellcheck.exe' -S warning zephyr/scripts/ci-build.sh
-Select-String -Path zephyr/scripts/ci-build.sh -Pattern '^undefined_ords\(\)|^resolve_ord_defines\(\)|^tu_set\(\)' | ForEach-Object { $_.Line }
+"shellcheck=$LASTEXITCODE"
 ```
-Expected: shellcheck exit 0; three matches printed.
 
-The self-test's own green run happens in CI, in the `selftest` job added in Task 4. Do not claim it passes before that run exists.
+Expected: `12 passed, 0 failed`, exit 0; shellcheck exit 0.
+
+If any check fails, fix the parser — not the fixture. The fixtures encode
+outcomes recorded in M3 and M4 against real builds; changing one to make a test
+pass discards the only evidence this logic has.
 
 - [ ] **Step 6: Normalise and commit**
 
@@ -724,12 +746,23 @@ main() {
 }
 ```
 
-- [ ] **Step 3: Verify the static gate**
+- [ ] **Step 3: Verify the static gate and the self-test**
 
 ```powershell
 & 'C:\Users\febalbi\AppData\Local\Temp\opencode\tools\shellcheck\shellcheck.exe' -S warning zephyr/scripts/ci-build.sh
+"shellcheck=$LASTEXITCODE"
+& 'C:\Program Files\Git\bin\bash.exe' -lc "cd /c/Users/febalbi/workspace/pico-de-gallo/.worktrees/issue-130-zephyr-ci && zephyr/scripts/ci-build.sh --self-test"
+"selftest=$LASTEXITCODE"
 ```
-Expected: exit 0.
+Expected: both exit 0; self-test still `12 passed, 0 failed` — this task must not regress Task 2's parsers.
+
+Also confirm `require_env` refuses a bare invocation rather than trying to build:
+
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' -lc "cd /c/Users/febalbi/workspace/pico-de-gallo/.worktrees/issue-130-zephyr-ci && unset ZEPHYR_BASE; zephyr/scripts/ci-build.sh --targets i2c_bridge"
+"exit=$LASTEXITCODE"
+```
+Expected: `ci-build: ZEPHYR_BASE is not set` on stderr, exit 1. No build attempted.
 
 If shellcheck flags SC2181 ("check exit code directly") on the `if [ $? -eq 0 ]` after the assert dispatch, restructure that block as:
 
@@ -1177,10 +1210,11 @@ The only task that produces evidence rather than code. Nothing here is merged ex
 ```powershell
 & 'C:\Users\febalbi\AppData\Local\Temp\opencode\tools\actionlint\actionlint.exe' -color=false; "actionlint=$LASTEXITCODE"
 & 'C:\Users\febalbi\AppData\Local\Temp\opencode\tools\shellcheck\shellcheck.exe' -S warning zephyr/scripts/ci-build.sh; "shellcheck=$LASTEXITCODE"
+& 'C:\Program Files\Git\bin\bash.exe' -lc "cd /c/Users/febalbi/workspace/pico-de-gallo/.worktrees/issue-130-zephyr-ci && zephyr/scripts/ci-build.sh --self-test"; "selftest=$LASTEXITCODE"
 git status --short
 git log --oneline main..HEAD
 ```
-Expected: both exit 0; clean tree; the commits from Tasks 1-5 plus the three spec commits.
+Expected: all three exit 0; clean tree; the commits from Tasks 1-5 plus the four planning commits.
 
 Also confirm no CRLF slipped into any touched file:
 ```powershell
