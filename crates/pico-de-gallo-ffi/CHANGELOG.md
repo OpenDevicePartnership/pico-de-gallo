@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `gallo_i2c_write` rejects `len == 0`, and `gallo_i2c_batch` rejects a
+  `Write` op with `data_len == 0`, returning `InvalidArgument` before the
+  device is contacted — before the `gallo` pointer is even dereferenced. For
+  a batch, `*out_failed_op` receives the offending operation's index and
+  `*out_len` is set to zero. Firmware has refused these since #101, so no
+  previously-working call breaks; the refusal is now local and costs no USB
+  round-trip. Closes #136.
+
+- **Documentation correction.** The `GalloI2cBatchOp` doc comment and the
+  book previously stated that `data` may be `NULL` when `data_len == 0`,
+  which advertised the exact call that used to wedge the device. A `Write`
+  op now documents `data_len > 0` and a non-NULL `data`. Only the I²C batch
+  op changed; `GalloSpiBatchOp` still permits an empty payload, which is
+  legitimate for SPI.
+
 - Corrected the `gallo_i2c_batch` documentation to describe one atomic I²C
   transaction: adjacent same-direction operations concatenate, direction
   changes use a repeated START, and only the final operation receives a STOP.

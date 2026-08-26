@@ -4,7 +4,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{ErrorData, tool, tool_router};
 
-use crate::encoding::{Bytes, parse_bytes, validate_i2c_address};
+use crate::encoding::{Bytes, parse_bytes, validate_i2c_address, validate_i2c_write_payload};
 use crate::error::{invalid_arg, map_pdg_err};
 use crate::select::TargetParams;
 use crate::{GalloMcp, ok_device_json};
@@ -126,6 +126,7 @@ impl GalloMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
+        validate_i2c_write_payload(&bytes).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.i2c_write(addr, &bytes).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &"ok")
@@ -235,9 +236,12 @@ impl GalloMcp {
         // Parse all write payloads into owned buffers FIRST so the borrowed
         // ops below can reference them (I2cBatchOp::Write borrows &[u8]).
         let mut write_bufs: Vec<Vec<u8>> = Vec::new();
-        for op in &p.ops {
+        for (i, op) in p.ops.iter().enumerate() {
             if let I2cBatchOpParam::Write { data } = op {
-                write_bufs.push(parse_bytes(data).map_err(invalid_arg)?);
+                let buf = parse_bytes(data).map_err(invalid_arg)?;
+                validate_i2c_write_payload(&buf)
+                    .map_err(|e| invalid_arg(format!("op {i}: {e}")))?;
+                write_bufs.push(buf);
             }
         }
         let mut ops: Vec<I2cBatchOp<'_>> = Vec::with_capacity(p.ops.len());

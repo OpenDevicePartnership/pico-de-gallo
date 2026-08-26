@@ -237,6 +237,26 @@ firmware with `ZeroLengthWrite`. This applies to `i2c/write` and to any
 `Write` operation inside an `i2c/batch`; the batch is refused as a whole
 during validation, so no earlier operation in it reaches the bus.
 
+Every host surface also refuses it locally, before the request is
+transmitted, so the call fails immediately instead of spending a USB
+round-trip to be told no:
+
+| Surface | Refusal |
+|---|---|
+| `pico-de-gallo-lib` | `PicoDeGalloError::Endpoint(I2cError::ZeroLengthWrite)` |
+| `pico-de-gallo-hal` | `I2cHalError::I2c(ZeroLengthWrite)`, whose `ErrorKind` is `Other` |
+| C FFI | `Status::InvalidArgument` (-5); for a batch, `*out_failed_op` names the operation |
+| `pyco-de-gallo` | `RuntimeError` carrying the same message |
+| `gallo-mcp` | An invalid-argument error naming the offending operation |
+| `gallo` CLI | Unreachable: the byte arguments require at least one value |
+
+The local refusal returns the identical error the firmware would have
+returned, so callers need not distinguish the two.
+
+Note that `i2c/write-read` is **not** affected: an empty write phase
+there is legal, because that transfer does not terminate with a STOP.
+Probing with `i2c_write_read(addr, &[], n)` works.
+
 The restriction is a hardware limitation, not a firmware policy choice.
 The RP2040/RP2350 `DW_apb_i2c` block drives the address phase only as a
 side effect of pushing data into `IC_DATA_CMD`, so there is no way to
