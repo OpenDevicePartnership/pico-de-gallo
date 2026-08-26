@@ -532,14 +532,41 @@ impl PicoDeGallo {
             .map_err(PicoDeGalloError::Endpoint)
     }
 
-    /// Execute a batch of I2C operations in a single USB transfer.
+    /// Execute a batch of I2C operations as a single bus transaction.
     ///
     /// Pass a slice of [`I2cBatchOp`] values directly — they are encoded
     /// internally. On success, returns the concatenated read data from
     /// all Read operations in order.
     ///
-    /// This is much faster than issuing individual I2C calls when
-    /// performing multi-step sequences (e.g., EEPROM programming).
+    /// # Bus semantics
+    ///
+    /// The whole batch is one I2C transaction, matching the
+    /// `embedded-hal` [`I2c::transaction`] contract:
+    ///
+    /// - a START and address precede the first operation;
+    /// - adjacent operations of the same type are sent back to back with
+    ///   no STOP and no repeated START between them, so two adjacent
+    ///   `Write` ops form a **single gather write** rather than two
+    ///   separate writes;
+    /// - a direction change emits a repeated START and a re-addressing;
+    /// - a STOP follows the last operation, and only the last one.
+    ///
+    /// The gather-write rule is the one to keep in mind when porting
+    /// code that used to issue the operations separately: a register
+    /// address followed by its payload is the intended idiom, but two
+    /// logically independent writes will be concatenated into one, not
+    /// framed as two.
+    ///
+    /// # Firmware requirement
+    ///
+    /// The atomic framing above requires firmware built from schema 0.7
+    /// or newer. Older firmware executes each operation as its own
+    /// transaction, with a STOP after every one.
+    ///
+    /// The batch travels as a single request, so it is also one USB
+    /// round-trip instead of one per operation.
+    ///
+    /// [`I2c::transaction`]: https://docs.rs/embedded-hal/1.0.0/embedded_hal/i2c/trait.I2c.html#tymethod.transaction
     pub async fn i2c_batch(
         &self,
         address: u8,

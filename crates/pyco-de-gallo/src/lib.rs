@@ -284,8 +284,11 @@ impl From<I2cFrequency> for LibI2cFrequency {
 
 /// A single operation in an I2C batch sequence.
 ///
-/// Pass a list of these to :meth:`PycoDeGallo.i2c_batch` to execute multiple
-/// reads/writes in a single USB round-trip.
+/// Pass a list of these to :meth:`PycoDeGallo.i2c_batch` to run several
+/// reads and writes as one I2C transaction in a single USB round-trip.
+/// Adjacent operations of the same type are not separated by a STOP, so
+/// two adjacent writes form one gather write. Zero-length writes are
+/// rejected.
 #[pyclass(from_py_object)]
 #[derive(Clone)]
 enum I2cBatchOp {
@@ -912,17 +915,34 @@ impl PycoDeGallo {
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
-    /// Execute a batch of I2C operations in a single USB transfer.
+    /// Execute a batch of I2C operations as a single transaction.
     ///
-    /// Much faster than issuing individual I2C calls when performing
-    /// multi-step sequences (e.g., EEPROM programming).
+    /// The whole batch is one I2C transaction: a START and the address
+    /// precede the first operation, adjacent operations of the same type
+    /// are sent back to back with no STOP and no repeated START between
+    /// them, a direction change emits a repeated START and re-addresses
+    /// the target, and only the last operation is followed by a STOP. Two
+    /// adjacent writes therefore form a single gather write, which is the
+    /// usual register-address-then-payload idiom — unlike
+    /// :meth:`i2c_write_read`, which is fixed at one write followed by one
+    /// read.
+    ///
+    /// Requires firmware built from schema 0.7 or newer. Older firmware
+    /// executes each operation as its own transaction.
     ///
     /// Args:
     ///     address (int): 7-bit I2C target address.
-    ///     ops (list[I2cBatchOp]): Sequence of read/write operations.
+    ///     ops (list[I2cBatchOp]): Sequence of read/write operations,
+    ///         executed in order within one transaction.
     ///
     /// Returns:
-    ///     bytes: Concatenated read data from all ``Read`` operations, in order.
+    ///     bytes: Concatenated data from every ``Read`` operation, in order.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if any ``Write`` operation is
+    ///         zero-length. The whole batch is validated before anything is
+    ///         driven onto the bus, so a rejected batch performs no I2C
+    ///         traffic at all.
     fn i2c_batch(&self, py: Python<'_>, address: u8, ops: Vec<I2cBatchOp>) -> PyResult<Vec<u8>> {
         let lib_ops: Vec<LibI2cBatchOp<'_>> = ops.iter().map(Into::into).collect();
         self.block(py, self.inner.i2c_batch(address, &lib_ops))
