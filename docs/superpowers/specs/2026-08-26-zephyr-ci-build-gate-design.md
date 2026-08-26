@@ -261,8 +261,10 @@ locally before merge.
 1. `west build` exits zero.
 2. `libpico_de_gallo_ffi.a` exists under the build directory — proves Corrosion
    built the crate and cbindgen generated the header.
-3. `grep -o 'pdg_[a-z0-9_]*\.c' <build>/compile_commands.json | sort -u` equals
-   the target's Zephyr-side set from §4.1. This is M4 A-01's mechanism.
+3. `grep -o 'pdg_[a-z0-9_]*\.c' <build>/compile_commands.json | sort -u` contains
+   every Zephyr-side translation unit in the target's §4.1 row, and contains
+   none of the other three driver translation units. This is M4 A-01's
+   mechanism.
 4. Every native_simulator-side object in the §4.1 row is found under the build
    directory by name — this is the half that actually calls `gallo_*`. M4 A-08
    locates the same objects this way.
@@ -272,9 +274,19 @@ locally before merge.
    which a vacuous pass would occur, so it is asserted directly rather than
    inferred from the compiled set.
 
-Assertion 3 uses set equality, not containment: a target that compiles *more*
-drivers than its overlay enables is as much a signal of a broken overlay as one
-that compiles fewer.
+Assertion 3 is deliberately two-sided rather than a plain containment check: a
+target that compiles *more* drivers than its overlay enables signals a broken
+overlay just as much as one that compiles fewer.
+
+It is scoped to the four driver translation units — `pdg_mfd.c`, `pdg_gpio.c`,
+`pdg_i2c.c`, `pdg_spi.c` — rather than asserted as whole-file set equality,
+because M4 A-01 recorded only that `compile_commands.json` *contains* those
+names. It did not establish whether the native_simulator sub-build contributes
+its own `pdg_*_bottom.c` entries to the same file. Asserting equality over every
+`pdg_*.c` match would therefore encode an unverified assumption about the
+sub-build's layout, and would fail for a reason unrelated to the property under
+test. Assertion 4 covers the bottom half independently and by a different
+mechanism.
 
 ### 5.2 Baseline-failure targets (3, 4)
 
