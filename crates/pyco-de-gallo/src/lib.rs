@@ -27,6 +27,9 @@
 //! Errors from the underlying library are surfaced as Python `RuntimeError`
 //! exceptions.
 
+// PyO3's `from_py_object` macro code clones when it can copy, making clippy complain.
+#![allow(clippy::clone_on_copy)]
+
 use std::future::Future;
 use std::time::Duration;
 
