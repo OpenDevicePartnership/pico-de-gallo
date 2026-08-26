@@ -860,14 +860,15 @@ Concretely:
   block PRs that tick "no docs needed" without justification.
 
 **Per-area mapping** — when you change a file on the left, also
-update at least the chapter(s) on the right:
+update at least the chapter(s), and check the consumers, on the
+right:
 
-| Code area                                                   | Book chapter(s)                                                          |
+| Code area                                                   | Book chapter(s) / consumers                                              |
 |-------------------------------------------------------------|--------------------------------------------------------------------------|
-| `pico-de-gallo-internal/src/lib.rs` — endpoints / topics    | `book/src/appendix/endpoints.md`, `book/src/internals/wire-protocol.md`  |
-| `pico-de-gallo-internal/src/lib.rs` — wire enums (variants) | `book/src/internals/wire-protocol.md`, relevant `book/src/interfaces/*`  |
-| `pico-de-gallo-ffi/src/lib.rs` — `Status` enum              | `book/src/appendix/status-codes.md`                                      |
-| `pico-de-gallo-ffi/src/lib.rs` — `gallo_*` functions        | `book/src/crates/ffi.md`                                                 |
+| `pico-de-gallo-internal/src/lib.rs` — endpoints / topics    | `book/src/appendix/endpoints.md`, `book/src/internals/wire-protocol.md`; `zephyr/` reaches endpoints only through the FFI — see the `gallo_*` row |
+| `pico-de-gallo-internal/src/lib.rs` — wire enums (variants) | `book/src/internals/wire-protocol.md`, relevant `book/src/interfaces/*`; `zephyr/tests/pdg_mfd_m5/common/m5_bottom.c` `_Static_assert`s the mirrored FFI discriminants (§8) |
+| `pico-de-gallo-ffi/src/lib.rs` — `Status` enum              | `book/src/appendix/status-codes.md`; `zephyr/drivers/common/common.c` maps every `Status` to an `errno` |
+| `pico-de-gallo-ffi/src/lib.rs` — `gallo_*` functions        | `book/src/crates/ffi.md`; `zephyr/drivers/**` links the FFI and calls `gallo_*` |
 | `pico-de-gallo-app/src/...` — CLI subcommands/flags         | `book/src/crates/app.md`, the relevant `book/src/interfaces/*` chapter   |
 | `pico-de-gallo-mcp/src/...` — MCP tools / tool arguments    | `book/src/crates/mcp.md`, `crates/pico-de-gallo-mcp/README.md`           |
 | `pico-de-gallo-lib/src/lib.rs` — public methods             | `book/src/crates/lib.md`                                                 |
@@ -878,6 +879,38 @@ update at least the chapter(s) on the right:
 | `zephyr/` — drivers, DT bindings, sample overlays           | `zephyr/README.md`, `zephyr/CHANGELOG.md`, the relevant `book/src/interfaces/*` chapter |
 | `hardware/` — KiCad changes (new revision, pin remap)       | `book/src/hardware/{overview,revisions,pinout}.md`                       |
 | `crates/<crate>/src/...` — any released behaviour           | That crate's `crates/<crate>/CHANGELOG.md`; hand-written (Keep a Changelog), not auto-generated. There is no root `CHANGELOG.md`. |
+
+**Reverse direction — `zephyr/` is an FFI consumer.** The four rows
+above point *out* of the FFI and wire protocol into `zephyr/` because
+the Zephyr drivers call `gallo_*` through the generated
+`pico_de_gallo.h`. An FFI or wire-enum change can therefore break them
+while every host gate stays green: `check.yml` builds the FFI crate,
+which still compiles, and cbindgen regenerates the header without
+complaint. Two specific obligations:
+
+- **`Status` → `errno`.** `pdg_common_status_to_errno()` in
+  `zephyr/drivers/common/common.c` switches over every `Status`
+  variant with **no `default:` inside the switch**, so `-Werror=switch`
+  (`zephyr/drivers/CMakeLists.txt`) turns an omitted case into a build
+  failure rather than a silent `-EIO`. The `(enum Status)` cast there
+  is load-bearing — under C11/C17 cbindgen emits `typedef int32_t
+  Status` (only C23 gets `typedef enum Status Status`), so an uncast
+  switch gets no `-Wswitch` coverage at all (§8, and the 2026-08-17
+  row in §13.17).
+- **Wire-enum variant order.** The FFI's `GalloGpioEdge`,
+  `GalloGpioDirection`, and `GalloGpioPull` values mirror the
+  `pico-de-gallo-internal` wire enums, whose variant order is itself
+  ABI (§6.1). `zephyr/tests/pdg_mfd_m5/common/m5_bottom.c` pins that
+  correspondence with `_Static_assert`s, so reordering a wire enum
+  breaks the Zephyr test build.
+
+**Neither gate is automatic.** No CI job builds, compiles, or lints the
+Zephyr module (#130) — `rg -ln zephyr .github/workflows/` returns
+nothing — so `-Werror=switch` and those `_Static_assert`s only fire
+when a human runs a Zephyr build by hand. Until #130 lands, the table
+rows above are the only thing standing between an FFI change and a
+silently broken consumer. Do not treat a green CI run as evidence that
+`zephyr/` still builds.
 
 **Carve-out — `zephyr/` has no book chapter, deliberately.** The
 Zephyr module is documented in `zephyr/README.md` (the authoritative
@@ -921,6 +954,10 @@ For every PR, confirm:
 6. `mdbook build book` is clean (no broken links, no missing
    referenced files) — CI builds the book on every PR via
    `.github/workflows/gh-pages.yml`'s build step.
+7. FFI or wire-protocol changes name the `zephyr/` consumer they
+   affect, or state in the PR body that none is affected. Do not
+   accept "CI is green" as evidence — no CI job builds the Zephyr
+   module (#130).
 
 Reviewers, including the automated Copilot reviewer, should flag
 PRs that violate any of the above as a **blocker**, not a nit.
