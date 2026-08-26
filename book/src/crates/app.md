@@ -181,9 +181,7 @@ Every subcommand except `list` and `version` validates the firmware
 before doing anything else, and that validation supplies the count. If it
 fails — including a `device/info` timeout after 300 seconds — the error
 appears under `firmware validation failed`, never as an invalid
-chip-select. On this branch a successful validation still cannot prove
-wire-*shape* compatibility, because `DeviceInfo` changed while both peers
-report schema 0.6.1.
+chip-select.
 
 See the [SPI chapter](../interfaces/spi.md) and
 [Transaction Batching](../interfaces/batching.md).

@@ -165,10 +165,6 @@ argument problem.
 `num_gpios()` returns `HalInitError::Validate(_)` on failure, including
 `ValidateError::Timeout`. Failures are not cached, so retrying is fine.
 
-> **Schema-freeze caveat.** On this branch a successful validation does
-> not prove wire-*shape* compatibility: `DeviceInfo` changed while both
-> host and firmware still report schema 0.6.1.
-
 ## When to Reach for This Crate
 
 Use `pico-de-gallo-hal` when you want to:

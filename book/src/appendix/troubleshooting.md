@@ -34,8 +34,6 @@ The host library was built against a different
 `SCHEMA_VERSION_MINOR` than the running firmware. Re-flash the
 matching firmware release, or upgrade/downgrade the host crates
 to match. See [Releases & Compatibility](../internals/releases.md).
-On the `zephyr` branch, matching schema 0.6.1 does not prove wire-shape
-compatibility; see the schema-freeze warning on that page.
 
 ### `LegacyFirmware` (status code −64)
 

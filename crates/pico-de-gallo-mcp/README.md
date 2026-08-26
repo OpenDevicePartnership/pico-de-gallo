@@ -51,10 +51,6 @@ Error codes stay disjoint:
   a `device/info` timeout after 300 seconds, legacy firmware, or a schema
   mismatch. Never reported as an invalid argument.
 
-On this branch a successful validation cannot prove wire-*shape*
-compatibility, because `DeviceInfo` changed while both host and firmware
-still report schema 0.6.1.
-
 ## Choosing a board
 
 Every tool that touches a device takes an optional `serial_number`, and every

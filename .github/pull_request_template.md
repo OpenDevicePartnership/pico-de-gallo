@@ -85,5 +85,5 @@ including the automated Copilot reviewer.
 - [ ] New `=X.Y.Z` exact pins are documented in `.github/copilot-instructions.md` under "Pinned dependency rationale".
 - [ ] Public items have rustdoc; PyO3 items have docstrings.
 - [ ] `book/` updated for new endpoints, CLI flags, or behavior changes (see "Book ↔ code parity" above).
-- [ ] `CHANGELOG.md` entries follow Keep a Changelog (hand-written; not auto-generated).
+- [ ] Each changed crate's `crates/<crate>/CHANGELOG.md` (or `zephyr/CHANGELOG.md`) follows Keep a Changelog (hand-written; not auto-generated). There is no root `CHANGELOG.md`.
 - [ ] AI-assisted commits include `Co-authored-by: Copilot` and `Assisted-by:` trailers; no `Signed-off-by:` on AI commits.

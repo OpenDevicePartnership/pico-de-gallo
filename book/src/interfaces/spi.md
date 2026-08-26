@@ -344,12 +344,6 @@ The failure modes stay disjoint, which is the point:
 A refused chip-select drives no pin and transmits nothing, so the pin
 keeps whatever direction you configured.
 
-> **Schema-freeze caveat.** On this branch, a successful validation does
-> not prove wire-*shape* compatibility: `DeviceInfo` changed while both
-> host and firmware still report schema 0.6.1. Validation bounds how long
-> you wait and checks the reported numbers; it cannot make those numbers
-> trustworthy.
-
 ```rust,no_run
 use embedded_hal::spi::{Operation, SpiDevice};
 use pico_de_gallo_hal::Hal;

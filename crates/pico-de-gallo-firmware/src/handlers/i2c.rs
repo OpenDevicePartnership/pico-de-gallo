@@ -33,11 +33,30 @@ pub(crate) async fn i2c_read_handler<'a>(
 }
 
 /// Handler for `i2c/write` — writes bytes to an I2C slave.
+///
+/// An empty payload is refused before `write_async` is reached. The
+/// RP2040/RP2350 `DW_apb_i2c` block drives the address phase solely by
+/// pushing bytes into `IC_DATA_CMD`, so an address-only `START + ADDR +
+/// STOP` is physically unreachable (rp-rs/rp-hal#678,
+/// embassy-rs/embassy#4474). embassy-rp 0.10.0 guards this in
+/// `write_blocking_internal` but *not* in `write_async_internal`: with an
+/// empty iterator it queues no command, starts no transaction, and then
+/// still awaits a `STOP_DET`/`TX_ABRT` interrupt that can never fire. That
+/// await never completes, and because postcard-rpc dispatches handlers
+/// serially it wedges every endpoint on the device until USB
+/// re-enumeration. The watchdog does not help — `watchdog_feeder_task` is
+/// an independent task, so it keeps feeding while the dispatcher is stuck.
+/// Issue #101.
 pub(crate) async fn i2c_write_handler<'a>(
     context: &mut Context,
     _header: VarHeader,
     req: I2cWriteRequest<'a>,
 ) -> I2cWriteResponse {
+    if req.contents.is_empty() {
+        warn!("i2c write: empty payload refused (addr={=u8:#x})", req.address);
+        return Err(I2cError::ZeroLengthWrite);
+    }
+
     debug!("i2c write: addr={=u8:#x} len={=usize}", req.address, req.contents.len());
     context
         .i2c
@@ -152,7 +171,21 @@ pub(crate) async fn i2c_batch_handler<'a>(
         })?;
         match op {
             I2cBatchOp::Read { len } => total_read += len as usize,
-            I2cBatchOp::Write { .. } => {}
+            I2cBatchOp::Write { data } => {
+                // Refused during pre-validation, not in the execution loop
+                // below, so a batch containing one is rejected atomically:
+                // catching it mid-execution would already have driven the
+                // earlier operations onto the bus. See the rationale on
+                // `i2c_write_handler` — an empty payload wedges the
+                // dispatcher device-wide. Issue #101.
+                if data.is_empty() {
+                    warn!("i2c batch: empty write payload at op {=usize}", validated);
+                    return Err(I2cBatchError {
+                        failed_op: validated as u16,
+                        kind: I2cError::ZeroLengthWrite,
+                    });
+                }
+            }
         }
         remaining = rest;
         validated += 1;

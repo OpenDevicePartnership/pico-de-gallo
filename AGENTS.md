@@ -31,7 +31,7 @@ the project — see §6.
 ```text
 .
 ├── AGENTS.md                        # ← you are here
-├── README.md, ROADMAP.md, CHANGELOG.md
+├── README.md, ROADMAP.md
 ├── CONTRIBUTING.md, SECURITY.md, CODE_OF_CONDUCT.md, CODEOWNERS
 ├── LICENSE                          # MIT
 ├── .gitattributes                   # LF EOL enforcement (see §3)
@@ -155,9 +155,10 @@ editing on Windows with CRLF.
     isolated: in the **same commit** you must also (a) bump the
     matching `version = "..."` dep specs in every dependent crate
     (`lib`→`internal`; `hal`/`ffi`/`application`/`mcp`/`pyco`→`lib`;
-    `firmware`→`internal`), (b) hand-write the `CHANGELOG.md`
-    entry, (c) regenerate **both** `Cargo.lock`s, and (d) after merge,
-    push the per-component tags that fire the publish workflows.
+    `firmware`→`internal`), (b) hand-write each released crate's
+    `crates/<crate>/CHANGELOG.md` entry, (c) regenerate **both**
+    `Cargo.lock`s, and (d) after merge, push the per-component tags
+    that fire the publish workflows.
     Bumping a version without its dep specs ships a crate to crates.io
     that resolves a stale sibling; forgetting the firmware lock fails
     CI's `lockfile` job. Follow the checklist in §12 / `.github/RELEASE.md`.
@@ -384,7 +385,10 @@ That single release commit must also:
   - `lib` → `internal`
   - `hal`, `ffi`, `application`, `mcp`, `pyco` → `lib`
   - `firmware` → `internal` (separate workspace — easy to forget)
-- **Hand-write the `CHANGELOG.md`** entries (Keep a Changelog).
+- **Hand-write each released crate's `crates/<crate>/CHANGELOG.md`**
+  entry (Keep a Changelog). There is no root `CHANGELOG.md`; every
+  crate owns its own, and `zephyr/CHANGELOG.md` covers the Zephyr
+  module.
 - **Regenerate both `Cargo.lock`s** (`cargo update --workspace` at
   the repo root; `cargo update -p pico-de-gallo-internal` in
   `crates/pico-de-gallo-firmware`) and verify with `cargo check
@@ -596,15 +600,16 @@ Releases are performed **by hand**. There is no release automation —
 release-please was removed (issue #83) because it caused more
 problems than it solved (version/manifest drift that silently
 disabled releases, seven-PR fan-out, plugin interaction bugs). A
-maintainer bumps versions, writes the CHANGELOG, merges, and pushes
-tags. The full checklist lives in
+maintainer bumps versions, writes the per-crate CHANGELOGs, merges,
+and pushes tags. The full checklist lives in
 [`.github/RELEASE.md`](.github/RELEASE.md); the summary:
 
 1. Bump `[package].version` in each crate being released, and the
    matching `version = "..."` dep specs in every dependent
    (`lib`→`internal`; `hal`/`ffi`/`application`/`mcp`/`pyco`→`lib`;
    `firmware`→`internal`).
-2. Hand-write the `CHANGELOG.md` entries (Keep a Changelog).
+2. Hand-write each released crate's `crates/<crate>/CHANGELOG.md`
+   entry (Keep a Changelog). There is no root `CHANGELOG.md`.
 3. Regenerate both `Cargo.lock`s and verify `cargo check --locked`
    in the host workspace and firmware workspace.
 4. Commit (`chore(release): ...`), open a PR, get CI green, merge to
@@ -806,9 +811,12 @@ next agent doesn't repeat it.
   strings — write them in Google style (`Args:`/`Returns:`/`Raises:`)
   so Sphinx napoleon and Pyright render them well.
 - Update `book/` when adding new endpoints or changing CLI behavior.
-- Update `CHANGELOG.md` (Keep a Changelog format) for endpoint
-  additions, CLI changes, wire-protocol changes, and any change that
-  alters a release artifact name or path.
+- Update the affected crate's `crates/<crate>/CHANGELOG.md` (Keep a
+  Changelog format) for endpoint additions, CLI changes, wire-protocol
+  changes, and any change that alters a release artifact name or path.
+  There is no root `CHANGELOG.md` — it was deleted in `f4e6b52` in
+  favour of per-crate files. Zephyr-module changes go in
+  `zephyr/CHANGELOG.md`.
 - `README.md` at the repo root reflects the high-level overview;
   keep it in sync.
 
@@ -855,7 +863,7 @@ update at least the chapter(s) on the right:
 | `crates/pico-de-gallo-internal/build.rs` — schema version   | `book/src/internals/releases.md`, `book/src/internals/wire-protocol.md`  |
 | `zephyr/` — drivers, DT bindings, sample overlays           | `zephyr/README.md`, `zephyr/CHANGELOG.md`, the relevant `book/src/interfaces/*` chapter |
 | `hardware/` — KiCad changes (new revision, pin remap)       | `book/src/hardware/{overview,revisions,pinout}.md`                       |
-| `CHANGELOG.md`                                              | Hand-write the entry (Keep a Changelog); it is not auto-generated.       |
+| `crates/<crate>/src/...` — any released behaviour           | That crate's `crates/<crate>/CHANGELOG.md`; hand-written (Keep a Changelog), not auto-generated. There is no root `CHANGELOG.md`. |
 
 **Carve-out — `zephyr/` has no book chapter, deliberately.** The
 Zephyr module is documented in `zephyr/README.md` (the authoritative
@@ -917,12 +925,14 @@ you push any `*-v*` tag:
      cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings && \
      cargo build --release --locked --target thumbv8m.main-none-eabihf
    ```
-2. Do not create or push any component tag while this branch's
-   `SpiError` / `DeviceInfo` wire shape is new but
-   `pico-de-gallo-internal` still reports the old schema version.
-   `PicoDeGallo::validate()` cannot detect that mismatch. Land the
-   lockstep version bump, dep-spec rewrites, and both lockfiles first;
-   build every host and firmware artifact from that bumped commit.
+2. Confirm the schema version is honest before tagging. If the branch
+   changed any wire shape — a request/response field, an endpoint, or an
+   appended enum variant — `pico-de-gallo-internal`'s `[package].version`
+   must already carry the matching bump, because `SCHEMA_VERSION_*` is
+   derived from it (§6.2) and `PicoDeGallo::validate()` cannot detect a
+   shape change hidden behind an unchanged version. Land the lockstep
+   version bump, dep-spec rewrites, and both lockfiles first; build every
+   host and firmware artifact from that bumped commit.
 3. Confirm `git tag --points-at HEAD` matches expectation **and**
    that the workflow YAML at HEAD is the version you want CI to run
    (see §13.13).
