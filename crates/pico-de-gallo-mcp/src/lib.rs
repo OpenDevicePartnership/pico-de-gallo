@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use pico_de_gallo_lib::{DeviceInfo, PicoDeGallo};
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::model::{CallToolResult, ContentBlock, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
 use rmcp::{ErrorData, ServerHandler, tool_handler};
 use serde::Serialize;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -445,8 +445,17 @@ impl GalloMcp {
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for GalloMcp {
     fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build()).with_instructions(
-            "Bridge to a Pico de Gallo USB device (I2C/SPI/UART/GPIO/PWM/ADC/1-Wire). \
+        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+            // rmcp's default is `Implementation::from_build_env()`, which
+            // expands `env!("CARGO_CRATE_NAME")` inside rmcp and so reports the
+            // SDK rather than this server. Name ourselves instead, and read the
+            // version from Cargo so a release bump cannot leave it stale.
+            .with_server_info(Implementation::new(
+                env!("CARGO_PKG_NAME"),
+                env!("CARGO_PKG_VERSION"),
+            ))
+            .with_instructions(
+                "Bridge to a Pico de Gallo USB device (I2C/SPI/UART/GPIO/PWM/ADC/1-Wire). \
              Bytes are hex strings like \"0x48,0x00\". Read tools are safe; tools that \
              write or actuate pins are marked destructive and may require approval. \
              Every device tool takes an optional serial_number choosing the board, and \
@@ -459,7 +468,7 @@ impl ServerHandler for GalloMcp {
              follow-up call must repeat the serial_number of the call that set it up. \
              Boards can also differ in capability by hardware revision; call \
              device_info per board rather than assuming they are interchangeable.",
-        )
+            )
     }
 }
 
@@ -801,6 +810,27 @@ mod tests {
                  add it, or its handlers go unguarded"
             );
         }
+    }
+
+    #[test]
+    fn server_identifies_itself_rather_than_the_sdk() {
+        use rmcp::ServerHandler;
+        let info = crate::GalloMcp::new(None).get_info();
+        assert_eq!(
+            info.server_info.name, "gallo-mcp",
+            "server_info.name is what an MCP client displays and logs for this \
+             server. rmcp's `Implementation::from_build_env` expands \
+             `env!(\"CARGO_CRATE_NAME\")` inside rmcp, so leaving it at the \
+             default reports the SDK (\"rmcp\") instead of us, and the reported \
+             version then tracks rmcp releases rather than ours."
+        );
+        assert_eq!(
+            info.server_info.version,
+            env!("CARGO_PKG_VERSION"),
+            "server_info.version must be this crate's version. Read it from \
+             CARGO_PKG_VERSION rather than a literal so a release bump \
+             (AGENTS.md §4 rule 12) cannot leave it stale."
+        );
     }
 
     #[test]

@@ -50,6 +50,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `failed_op = 0` for the transaction as a whole; validation failures retain an
   exact index. The MCP tool schema is unchanged. Closes #128.
 
+### Fixed
+
+- The server now identifies itself as `gallo-mcp` with this crate's version in
+  the `serverInfo` of an `initialize` result, instead of reporting the SDK.
+  `get_info` used rmcp's default `Implementation::from_build_env()`, which
+  expands `env!("CARGO_CRATE_NAME")` inside rmcp, so clients displayed and
+  logged `rmcp 2.2.0` — and would have silently started showing `rmcp 3.1.4`
+  after the bump above. The version is read from `CARGO_PKG_VERSION` so a
+  release bump cannot leave it stale.
+
 ## [0.3.0] — 2026-08-24
 
 ### Changed
