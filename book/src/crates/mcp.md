@@ -71,6 +71,31 @@ on stdout. `RUST_LOG` still controls verbosity when you set it, and
 overrides the default entirely: `RUST_LOG=error` silences the warning,
 `RUST_LOG=gallo_mcp=debug` adds the per-call board-lock tracing.
 
+## Protocol revisions
+
+`gallo-mcp` supports every MCP revision its SDK knows — `2024-11-05`,
+`2025-03-26`, `2025-06-18`, `2025-11-25`, and `2026-07-28` — and
+negotiates during `initialize`: it echoes the revision the client asks
+for when it is one of those, and otherwise falls back to `2025-11-25`.
+The `initialize` result identifies the server as `gallo-mcp` with this
+crate's version.
+
+The **tool surface does not vary by revision.** The same 43 tools, with
+the same names, arguments, annotations, and JSON payloads, are served to
+every client. What changes is the envelope around them:
+
+| | `2025-11-25` and older | `2026-07-28` |
+|---|---|---|
+| `resultType` on results | absent | `"complete"` |
+| `ttlMs` / `cacheScope` cache hints | absent | present |
+| `server/discover` | not available | answered |
+
+A client that negotiates `2026-07-28` may therefore start with a
+stateless `server/discover` instead of `initialize`, and will see the
+SEP-2322 result discriminator and SEP-2549 cache hints on every result.
+Everything else — tool payloads, the `serial_number` echo, error
+mapping — is byte-for-byte identical across revisions.
+
 ## Choosing a board
 
 Every tool except `list_devices` takes an optional `serial_number`, and
