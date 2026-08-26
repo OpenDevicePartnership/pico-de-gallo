@@ -26,14 +26,14 @@ set -u
 set -o pipefail
 
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
-# shellcheck disable=SC2034  # consumed by the build path added in a later commit
 PDG_ROOT=$(CDPATH='' cd -- "${SCRIPT_DIR}/../.." && pwd)
 TESTDATA_DIR="${SCRIPT_DIR}/testdata"
 
-# shellcheck disable=SC2034  # consumed by the build path added in a later commit
 BOARD=native_sim/native/64
-# shellcheck disable=SC2034  # consumed by the build path added in a later commit
 SHIELD=pico_de_gallo
+
+BUILD_ROOT=${PDG_CI_BUILD_ROOT:-/tmp/pdg-ci}
+SUMMARY_FILE=${PDG_CI_SUMMARY:-}
 
 die() {
 	printf 'ci-build: %s\n' "$*" >&2
@@ -69,8 +69,14 @@ PDG_TARGETS=(
 
 # All four driver translation units. Assertion 3 is two-sided over exactly this
 # set: a target must compile the ones its overlay enables and none of the rest.
-# shellcheck disable=SC2034  # consumed by the build path added in a later commit
 PDG_ALL_DRIVER_TUS="pdg_mfd.c pdg_gpio.c pdg_i2c.c pdg_spi.c"
+
+# The Kconfig symbol of each of those four drivers, in the same order. Assertion
+# 5 is two-sided over exactly this set. The translation-unit check above matches
+# substrings in compile_commands.json and could in principle be fooled; a
+# Kconfig file is an exact key=value store and cannot be, so the same gap is
+# closed a second time by a mechanism that does not depend on string matching.
+PDG_ALL_DRIVER_KCONFIGS="CONFIG_MFD_PICO_DE_GALLO CONFIG_GPIO_PICO_DE_GALLO CONFIG_I2C_PICO_DE_GALLO CONFIG_SPI_PICO_DE_GALLO"
 
 target_field() {
 	printf '%s' "$1" | cut -d'|' -f"$2"
@@ -182,15 +188,246 @@ self_test() {
 	[ "$ST_FAIL" -eq 0 ]
 }
 
-main() {
-	case "${1:-}" in
-	--self-test)
-		self_test
-		;;
+require_env() {
+	[ -n "${ZEPHYR_BASE:-}" ] || die "ZEPHYR_BASE is not set"
+	[ -d "${ZEPHYR_BASE}" ] || die "ZEPHYR_BASE is not a directory: ${ZEPHYR_BASE}"
+	[ "${ZEPHYR_TOOLCHAIN_VARIANT:-}" = "host" ] \
+		|| die "ZEPHYR_TOOLCHAIN_VARIANT must be 'host', got '${ZEPHYR_TOOLCHAIN_VARIANT:-}'"
+	command -v west >/dev/null 2>&1 || die "west is not on PATH"
+	command -v cargo >/dev/null 2>&1 || die "cargo is not on PATH"
+}
+
+#
+# Run one west build. Never passes a run target: see the header.
+#
+build_target() {
+	local record=$1
+	local name srcdir overlay builddir log
+	name=$(target_field "$record" 1)
+	srcdir=$(target_field "$record" 3)
+	overlay=$(target_field "$record" 4)
+	builddir="${BUILD_ROOT}/${name}"
+	log="${BUILD_ROOT}/${name}.log"
+
+	local args
+	args=(-p always -d "$builddir" -b "$BOARD" "${PDG_ROOT}/${srcdir}"
+	      -- "-DSHIELD=${SHIELD}" "-DEXTRA_ZEPHYR_MODULES=${PDG_ROOT}")
+	if [ -n "$overlay" ]; then
+		args+=("-DDTC_OVERLAY_FILE=${PDG_ROOT}/${overlay}")
+	fi
+
+	west build "${args[@]}" >"$log" 2>&1
+}
+
+#
+# Spec section 5.1.
+#
+assert_pass() {
+	local record=$1 builddir=$2 status=$3
+	local name expected_tus expected_objs expected_kconfigs
+	name=$(target_field "$record" 1)
+	expected_tus=$(target_field "$record" 5)
+	expected_objs=$(target_field "$record" 6)
+	expected_kconfigs=$(target_field "$record" 7)
+	local rc=0
+
+	if [ "$status" -ne 0 ]; then
+		printf '  %s: west build exited %d, expected 0\n' "$name" "$status"
+		return 1
+	fi
+
+	# 2. Corrosion produced the static library.
+	if ! find "$builddir" -name 'libpico_de_gallo_ffi.a' \
+		| grep -q .; then
+		printf '  %s: libpico_de_gallo_ffi.a not found under %s\n' "$name" "$builddir"
+		rc=1
+	fi
+
+	# 3. Two-sided translation-unit check over the four driver units.
+	#
+	# tu_set is called inside a command substitution deliberately: it calls
+	# die on a missing compile database, and inside $(...) only the subshell
+	# exits, so a missing artefact degrades this one target to FAIL instead
+	# of aborting the whole gate.
+	local actual_tus
+	actual_tus=$(tu_set "${builddir}/compile_commands.json")
+	local tu
+	for tu in $(printf '%s' "$expected_tus" | tr ',' ' '); do
+		case " ${actual_tus} " in
+		*" ${tu} "*) ;;
+		*)
+			printf '  %s: expected translation unit %s absent (got: %s)\n' \
+				"$name" "$tu" "$actual_tus"
+			rc=1
+			;;
+		esac
+	done
+	for tu in $PDG_ALL_DRIVER_TUS; do
+		case ",${expected_tus}," in
+		*",${tu},"*) continue ;;
+		esac
+		case " ${actual_tus} " in
+		*" ${tu} "*)
+			printf '  %s: unexpected translation unit %s compiled\n' "$name" "$tu"
+			rc=1
+			;;
+		esac
+	done
+
+	# 4. native_simulator-side objects, tolerant of .o and .obj.
+	local obj
+	for obj in $(printf '%s' "$expected_objs" | tr ',' ' '); do
+		if ! find "$builddir" \( -name "${obj}.c.o" -o -name "${obj}.c.obj" \) \
+			| grep -q .; then
+			printf '  %s: native_simulator object %s.c.o[bj] not found\n' "$name" "$obj"
+			rc=1
+		fi
+	done
+
+	# 5. Two-sided Kconfig check: every expected symbol is =y, and every
+	# driver symbol this target did NOT ask for is not =y. The negative half
+	# is the one a substring match cannot fake.
+	local config="${builddir}/zephyr/.config"
+	local sym
+	for sym in $(printf '%s' "$expected_kconfigs" | tr ',' ' '); do
+		if ! grep -qx "${sym}=y" "$config"; then
+			printf '  %s: %s is not =y in the build .config\n' "$name" "$sym"
+			rc=1
+		fi
+	done
+	for sym in $PDG_ALL_DRIVER_KCONFIGS; do
+		case ",${expected_kconfigs}," in
+		*",${sym},"*) continue ;;
+		esac
+		if grep -qx "${sym}=y" "$config"; then
+			printf '  %s: %s is =y but was not expected for this target\n' \
+				"$name" "$sym"
+			rc=1
+		fi
+	done
+
+	return $rc
+}
+
+#
+# Spec section 5.2.
+#
+assert_basefail() {
+	local record=$1 builddir=$2 status=$3 log=$4
+	local name
+	name=$(target_field "$record" 1)
+	local rc=0
+
+	# 1. It must fail. Success means the IS31 driver landed upstream.
+	if [ "$status" -eq 0 ]; then
+		printf '  %s: west build SUCCEEDED, expected the baseline failure.\n' "$name"
+		printf '  %s: if issi,is31fl3743b reached upstream Zephyr, move this\n' "$name"
+		printf '  %s: target to kind=pass and update zephyr/README.md.\n' "$name"
+		return 1
+	fi
+
+	# 2. The ELF link succeeded; only the runner link failed.
+	if [ ! -f "${builddir}/zephyr/zephyr.elf" ]; then
+		printf '  %s: zephyr.elf absent, so the build failed earlier than the runner link\n' "$name"
+		rc=1
+	fi
+
+	# 3. Exactly one distinct undefined ordinal. Command substitution keeps a
+	# missing log local to this target: see the note in assert_pass.
+	local ords count
+	ords=$(undefined_ords "$log")
+	count=$(printf '%s' "$ords" | wc -w | tr -d ' ')
+	if [ "$count" -ne 1 ]; then
+		printf '  %s: expected exactly 1 undefined __device_dts_ord_N, got %s (%s)\n' \
+			"$name" "$count" "$ords"
+		return 1
+	fi
+
+	# 4. That ordinal resolves to the is31fl3743b node in THIS build.
+	local dtheader defines
+	dtheader="${builddir}/zephyr/include/generated/zephyr/devicetree_generated.h"
+	defines=$(resolve_ord_defines "$dtheader" "$ords")
+	if [ -z "$defines" ]; then
+		printf '  %s: ordinal %s resolves to no define in %s\n' "$name" "$ords" "$dtheader"
+		return 1
+	fi
+	case "$defines" in
+	*is31fl3743b*) ;;
 	*)
-		die "not implemented yet"
+		printf '  %s: ordinal %s resolves to %s, which is not an is31fl3743b node\n' \
+			"$name" "$ords" "$defines"
+		rc=1
 		;;
 	esac
+
+	return $rc
+}
+
+usage() {
+	sed -n '2,/^$/p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+main() {
+	local selected=""
+	while [ $# -gt 0 ]; do
+		case $1 in
+		--self-test) self_test; return $? ;;
+		--targets) selected=$2; shift 2 ;;
+		--build-root) BUILD_ROOT=$2; shift 2 ;;
+		--summary) SUMMARY_FILE=$2; shift 2 ;;
+		-h|--help) usage; return 0 ;;
+		*) die "unknown argument: $1" ;;
+		esac
+	done
+
+	require_env
+	mkdir -p "$BUILD_ROOT"
+
+	local failures=0 results=""
+	local record name kind builddir log status verdict
+	for record in "${PDG_TARGETS[@]}"; do
+		name=$(target_field "$record" 1)
+		kind=$(target_field "$record" 2)
+
+		if [ -n "$selected" ]; then
+			case ",${selected}," in
+			*",${name},"*) ;;
+			*) continue ;;
+			esac
+		fi
+
+		builddir="${BUILD_ROOT}/${name}"
+		log="${BUILD_ROOT}/${name}.log"
+
+		printf '::group::build %s (%s)\n' "$name" "$kind"
+		build_target "$record"
+		status=$?
+		cat "$log"
+		printf '::endgroup::\n'
+
+		if [ "$kind" = pass ]; then
+			assert_pass "$record" "$builddir" "$status" && verdict=PASS || verdict=FAIL
+		else
+			assert_basefail "$record" "$builddir" "$status" "$log" && verdict=PASS || verdict=FAIL
+		fi
+		if [ "$verdict" = FAIL ]; then
+			failures=$((failures + 1))
+		fi
+		printf '%s %s (%s)\n' "$verdict" "$name" "$kind"
+		results="${results}| \`${name}\` | ${kind} | ${verdict} |"$'\n'
+	done
+
+	if [ -n "$SUMMARY_FILE" ]; then
+		{
+			printf '## Zephyr build gate\n\n'
+			printf 'Build-only. No produced binary was executed.\n\n'
+			printf '| Target | Expected | Result |\n|---|---|---|\n'
+			printf '%s' "$results"
+		} >>"$SUMMARY_FILE"
+	fi
+
+	[ "$failures" -eq 0 ] || die "${failures} target(s) did not meet their contract"
+	printf 'all selected targets met their contract\n'
 }
 
 main "$@"
