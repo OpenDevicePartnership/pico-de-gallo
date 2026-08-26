@@ -309,9 +309,24 @@ assert_pass() {
 	# can SIGPIPE find once more than one artefact matches, and under
 	# set -o pipefail that turns a good build into an intermittent, timing
 	# dependent false failure.
-	local libhit
+	#
+	# Output wins over status. GNU find still reports the status it would
+	# otherwise have returned, so an unreadable subtree traversed BEFORE the
+	# match yields status 1 with the artefact correctly printed; failing on
+	# that would be a false failure on a good tree. A non-zero status only
+	# means anything when nothing was printed, and then it is a different
+	# fault from a genuinely absent artefact, so it gets its own diagnostic:
+	# the CI log is the only debugging surface this gate has.
+	local libhit libst
 	libhit=$(find "$builddir" -name 'libpico_de_gallo_ffi.a' -print -quit)
-	if [ -z "$libhit" ]; then
+	libst=$?
+	if [ -n "$libhit" ]; then
+		: # found; traversal errors elsewhere in the tree do not matter
+	elif [ "$libst" -ne 0 ]; then
+		printf '  %s: search for libpico_de_gallo_ffi.a under %s failed (find exited %d); the build tree was not fully inspected\n' \
+			"$name" "$builddir" "$libst"
+		rc=1
+	else
 		printf '  %s: libpico_de_gallo_ffi.a not found under %s\n' "$name" "$builddir"
 		rc=1
 	fi
@@ -348,12 +363,20 @@ assert_pass() {
 	done
 
 	# 4. native_simulator-side objects, tolerant of .o and .obj. Same
-	# -print -quit shape as assertion 2, for the same SIGPIPE reason.
-	local obj objhit
+	# -print -quit shape and same output-wins-over-status rule as
+	# assertion 2.
+	local obj objhit objst
 	for obj in $(printf '%s' "$expected_objs" | tr ',' ' '); do
 		objhit=$(find "$builddir" \
 			\( -name "${obj}.c.o" -o -name "${obj}.c.obj" \) -print -quit)
-		if [ -z "$objhit" ]; then
+		objst=$?
+		if [ -n "$objhit" ]; then
+			continue
+		elif [ "$objst" -ne 0 ]; then
+			printf '  %s: search for %s.c.o[bj] under %s failed (find exited %d); the build tree was not fully inspected\n' \
+				"$name" "$obj" "$builddir" "$objst"
+			rc=1
+		else
 			printf '  %s: native_simulator object %s.c.o[bj] not found\n' "$name" "$obj"
 			rc=1
 		fi
@@ -362,7 +385,16 @@ assert_pass() {
 	# 5. Two-sided Kconfig check: every expected symbol is =y, and every
 	# driver symbol this target did NOT ask for is not =y. The negative half
 	# is the one a substring match cannot fake.
+	#
+	# A missing .config is reported once. Letting the loops run would emit a
+	# filesystem error per grep and then claim each symbol individually was
+	# not enabled, which is true but describes the wrong fault.
 	local config="${builddir}/zephyr/.config"
+	if [ ! -f "$config" ]; then
+		printf '  %s: %s does not exist, so no Kconfig symbol could be checked\n' \
+			"$name" "$config"
+		return 1
+	fi
 	local sym
 	for sym in $(printf '%s' "$expected_kconfigs" | tr ',' ' '); do
 		if ! grep -qx "${sym}=y" "$config"; then
