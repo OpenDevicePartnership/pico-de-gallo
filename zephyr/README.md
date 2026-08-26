@@ -89,6 +89,34 @@ Zephyr is used if you have stale entries in `~/.cmake/packages/Zephyr`.
 
 ---
 
+## Continuous integration
+
+`.github/workflows/zephyr.yml` builds this module on every pull request that
+touches `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/`
+or either root Cargo file. It pins Zephyr to the commit recorded above and
+drives `zephyr/scripts/ci-build.sh`, which builds eight targets: the two viable
+samples, the two IS31 samples (asserted to fail exactly as they do at baseline),
+and the four M5 test applications.
+
+To reproduce a CI failure locally, with a Zephyr workspace already set up:
+
+```bash
+export ZEPHYR_BASE=~/zephyrproject/zephyr
+export ZEPHYR_TOOLCHAIN_VARIANT=host
+zephyr/scripts/ci-build.sh --targets i2c_bridge
+```
+
+`--self-test` runs the assertion parsers against checked-in fixtures and needs
+no Zephyr workspace at all.
+
+**This gate is build-only.** It never runs a produced binary, because doing so
+reaches `gallo_init_strict()` and needs an attached board. A green run means the
+module still compiles and links — it says nothing about whether it still works
+against hardware. That remains `tests/pdg_mfd_m5/run-m5.sh`, run by hand with a
+board and the physical jumpers in place.
+
+---
+
 ## Running the I2C sample
 
 `samples/i2c_bridge` reads ambient temperature from a TI TMP117 at address
