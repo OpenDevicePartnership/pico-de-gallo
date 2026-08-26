@@ -1300,6 +1300,23 @@ pub enum SpiBatchOp<'a> {
 /// [`I2cBatchOp`] values. Use [`encode_i2c_batch_ops`] on the host
 /// side to build it from a typed slice.
 ///
+/// ## Bus semantics
+///
+/// The whole batch executes as one I2C transaction, matching the
+/// `embedded-hal` [`I2c::transaction`] contract:
+///
+/// - a START and address precede the first operation;
+/// - adjacent operations of the same type are sent back to back with no
+///   STOP and no repeated START between them, so two adjacent `Write`
+///   ops form a single gather write;
+/// - a direction change emits a repeated START and a re-addressing;
+/// - a STOP follows the last operation, and only the last one.
+///
+/// Requires firmware built from schema 0.7 or newer. Older firmware
+/// executes each operation as a separate transaction.
+///
+/// [`I2c::transaction`]: https://docs.rs/embedded-hal/1.0.0/embedded_hal/i2c/trait.I2c.html#tymethod.transaction
+///
 /// ## Response
 ///
 /// On success, the response contains the concatenated read data from all
@@ -1311,9 +1328,6 @@ pub enum SpiBatchOp<'a> {
 /// - Total read data must not exceed [`MAX_TRANSFER_SIZE`]
 /// - Total write data is limited by USB packet size
 /// - Maximum [`MAX_BATCH_OPS`] operations per batch
-/// - Operations execute sequentially with STOP between each (not using
-///   I2C repeated-start). For write-then-read to the same device, prefer
-///   the existing [`I2cWriteRead`] endpoint.
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct I2cBatchRequest<'a> {
     /// 7-bit I2C slave address.
@@ -1326,10 +1340,21 @@ pub struct I2cBatchRequest<'a> {
 
 /// Error returned when an I2C batch transaction fails.
 ///
-/// Includes the zero-based index of the operation that failed, so the
-/// host can identify exactly which step caused the error. Operations
-/// before `failed_op` completed successfully; their read data is NOT
-/// included in the response.
+/// ## Interpreting `failed_op`
+///
+/// The batch executes as one atomic transaction, so the two error
+/// classes attribute differently:
+///
+/// - **Validation** errors are raised before any bus access and carry the
+///   exact zero-based index of the offending operation.
+/// - **Bus** errors are reported by the transaction as a whole and cannot
+///   be attributed to one operation. They always carry `failed_op = 0`.
+///
+/// A non-zero `failed_op` therefore always means validation. A zero
+/// `failed_op` means either the first operation failed validation or the
+/// transaction failed on the bus; `kind` distinguishes them.
+///
+/// No read data is returned on failure.
 #[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub struct I2cBatchError {
     /// Zero-based index of the operation that failed.

@@ -305,10 +305,22 @@ enum I2cCommands {
     /// Query the current I2C bus configuration
     GetConfig,
 
-    /// Execute multiple I2C operations in a single USB transfer
+    /// Execute multiple I2C operations as a single transaction
     ///
     /// Each operation is specified with --op. Use 'read:N' to read N bytes
     /// or 'write:B1,B2,...' to write bytes (hex or decimal).
+    ///
+    /// The whole batch runs as one I2C transaction: a START and the address
+    /// precede the first operation, adjacent operations of the same type are
+    /// sent back to back with no STOP and no repeated START between them, a
+    /// direction change emits a repeated START and re-addresses the target,
+    /// and only the last operation is followed by a STOP. Two adjacent
+    /// writes therefore form a single gather write.
+    ///
+    /// Zero-length writes are rejected, and the whole batch is validated
+    /// before anything is driven onto the bus. Requires firmware from
+    /// schema 0.7 or newer; older firmware executes each operation as its
+    /// own transaction.
     ///
     /// Example: gallo i2c batch -a 0x50 --op write:0x00,0x10 --op read:16
     Batch {

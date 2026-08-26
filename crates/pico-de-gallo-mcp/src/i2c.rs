@@ -86,7 +86,10 @@ pub enum I2cBatchOpParam {
 pub struct I2cBatchParams {
     /// 7-bit I2C address.
     pub address: u8,
-    /// Ordered list of operations.
+    /// Ordered list of operations, executed within a single I2C transaction.
+    /// Adjacent operations of the same type are not separated by a STOP, so
+    /// two adjacent writes form one gather write rather than two separate
+    /// writes. Zero-length writes are rejected.
     pub ops: Vec<I2cBatchOpParam>,
     /// USB serial number of the board to use. Required when two or more
     /// boards are attached and the server is not pinned to one; optional
@@ -200,9 +203,27 @@ impl GalloMcp {
         ok_device_json(&dev, &"ok")
     }
 
-    /// Execute a batch of I2C operations under one address.
+    /// Execute a batch of I2C operations under one address as a single
+    /// transaction. A START and the address precede the first operation.
+    /// Adjacent operations of the same type run back to back with no STOP and
+    /// no repeated START between them, so two adjacent writes form one gather
+    /// write rather than two separate writes; a direction change emits a
+    /// repeated START and re-addresses the target; only the last operation is
+    /// followed by a STOP. Zero-length writes are rejected, and the whole
+    /// batch is validated before anything is driven onto the bus. Requires
+    /// firmware from schema 0.7 or newer; older firmware executes each
+    /// operation as its own transaction.
     #[tool(
-        description = "Execute a batch of I2C operations under one address",
+        description = "Execute a batch of I2C operations under one address as a single \
+                       transaction. A START and the address precede the first operation. \
+                       Adjacent operations of the same type run back to back with no STOP \
+                       and no repeated START between them, so two adjacent writes form one \
+                       gather write rather than two separate writes; a direction change \
+                       emits a repeated START and re-addresses the target; only the last \
+                       operation is followed by a STOP. Zero-length writes are rejected, \
+                       and the whole batch is validated before anything is driven onto the \
+                       bus. Requires firmware from schema 0.7 or newer; older firmware \
+                       executes each operation as its own transaction.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn i2c_batch(

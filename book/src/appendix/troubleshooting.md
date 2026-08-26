@@ -158,13 +158,18 @@ A few things to check:
 - **Pull-ups and levels.** Voltage-level mismatches show up as
   intermittent NACKs.
 
-### `transaction()` is slower than expected
+### An I²C `transaction()` gather write misbehaves
 
-If you call `embedded_hal::i2c::I2c::write_read()` or
-`SpiDevice::transaction()` and it issues multiple USB round-trips,
-the HAL didn''t catch the batchable case. File an issue with the
-Operations list — coverage for newer trait shapes is an active
-work area.
+Firmware with schema 0.7 or newer executes the complete operation list as
+one I²C transaction. Adjacent operations in the same direction run back to
+back without a STOP or repeated START, so adjacent writes form one gather
+write. A direction change emits a repeated START, and only the final
+operation is followed by a STOP. Zero-length writes are rejected.
+
+Older firmware executed every operation as an independent transaction with
+its own START and STOP. If a gather write is split on the bus or the target
+interprets adjacent writes separately, check `device/info` and update to
+firmware reporting schema 0.7 or newer.
 
 ## Where to Get Help
 

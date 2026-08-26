@@ -1461,16 +1461,25 @@ pub struct GalloI2cBatchOp {
 
 /// gallo_i2c_batch - Execute a batch of I2C operations.
 ///
-/// Operations execute sequentially with STOP between each (this is *not*
-/// I2C repeated-start; for write-then-read to the same device, prefer
-/// [`gallo_i2c_write_read`]). The concatenated read data from each `Read`
-/// operation is copied into `out_buf` in order; the total length is
-/// written to `*out_len`.
+/// The batch executes as a single I2C transaction. A START and address
+/// precede the first operation; adjacent operations of the same type are
+/// sent back to back with no STOP and no repeated START between them, so
+/// two adjacent Write ops form one gather write; a direction change emits
+/// a repeated START and a re-addressing; and a STOP follows the last
+/// operation, and only the last one.
 ///
-/// On batch failure, the index of the failing operation (zero-based) is
-/// written to `*out_failed_op` if `out_failed_op` is non-NULL, and a
-/// status reflecting the underlying I2C error is returned. Read data
-/// from operations before the failing one is discarded.
+/// Requires firmware built from schema 0.7 or newer. Older firmware
+/// executes each operation as a separate transaction.
+///
+/// The concatenated read data from each `Read` operation is copied into
+/// `out_buf` in order; the total length is written to `*out_len`.
+///
+/// On batch failure, an operation index is written to `*out_failed_op` if
+/// `out_failed_op` is non-NULL, and a status reflecting the underlying
+/// I2C error is returned. Only validation failures, which are raised
+/// before any bus access, carry the exact zero-based index of the
+/// offending operation; the transaction fails as a unit on the bus, so
+/// bus failures report `0`. No read data is returned on failure.
 ///
 /// Returns [`Status::Ok`] on success, [`Status::BufferTooLong`] if
 /// `out_buf` is too small for the cumulative read data, or one of the

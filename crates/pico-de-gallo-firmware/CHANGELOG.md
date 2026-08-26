@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `i2c/batch` now issues one
+  `embedded_hal_async::i2c::I2c::transaction()` instead of executing each
+  operation as a separate transaction with its own START and STOP. Adjacent
+  same-direction operations concatenate, direction changes use a repeated
+  START, and only the final operation is followed by a STOP. A TMP102 hardware
+  reproduction showed two adjacent writes previously returning success while
+  modifying a register the caller never named. Bus failures now report
+  `failed_op = 0` because the atomic transaction fails as a unit; validation
+  failures retain their exact operation index. Direct dependencies on
+  `embedded-hal-async` 1.0 and `heapless` 0.9 were added from versions already
+  present in the resolved graph. Closes #128.
+
 - `i2c/write` and `i2c/batch` now refuse an empty write payload with
   `I2cError::ZeroLengthWrite` instead of forwarding it to
   `embassy_rp::i2c::write_async`. The RP2040/RP2350 `DW_apb_i2c` block

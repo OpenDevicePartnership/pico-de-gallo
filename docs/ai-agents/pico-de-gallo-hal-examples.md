@@ -206,8 +206,13 @@ fn tmp102_responds_on_default_address() {
 #### Gotchas
 
 - 7-bit addressing only. Pass `0x48`, not `0x90`.
-- `I2c::transaction()` (and `write_read`) is batched as a single USB
-  round-trip by the HAL — prefer it over separate `write` + `read`.
+- `I2c::transaction()` is one USB round-trip and one bus transaction:
+  adjacent same-direction operations continue without a STOP, direction
+  changes use a repeated START, and only the final operation gets a STOP.
+  The default `read`, `write`, and `write_read` methods all route through it.
+  This contract requires schema-0.7-or-newer firmware; older firmware put a
+  STOP after every operation, silently breaking gather writes and
+  `write_read`. Prefer `Hal::new_validated()` so older firmware is rejected.
 - Default bus frequency is 100 kHz. Bump with
   `hal.i2c_set_config(I2cFrequency::Fast)?` for 400 kHz or
   `I2cFrequency::FastPlus` for 1 MHz.

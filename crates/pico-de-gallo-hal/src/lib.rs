@@ -1234,6 +1234,39 @@ impl embedded_hal::i2c::ErrorType for I2c {
 }
 
 impl embedded_hal::i2c::I2c<embedded_hal::i2c::SevenBitAddress> for I2c {
+    /// Execute `operations` as a single I2C transaction.
+    ///
+    /// The whole operation list is encoded into one `i2c/batch` request,
+    /// so the entire transaction costs one USB round-trip regardless of
+    /// how many operations it contains.
+    ///
+    /// # Bus semantics
+    ///
+    /// The firmware honours the `embedded-hal` [`I2c::transaction`]
+    /// contract:
+    ///
+    /// - a START and address precede the first operation;
+    /// - adjacent operations of the same type are sent back to back with
+    ///   no STOP and no repeated START between them, so two adjacent
+    ///   [`Operation::Write`] entries form a single gather write;
+    /// - a direction change emits a repeated START and a re-addressing;
+    /// - a STOP follows the last operation, and only the last one.
+    ///
+    /// # Firmware requirement
+    ///
+    /// This framing requires firmware built from schema 0.7 or newer.
+    /// Older firmware executes each operation as its own transaction.
+    /// Construct the [`Hal`] with [`Hal::new_validated`] to reject a
+    /// mismatched firmware schema up front.
+    ///
+    /// # Other trait methods
+    ///
+    /// This crate implements only `transaction`; the `embedded-hal`
+    /// provided defaults for `read`, `write` and `write_read` all route
+    /// through it, and so inherit the semantics above.
+    ///
+    /// [`I2c::transaction`]: embedded_hal::i2c::I2c::transaction
+    /// [`Operation::Write`]: embedded_hal::i2c::Operation::Write
     fn transaction(
         &mut self,
         address: embedded_hal::i2c::SevenBitAddress,
@@ -1248,6 +1281,40 @@ impl embedded_hal::i2c::I2c<embedded_hal::i2c::SevenBitAddress> for I2c {
 }
 
 impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for I2c {
+    /// Execute `operations` as a single I2C transaction.
+    ///
+    /// The whole operation list is encoded into one `i2c/batch` request,
+    /// so the entire transaction costs one USB round-trip regardless of
+    /// how many operations it contains.
+    ///
+    /// # Bus semantics
+    ///
+    /// The firmware honours the `embedded-hal` [`I2c::transaction`]
+    /// contract:
+    ///
+    /// - a START and address precede the first operation;
+    /// - adjacent operations of the same type are sent back to back with
+    ///   no STOP and no repeated START between them, so two adjacent
+    ///   [`Operation::Write`] entries form a single gather write;
+    /// - a direction change emits a repeated START and a re-addressing;
+    /// - a STOP follows the last operation, and only the last one.
+    ///
+    /// # Firmware requirement
+    ///
+    /// This framing requires firmware built from schema 0.7 or newer.
+    /// Older firmware executes each operation as its own transaction.
+    /// Construct the [`Hal`] with [`Hal::new_validated`] to reject a
+    /// mismatched firmware schema up front.
+    ///
+    /// # Other trait methods
+    ///
+    /// This crate implements only `transaction`; the
+    /// `embedded-hal-async` provided defaults for `read`, `write` and
+    /// `write_read` all route through it, and so inherit the semantics
+    /// above.
+    ///
+    /// [`I2c::transaction`]: embedded_hal_async::i2c::I2c::transaction
+    /// [`Operation::Write`]: embedded_hal_async::i2c::Operation::Write
     async fn transaction(
         &mut self,
         address: embedded_hal_async::i2c::SevenBitAddress,

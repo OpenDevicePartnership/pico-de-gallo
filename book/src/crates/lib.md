@@ -254,7 +254,7 @@ The library exposes one typed async method per firmware capability.
 | `i2c_write` | `address`, `contents` | Write bytes to an I<sup>2</sup>C target |
 | `i2c_write_read` | `address`, `contents`, `count` | Write, then read with a repeated start |
 | `i2c_scan` | `include_reserved` | Scan the I<sup>2</sup>C bus for responding addresses |
-| `i2c_batch` | `address`, `ops` | Execute several I<sup>2</sup>C operations in one USB transfer |
+| `i2c_batch` | `address`, `ops` | Execute one bus transaction: no STOP between adjacent same-direction operations, repeated START on direction changes, and one final STOP |
 | `i2c_set_config` | `frequency` | Set the I<sup>2</sup>C clock frequency |
 | `i2c_get_config` | — | Read back the active I<sup>2</sup>C frequency |
 | `spi_read` | `count` | Read bytes from the SPI bus |

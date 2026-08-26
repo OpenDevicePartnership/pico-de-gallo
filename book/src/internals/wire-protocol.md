@@ -77,6 +77,26 @@ A short slice of the endpoint catalog looks like this:
 
 For the full list, see the [Endpoint Catalog](../appendix/endpoints.md).
 
+## I²C batch framing contract
+
+`i2c/batch` executes the complete operation list as one I<sup>2</sup>C
+transaction:
+
+- a START and address precede the first operation,
+- adjacent operations of the same type run back to back without a STOP or
+  repeated START; two adjacent writes therefore form one gather write,
+- a direction change emits a repeated START and re-addresses the target,
+- a STOP follows the last operation, and only the last operation.
+
+The repeated START on a direction change is documented by the RP2350 vendor
+SVD: the DesignWare `IC_CON` register resets to `0x00000065`, with
+`IC_RESTART_EN` (bit 5) set, and embassy-rp does not write that register.
+
+Validation errors report the exact zero-based operation index in
+`I2cBatchError.failed_op`. A bus failure applies to the atomic transaction as
+a whole and cannot be attributed to one operation, so it reports
+`failed_op = 0`.
+
 ## SPI chip-select contract
 
 `SpiError` is serialized by variant index. The deployed indices are:

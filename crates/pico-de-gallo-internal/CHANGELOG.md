@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Clarified the `i2c/batch` contract without changing its wire shape:
+  operations form one I²C transaction, adjacent operations in the same
+  direction continue without a STOP, direction changes use a repeated START,
+  and only the final operation is followed by a STOP. Validation failures keep
+  their exact `failed_op`; a bus failure applies to the transaction as a whole
+  and reports `failed_op = 0`. Closes #128.
+
 ### Breaking Changes
 
 - Appended `I2cError::ZeroLengthWrite` at index 7, after `Other`. The

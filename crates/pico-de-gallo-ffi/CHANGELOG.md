@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Corrected the `gallo_i2c_batch` documentation to describe one atomic I²C
+  transaction: adjacent same-direction operations concatenate, direction
+  changes use a repeated START, and only the final operation receives a STOP.
+  A bus failure now returns `out_failed_op = 0` because it cannot be attributed
+  to one operation; validation failures retain an exact index.
+  The C ABI is unchanged. Closes #128.
+
 - `I2cError::ZeroLengthWrite` (new upstream in `pico-de-gallo-internal`)
   maps to the existing `InvalidArgument = -5`. No new status code is
   added: `Status` values are stable C ABI, and a new value falls through

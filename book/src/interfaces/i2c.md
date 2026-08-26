@@ -13,7 +13,7 @@ supply your own.
 | **Write**      | Write bytes to a device at the given address |
 | **Write-Read** | Write then read on the same target (repeated start, no STOP between) |
 | **Scan**       | Probe every address on the bus |
-| **Batch**      | Send a sequence of read/write ops as a single USB transaction |
+| **Batch**      | One I²C transaction; repeated START on direction change; final STOP only |
 | **Set Config** | Change the bus clock frequency at runtime |
 | **Get Config** | Query the current bus configuration |
 
@@ -103,7 +103,15 @@ Frequency: Fast (400 kHz)
 
 ### Batch
 
-A single USB round-trip for a multi-op transaction:
+One USB round-trip carries one multi-operation I²C transaction. A START
+and address precede the first operation. Adjacent operations in the same
+direction run back to back without a STOP or repeated START, so adjacent
+writes form one gather write. A direction change emits a documented
+repeated START and re-addressing, and only the final operation is followed
+by a STOP.
+
+This bus framing requires firmware from schema 0.7 or newer. Older
+firmware executes each operation as a separate transaction.
 
 ```console
 $ gallo i2c batch -a 0x48 --op write:0x00 --op read:2
@@ -132,7 +140,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let raw = u16::from_be_bytes([data[0], data[1]]);
     println!("raw = 0x{raw:04x}");
 
-    // Same transaction, batched
+    // Same bus framing as i2c_write_read above: write, repeated START, read, STOP.
     let ops = [
         I2cBatchOp::Write { data: &[0x00] },
         I2cBatchOp::Read { len: 2 },
@@ -163,8 +171,11 @@ fn read_tmp102(hal: &Hal) {
 }
 ```
 
-`I2c::transaction()` is automatically batched into a single USB
-round-trip — see [Transaction Batching](./batching.md).
+`I2c::transaction()` sends all operations in one USB round-trip and,
+with schema 0.7 or newer firmware, executes them as one I²C transaction.
+Adjacent same-direction operations run without an intervening STOP; a
+direction change emits a documented repeated START. See
+[Transaction Batching](./batching.md).
 
 ## C (FFI)
 

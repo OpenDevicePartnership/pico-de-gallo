@@ -114,6 +114,15 @@ the operations into Pico de Gallo batch requests and sends them in one shot.
 So if your driver already uses the transaction APIs from `embedded-hal`, you get
 Pico de Gallo's batching support automatically.
 
+For I²C, the batch is also one transaction on the bus: adjacent operations of
+the same type run back to back without a STOP, changing direction emits a
+repeated START, and only the final operation is followed by a STOP. Two adjacent
+writes therefore form one gather write. This requires firmware built from
+schema 0.7 or newer; older firmware ran each operation as a separate
+transaction. The crate implements only `I2c::transaction()` directly, so the
+`embedded-hal` defaults for `read`, `write`, and `write_read` all use these same
+semantics.
+
 ```rust,no_run
 use embedded_hal::i2c::{I2c, Operation};
 use pico_de_gallo_hal::Hal;
