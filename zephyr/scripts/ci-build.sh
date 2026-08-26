@@ -83,6 +83,60 @@ target_field() {
 }
 
 #
+# Echo every target name in table order, one per line.
+#
+# target_field ends in a newline of cut's own making, so nothing is added here.
+#
+target_names() {
+	local record
+	for record in "${PDG_TARGETS[@]}"; do
+		target_field "$record" 1
+	done
+}
+
+#
+# Echo the names in a comma-separated selection that match no table record,
+# space-separated. Empty output means every name is valid.
+#
+# A typo in --targets used to be silently skipped, so a workflow that asked for
+# a target that does not exist ran zero builds and still reported success. That
+# is the single worst outcome this gate can produce, so the caller turns any
+# output from this function into a hard error.
+#
+unknown_targets() {
+	local selected=$1
+	[ -n "$selected" ] || return 0
+	local known name out=""
+	known=" $(target_names | tr '\n' ' ')"
+	for name in $(printf '%s' "$selected" | tr ',' ' '); do
+		case "$known" in
+		*" ${name} "*) ;;
+		*) out="${out}${name} " ;;
+		esac
+	done
+	printf '%s' "$out" | sed 's/ *$//'
+}
+
+#
+# Echo the target names a selection resolves to, in table order,
+# space-separated. An empty selection means all of them.
+#
+select_targets() {
+	local selected=$1
+	if [ -z "$selected" ]; then
+		target_names | tr '\n' ' ' | sed 's/ *$//'
+		return 0
+	fi
+	local name out=""
+	for name in $(target_names); do
+		case ",${selected}," in
+		*",${name},"*) out="${out}${name} " ;;
+		esac
+	done
+	printf '%s' "$out" | sed 's/ *$//'
+}
+
+#
 # Extract the distinct ordinals of every undefined __device_dts_ord_N in a
 # build log, sorted, space-separated. Empty output means none.
 #
@@ -184,6 +238,19 @@ self_test() {
 		"$(tu_set "${TESTDATA_DIR}/compile_commands.json")" \
 		"pdg_gpio.c pdg_mfd.c pdg_spi.c"
 
+	# --- selection ---
+	st_check "unknown_targets reports a typo" \
+		"$(unknown_targets "typo")" "typo"
+	st_check "unknown_targets reports the bad half of a mixed list" \
+		"$(unknown_targets "i2c_bridge,typo")" "typo"
+	st_check "unknown_targets accepts an all-valid list" \
+		"$(unknown_targets "i2c_bridge,m5_jumper")" ""
+	st_check "select_targets with an empty selection means all eight" \
+		"$(select_targets "")" \
+		"i2c_bridge spi_nor_id spi_bridge combined_i2c_spi_bridge m5_reset m5_jumper m5_acceptance m5_teardown"
+	st_check "select_targets picks exactly the named subset, in table order" \
+		"$(select_targets "m5_jumper,i2c_bridge")" "i2c_bridge m5_jumper"
+
 	printf '\n%d passed, %d failed\n' "$ST_PASS" "$ST_FAIL"
 	[ "$ST_FAIL" -eq 0 ]
 }
@@ -237,8 +304,14 @@ assert_pass() {
 	fi
 
 	# 2. Corrosion produced the static library.
-	if ! find "$builddir" -name 'libpico_de_gallo_ffi.a' \
-		| grep -q .; then
+	#
+	# -print -quit rather than a pipe into grep -q: an early-closing consumer
+	# can SIGPIPE find once more than one artefact matches, and under
+	# set -o pipefail that turns a good build into an intermittent, timing
+	# dependent false failure.
+	local libhit
+	libhit=$(find "$builddir" -name 'libpico_de_gallo_ffi.a' -print -quit)
+	if [ -z "$libhit" ]; then
 		printf '  %s: libpico_de_gallo_ffi.a not found under %s\n' "$name" "$builddir"
 		rc=1
 	fi
@@ -274,11 +347,13 @@ assert_pass() {
 		esac
 	done
 
-	# 4. native_simulator-side objects, tolerant of .o and .obj.
-	local obj
+	# 4. native_simulator-side objects, tolerant of .o and .obj. Same
+	# -print -quit shape as assertion 2, for the same SIGPIPE reason.
+	local obj objhit
 	for obj in $(printf '%s' "$expected_objs" | tr ',' ' '); do
-		if ! find "$builddir" \( -name "${obj}.c.o" -o -name "${obj}.c.obj" \) \
-			| grep -q .; then
+		objhit=$(find "$builddir" \
+			\( -name "${obj}.c.o" -o -name "${obj}.c.obj" \) -print -quit)
+		if [ -z "$objhit" ]; then
 			printf '  %s: native_simulator object %s.c.o[bj] not found\n' "$name" "$obj"
 			rc=1
 		fi
@@ -380,21 +455,30 @@ main() {
 		esac
 	done
 
+	# Validate the selection BEFORE require_env, so a typo is reported as a
+	# typo rather than hidden behind a missing-toolchain complaint.
+	local unknown selection
+	unknown=$(unknown_targets "$selected")
+	if [ -n "$unknown" ]; then
+		die "unknown target(s): ${unknown} (valid: $(select_targets ''))"
+	fi
+	selection=$(select_targets "$selected")
+	[ -n "$selection" ] || die "no targets selected"
+
 	require_env
 	mkdir -p "$BUILD_ROOT"
 
-	local failures=0 results=""
+	local ran=0 failures=0 results=""
 	local record name kind builddir log status verdict
 	for record in "${PDG_TARGETS[@]}"; do
 		name=$(target_field "$record" 1)
 		kind=$(target_field "$record" 2)
 
-		if [ -n "$selected" ]; then
-			case ",${selected}," in
-			*",${name},"*) ;;
-			*) continue ;;
-			esac
-		fi
+		case " ${selection} " in
+		*" ${name} "*) ;;
+		*) continue ;;
+		esac
+		ran=$((ran + 1))
 
 		builddir="${BUILD_ROOT}/${name}"
 		log="${BUILD_ROOT}/${name}.log"
@@ -426,8 +510,12 @@ main() {
 		} >>"$SUMMARY_FILE"
 	fi
 
+	# Belt and braces: the selection was non-empty, so this cannot fire unless
+	# the loop above grows a new skip path. Success must never be printed for
+	# a run that built nothing.
+	[ "$ran" -gt 0 ] || die "no targets ran"
 	[ "$failures" -eq 0 ] || die "${failures} target(s) did not meet their contract"
-	printf 'all selected targets met their contract\n'
+	printf 'all %d selected target(s) met their contract\n' "$ran"
 }
 
 main "$@"
