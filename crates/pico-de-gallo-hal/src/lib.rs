@@ -42,6 +42,24 @@
 //! | SPI | [`SpiBus`](embedded_hal::spi::SpiBus), [`SpiDevice`](embedded_hal::spi::SpiDevice) | [`SpiBus`](embedded_hal_async::spi::SpiBus), [`SpiDevice`](embedded_hal_async::spi::SpiDevice) |
 //! | PWM | [`SetDutyCycle`](embedded_hal::pwm::SetDutyCycle) | — |
 //! | Delay | [`DelayNs`](embedded_hal::delay::DelayNs) | [`DelayNs`](embedded_hal_async::delay::DelayNs) |
+//! | UART | `embedded_io::Read`, `embedded_io::Write` | `embedded_io_async::Read`, `embedded_io_async::Write` |
+//!
+//! # Feature Flags
+//!
+//! UART supports additive `embedded-io` features:
+//!
+//! | Feature | Default | [`Uart`] implements |
+//! |---------|---------|---------------------|
+//! | `embedded-io-07` | no | `embedded-io` 0.7 + `embedded-io-async` 0.7 traits |
+//! | `embedded-io-06` | yes | `embedded-io` 0.6 + `embedded-io-async` 0.6 traits |
+//!
+//! Enable 0.7 alongside the default 0.6 support:
+//!
+//! ```toml
+//! pico-de-gallo-hal = { version = "0.7", features = ["embedded-io-07"] }
+//! ```
+//!
+//! Disable both to remove these dependencies.
 
 use pico_de_gallo_lib::{
     AdcError, GpioError, GpioState, I2cError, OneWireError, PicoDeGallo, PicoDeGalloError,
@@ -304,7 +322,7 @@ impl Hal {
         Spi { gallo, handle }
     }
 
-    /// Uart
+    /// Obtain a [`Uart`] with a 1000 ms read timeout.
     pub fn uart(&self) -> Uart {
         let gallo = Arc::clone(&self.gallo);
         let handle = self.handle.clone();
@@ -902,6 +920,13 @@ impl core::fmt::Display for UartHalError {
 
 impl std::error::Error for UartHalError {}
 
+#[cfg(any(feature = "embedded-io-06", feature = "embedded-io-07"))]
+impl UartHalError {
+    fn is_invalid_input(&self) -> bool {
+        matches!(self, Self::Uart(UartError::InvalidBaudRate))
+    }
+}
+
 impl From<PicoDeGalloError<UartError>> for UartHalError {
     fn from(e: PicoDeGalloError<UartError>) -> Self {
         match e {
@@ -911,15 +936,24 @@ impl From<PicoDeGalloError<UartError>> for UartHalError {
     }
 }
 
-impl embedded_io::Error for UartHalError {
-    fn kind(&self) -> embedded_io::ErrorKind {
-        match self {
-            Self::Uart(UartError::Overrun) => embedded_io::ErrorKind::Other,
-            Self::Uart(UartError::Break) => embedded_io::ErrorKind::Other,
-            Self::Uart(UartError::Parity) => embedded_io::ErrorKind::Other,
-            Self::Uart(UartError::Framing) => embedded_io::ErrorKind::Other,
-            Self::Uart(UartError::InvalidBaudRate) => embedded_io::ErrorKind::InvalidInput,
-            _ => embedded_io::ErrorKind::Other,
+#[cfg(feature = "embedded-io-06")]
+impl embedded_io_06::Error for UartHalError {
+    fn kind(&self) -> embedded_io_06::ErrorKind {
+        if self.is_invalid_input() {
+            embedded_io_06::ErrorKind::InvalidInput
+        } else {
+            embedded_io_06::ErrorKind::Other
+        }
+    }
+}
+
+#[cfg(feature = "embedded-io-07")]
+impl embedded_io_07::Error for UartHalError {
+    fn kind(&self) -> embedded_io_07::ErrorKind {
+        if self.is_invalid_input() {
+            embedded_io_07::ErrorKind::InvalidInput
+        } else {
+            embedded_io_07::ErrorKind::Other
         }
     }
 }
@@ -1711,7 +1745,7 @@ impl embedded_hal_async::delay::DelayNs for Delay {
 
 // ----------------------------- Uart -----------------------------
 
-/// UART handle implementing [`embedded-io`] traits.
+/// UART handle implementing enabled `embedded-io` traits (0.6 by default).
 ///
 /// Obtained from [`Hal::uart`]. Supports blocking and async read/write.
 /// **Baud rate is fixed at the firmware default** and cannot be changed
@@ -1721,6 +1755,11 @@ impl embedded_hal_async::delay::DelayNs for Delay {
 /// **Read timeout**: UART reads use a configurable timeout (in
 /// milliseconds) to avoid blocking the USB bridge indefinitely. The
 /// default timeout is 1000 ms. Adjust with [`Uart::set_timeout_ms`].
+// Fields are unused without either feature.
+#[cfg_attr(
+    not(any(feature = "embedded-io-06", feature = "embedded-io-07")),
+    allow(dead_code)
+)]
 pub struct Uart {
     gallo: Arc<Mutex<PicoDeGallo>>,
     handle: Handle,
@@ -1736,7 +1775,11 @@ impl Uart {
     pub fn set_timeout_ms(&mut self, timeout_ms: u32) {
         self.timeout_ms = timeout_ms;
     }
+}
 
+// Shared transport for all enabled trait versions.
+#[cfg(any(feature = "embedded-io-06", feature = "embedded-io-07"))]
+impl Uart {
     fn read_inner(&mut self, buf: &mut [u8]) -> std::result::Result<usize, UartHalError> {
         let handle = &self.handle;
         let gallo = handle.block_on(self.gallo.lock());
@@ -1764,24 +1807,16 @@ impl Uart {
             .block_on(gallo.uart_flush())
             .map_err(UartHalError::from)
     }
-}
 
-impl embedded_io::ErrorType for Uart {
-    type Error = UartHalError;
-}
-
-impl embedded_io::Read for Uart {
-    fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+    fn read_blocking(&mut self, buf: &mut [u8]) -> std::result::Result<usize, UartHalError> {
         if Hal::in_async_context() {
             block_in_place(|| self.read_inner(buf))
         } else {
             self.read_inner(buf)
         }
     }
-}
 
-impl embedded_io::Write for Uart {
-    fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+    fn write_blocking(&mut self, buf: &[u8]) -> std::result::Result<usize, UartHalError> {
         if Hal::in_async_context() {
             block_in_place(|| self.write_inner(buf))
         } else {
@@ -1789,17 +1824,18 @@ impl embedded_io::Write for Uart {
         }
     }
 
-    fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+    fn flush_blocking(&mut self) -> std::result::Result<(), UartHalError> {
         if Hal::in_async_context() {
             block_in_place(|| self.flush_inner())
         } else {
             self.flush_inner()
         }
     }
-}
 
-impl embedded_io_async::Read for Uart {
-    async fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+    async fn read_async_inner(
+        &mut self,
+        buf: &mut [u8],
+    ) -> std::result::Result<usize, UartHalError> {
         let gallo = self.gallo.lock().await;
         let contents = gallo
             .uart_read(buf.len() as u16, self.timeout_ms)
@@ -1809,18 +1845,98 @@ impl embedded_io_async::Read for Uart {
         buf[..n].copy_from_slice(&contents[..n]);
         Ok(n)
     }
-}
 
-impl embedded_io_async::Write for Uart {
-    async fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+    async fn write_async_inner(&mut self, buf: &[u8]) -> std::result::Result<usize, UartHalError> {
         let gallo = self.gallo.lock().await;
         gallo.uart_write(buf).await.map_err(UartHalError::from)?;
         Ok(buf.len())
     }
 
-    async fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+    async fn flush_async_inner(&mut self) -> std::result::Result<(), UartHalError> {
         let gallo = self.gallo.lock().await;
         gallo.uart_flush().await.map_err(UartHalError::from)
+    }
+}
+
+#[cfg(feature = "embedded-io-06")]
+impl embedded_io_06::ErrorType for Uart {
+    type Error = UartHalError;
+}
+
+#[cfg(feature = "embedded-io-06")]
+impl embedded_io_06::Read for Uart {
+    fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+        self.read_blocking(buf)
+    }
+}
+
+#[cfg(feature = "embedded-io-06")]
+impl embedded_io_06::Write for Uart {
+    fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+        self.write_blocking(buf)
+    }
+
+    fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+        self.flush_blocking()
+    }
+}
+
+#[cfg(feature = "embedded-io-06")]
+impl embedded_io_async_06::Read for Uart {
+    async fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+        self.read_async_inner(buf).await
+    }
+}
+
+#[cfg(feature = "embedded-io-06")]
+impl embedded_io_async_06::Write for Uart {
+    async fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+        self.write_async_inner(buf).await
+    }
+
+    async fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+        self.flush_async_inner().await
+    }
+}
+
+#[cfg(feature = "embedded-io-07")]
+impl embedded_io_07::ErrorType for Uart {
+    type Error = UartHalError;
+}
+
+#[cfg(feature = "embedded-io-07")]
+impl embedded_io_07::Read for Uart {
+    fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+        self.read_blocking(buf)
+    }
+}
+
+#[cfg(feature = "embedded-io-07")]
+impl embedded_io_07::Write for Uart {
+    fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+        self.write_blocking(buf)
+    }
+
+    fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+        self.flush_blocking()
+    }
+}
+
+#[cfg(feature = "embedded-io-07")]
+impl embedded_io_async_07::Read for Uart {
+    async fn read(&mut self, buf: &mut [u8]) -> std::result::Result<usize, Self::Error> {
+        self.read_async_inner(buf).await
+    }
+}
+
+#[cfg(feature = "embedded-io-07")]
+impl embedded_io_async_07::Write for Uart {
+    async fn write(&mut self, buf: &[u8]) -> std::result::Result<usize, Self::Error> {
+        self.write_async_inner(buf).await
+    }
+
+    async fn flush(&mut self) -> std::result::Result<(), Self::Error> {
+        self.flush_async_inner().await
     }
 }
 
@@ -2170,25 +2286,89 @@ mod tests {
         assert_eq!(err.kind(), embedded_hal::spi::ErrorKind::Other);
     }
 
+    #[cfg(feature = "embedded-io-06")]
     #[test]
-    fn uart_error_kind_invalid_baud_rate() {
-        use embedded_io::Error as _;
+    fn uart_error_kind_invalid_baud_rate_io_06() {
+        use embedded_io_06::Error as _;
         let err = UartHalError::Uart(UartError::InvalidBaudRate);
-        assert_eq!(err.kind(), embedded_io::ErrorKind::InvalidInput);
+        assert_eq!(err.kind(), embedded_io_06::ErrorKind::InvalidInput);
     }
 
+    #[cfg(feature = "embedded-io-06")]
     #[test]
-    fn uart_error_kind_overrun() {
-        use embedded_io::Error as _;
+    fn uart_error_kind_overrun_io_06() {
+        use embedded_io_06::Error as _;
         let err = UartHalError::Uart(UartError::Overrun);
-        assert_eq!(err.kind(), embedded_io::ErrorKind::Other);
+        assert_eq!(err.kind(), embedded_io_06::ErrorKind::Other);
     }
 
+    #[cfg(feature = "embedded-io-06")]
     #[test]
-    fn uart_error_kind_comms() {
-        use embedded_io::Error as _;
+    fn uart_error_kind_comms_io_06() {
+        use embedded_io_06::Error as _;
         let err = UartHalError::Comms("USB disconnected".into());
-        assert_eq!(err.kind(), embedded_io::ErrorKind::Other);
+        assert_eq!(err.kind(), embedded_io_06::ErrorKind::Other);
+    }
+
+    #[cfg(feature = "embedded-io-07")]
+    #[test]
+    fn uart_error_kind_invalid_baud_rate_io_07() {
+        use embedded_io_07::Error as _;
+        let err = UartHalError::Uart(UartError::InvalidBaudRate);
+        assert_eq!(err.kind(), embedded_io_07::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(feature = "embedded-io-07")]
+    #[test]
+    fn uart_error_kind_overrun_io_07() {
+        use embedded_io_07::Error as _;
+        let err = UartHalError::Uart(UartError::Overrun);
+        assert_eq!(err.kind(), embedded_io_07::ErrorKind::Other);
+    }
+
+    #[cfg(feature = "embedded-io-07")]
+    #[test]
+    fn uart_error_kind_comms_io_07() {
+        use embedded_io_07::Error as _;
+        let err = UartHalError::Comms("USB disconnected".into());
+        assert_eq!(err.kind(), embedded_io_07::ErrorKind::Other);
+    }
+
+    #[cfg(feature = "embedded-io-06")]
+    #[test]
+    fn uart_implements_embedded_io_06_traits() {
+        fn assert_blocking<
+            T: embedded_io_06::Read<Error = UartHalError> + embedded_io_06::Write,
+        >() {
+        }
+        fn assert_async<
+            T: embedded_io_async_06::Read<Error = UartHalError> + embedded_io_async_06::Write,
+        >() {
+        }
+        assert_blocking::<Uart>();
+        assert_async::<Uart>();
+    }
+
+    #[cfg(feature = "embedded-io-07")]
+    #[test]
+    fn uart_implements_embedded_io_07_traits() {
+        fn assert_blocking<
+            T: embedded_io_07::Read<Error = UartHalError> + embedded_io_07::Write,
+        >() {
+        }
+        fn assert_async<
+            T: embedded_io_async_07::Read<Error = UartHalError> + embedded_io_async_07::Write,
+        >() {
+        }
+        assert_blocking::<Uart>();
+        assert_async::<Uart>();
+    }
+
+    #[cfg(all(feature = "embedded-io-06", feature = "embedded-io-07"))]
+    #[test]
+    fn uart_implements_both_embedded_io_majors() {
+        fn assert_both<T: embedded_io_06::Read + embedded_io_07::Read>() {}
+        assert_both::<Uart>();
     }
 
     #[test]

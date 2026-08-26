@@ -123,6 +123,11 @@ The HAL layer implements the standard `embedded_io` and `embedded_io_async`
 traits, so the UART can be used with any driver that accepts generic
 readers or writers.
 
+The `embedded-io-06` Cargo feature remains enabled by default, while
+`embedded-io-07` can be enabled additively. See
+[Feature Flags](../crates/hal.md#feature-flags) for the details. The
+snippets below are identical either way.
+
 **Blocking** — `embedded_io::Read` + `embedded_io::Write`:
 
 ```rust,no_run
@@ -150,7 +155,7 @@ use embedded_io_async::{Read, Write};
 use pico_de_gallo_hal::Hal;
 
 async fn uart_loopback_async(hal: &Hal) {
-    let mut uart = hal.uart_async();
+    let mut uart = hal.uart();
 
     uart.write_all(&[0x48, 0x65, 0x6C, 0x6C, 0x6F]).await.unwrap();
     uart.flush().await.unwrap();

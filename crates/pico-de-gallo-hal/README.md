@@ -35,6 +35,7 @@ for more usage patterns.
 | GPIO       | `OutputPin`, `InputPin`, `StatefulOutputPin` | `Wait`                |
 | I²C       | `I2c`                                        | `I2c`                 |
 | SPI        | `SpiBus`, `SpiDevice`                        | `SpiBus`, `SpiDevice` |
+| UART       | `embedded_io::Read`, `embedded_io::Write`    | `embedded_io_async::Read`, `embedded_io_async::Write` |
 | Delay      | `DelayNs`                                    | `DelayNs`             |
 
 `SpiDevice` manages chip-select (CS) automatically via a GPIO pin.
@@ -42,6 +43,29 @@ Use `hal.spi_device(cs_pin)` to create one. It returns
 `Result<SpiDev, SpiHalError>` after validating the pin against the
 device-reported GPIO count. For raw bus access without CS management,
 use `hal.spi()`.
+
+## Feature Flags
+
+`embedded-io` 0.6 and 0.7 have separate feature flags. Enable either
+version on its own, or both to support drivers targeting either major.
+
+| Feature          | Default | `hal.uart()` implements                            |
+|------------------|---------|----------------------------------------------------|
+| `embedded-io-07` | no      | `embedded-io` 0.7 + `embedded-io-async` 0.7 traits |
+| `embedded-io-06` | yes     | `embedded-io` 0.6 + `embedded-io-async` 0.6 traits |
+
+```toml
+# 0.6 only (default)
+pico-de-gallo-hal = "0.7"
+
+# 0.7 only
+pico-de-gallo-hal = { version = "0.7", default-features = false, features = ["embedded-io-07"] }
+
+# both majors
+pico-de-gallo-hal = { version = "0.7", features = ["embedded-io-07"] }
+```
+
+Turning both off drops the `embedded-io` dependency.
 
 # License
 

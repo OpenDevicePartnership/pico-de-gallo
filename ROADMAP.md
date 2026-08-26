@@ -650,6 +650,10 @@ but that's a separate product, not a replacement.
 | `ReadReady`            | `embedded-io`        | ❌       | —     | Future    |
 | `WriteReady`           | `embedded-io`        | ❌       | —     | Future    |
 
+The `embedded-io` rows cover both majors: `pico-de-gallo-hal`'s
+`embedded-io-06` feature remains enabled by default, and
+`embedded-io-07` can be enabled additively for drivers targeting 0.7.
+
 **At 1.0:** every cell should be ✅ or have a documented reason for
 exclusion.
 
