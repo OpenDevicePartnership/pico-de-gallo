@@ -123,9 +123,19 @@ jobs:
 
       - name: Initialise the west workspace
         if: steps.west-cache.outputs.cache-hit != 'true'
+        # `west init --mr` hands its argument to `git clone --branch`, which
+        # accepts only a branch or tag name -- never an arbitrary commit SHA.
+        # So clone blobless (every commit is present, blobs are lazy), detach
+        # onto the pinned revision, then initialise the workspace around that
+        # existing local manifest repo with `west init -l`. West takes the
+        # manifest repo's parent as topdir, so topdir stays `zephyrproject`
+        # and ZEPHYR_BASE remains correct. `west update` then resolves every
+        # module at the revisions named in zephyr/west.yml as of that commit.
         run: |
-          west init -m https://github.com/zephyrproject-rtos/zephyr \
-            --mr "$ZEPHYR_REVISION" zephyrproject
+          git clone --filter=blob:none \
+            https://github.com/zephyrproject-rtos/zephyr zephyrproject/zephyr
+          git -C zephyrproject/zephyr checkout --detach "$ZEPHYR_REVISION"
+          west init -l zephyrproject/zephyr
           cd zephyrproject
           west update --narrow -o=--filter=blob:none
 
