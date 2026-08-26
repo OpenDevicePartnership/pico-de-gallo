@@ -57,19 +57,19 @@ That means coordinating:
 > Nothing enforces wire coupling for you. If a protocol change lands without its
 > matching host and firmware version bumps, users will feel it.
 
-### Pending SPI chip-select schema change
+### Schema 0.7 is on `main` but not yet published
 
-This branch appends `SpiError::{InvalidCsPin, CsPinUnavailable,
-CsPinMonitored}` and adds the final `DeviceInfo::num_gpios` field. Versions
-are intentionally unchanged because the maintainer performs the lockstep bump
-in a separate release commit. This branch must not be tagged or released until
-that bump lands.
+`main` carries schema **0.7**: `SpiError` gained `InvalidCsPin`,
+`CsPinUnavailable`, and `CsPinMonitored`, `DeviceInfo` gained a final
+`num_gpios` field, and `I2cError` gained `ZeroLengthWrite`. The lockstep
+version bump for those changes has landed, so `pico-de-gallo-internal` reports
+0.7 honestly.
 
-`PicoDeGallo::validate()` cannot detect this mismatch: matching schema 0.6.1
-is not evidence of wire-shape compatibility on this branch. Do not mix
-branch-built and released components. Build the host and firmware from the
-same commit, or keep both on a published release. See the detailed
-[schema-freeze warning](./wire-protocol.md#schema-versioning).
+The newest *published* release is still schema 0.6. That is a normal,
+detectable mismatch rather than a hazard: a host built from `main` and a
+released firmware disagree on the reported schema, so `validate()` returns
+`SchemaMismatch` and the two refuse to talk. Build both sides from the same
+commit, or keep both on a published release.
 
 ## How users check compatibility
 
@@ -82,10 +82,6 @@ There are two main compatibility checks:
 
 For most users, `gallo version` is the first stop. For library users,
 `validate()` is the guardrail you call before doing real work.
-
-> **Warning.** During the schema freeze described above, successful validation
-> does not prove wire-shape compatibility. Matching reported versions can still
-> identify incompatible branch-built and released components.
 
 ## “I flashed new firmware and now my host is broken”
 
@@ -104,7 +100,7 @@ flashed, or downgrade the firmware to the host release you are using.
 > **Warning.** The protocol is typed, but a mismatched pair is not guaranteed to
 > fail fast. Because postcard-rpc response keys include the response schema, a
 > mismatched peer may wait indefinitely. See the
-> [wire-protocol warning](./wire-protocol.md#schema-versioning).
+> [wire-protocol warning](./wire-protocol.md#hostfirmware-compatibility-checks).
 
 ## MSRV and release hygiene
 

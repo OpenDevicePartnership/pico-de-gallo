@@ -146,12 +146,6 @@ error to carry. The bound is generous because firmware dispatch is serial
 and a legal maximum-length SPI batch can occupy it for about 275 seconds;
 the point is that the wait is finite, not that it is short.
 
-> **Schema-freeze caveat.** On this branch a successful `validate()` does
-> not prove wire-*shape* compatibility: `DeviceInfo` changed while both
-> host and firmware still report schema 0.6.1. Validation bounds how long
-> you wait and checks the reported numbers; it cannot make those numbers
-> trustworthy.
-
 ```rust,no_run
 use pico_de_gallo_lib::PicoDeGallo;
 

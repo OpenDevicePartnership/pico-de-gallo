@@ -312,10 +312,6 @@ the operation payloads, call the library once, then write outputs. A NULL
 `out_len` is therefore never dereferenced, and an invalid op `tag` or NULL
 `data` pointer is reported only after the device has been reached.
 
-> **Schema-freeze caveat.** On this branch a matching reported schema
-> version does not prove wire-*shape* compatibility: `DeviceInfo` changed
-> while both host and firmware still report 0.6.1.
-
 ### GPIO
 
 ```c

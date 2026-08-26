@@ -114,10 +114,6 @@ so retrying is allowed.
 A `cs_pin` outside `0..=255` raises `OverflowError` during PyO3 argument
 extraction, before the device is contacted.
 
-> **Schema-freeze caveat.** On this branch a successful `validate()` or
-> `open_strict()` does not prove wire-*shape* compatibility: `DeviceInfo`
-> changed while both host and firmware still report schema 0.6.1.
-
 ## Enums and Value Types
 
 The public Python names intentionally do **not** carry a `Py` prefix. You use

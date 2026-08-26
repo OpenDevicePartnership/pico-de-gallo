@@ -124,16 +124,6 @@ That means a pre-1.0 bump is required when you:
 - change a request or response type,
 - append a new wire enum variant.
 
-> **Warning** — schema freeze on the `zephyr` branch.
-> This branch intentionally changes the shape of `SpiError` and `DeviceInfo`
-> **without** changing the reported schema version. Mixed peers are therefore
-> incompatible even when both sides report the same schema: a new host cannot
-> decode an old eight-field `DeviceInfo`, while an old decoder accepts only the
-> eight-field prefix of a new response. Because postcard-rpc response keys
-> include the response schema, a mismatched peer may wait indefinitely rather
-> than fail fast. This branch is not releasable or taggable until the
-> maintainer performs the lockstep version bump required by AGENTS.md §6.5.
-
 ## Host/firmware compatibility checks
 
 The host library exposes `PicoDeGallo::validate()`. It calls `device/info`,
@@ -144,9 +134,19 @@ If validation fails, the host returns:
 - `LegacyFirmware` when the firmware is too old to support `device/info`, or
 - `SchemaMismatch` when the host and firmware disagree on the schema version.
 
-For released components with honest schema versions, this turns an otherwise
-confusing runtime failure into an explicit compatibility error. It cannot detect
-the intentional schema freeze described above.
+This turns an otherwise confusing runtime failure into an explicit
+compatibility error.
+
+Validation compares reported *version numbers*. It is only as trustworthy as
+the discipline that keeps those numbers honest: a schema bump is what makes a
+shape change visible, which is why appending even a single wire enum variant
+requires one.
+
+> [!WARNING]
+> Call `validate()` before doing real work. A mismatched pair is not guaranteed
+> to fail fast on its own: postcard-rpc response keys include the response
+> schema, so a peer that disagrees about a response type may wait indefinitely
+> rather than return an error.
 
 ## Lockstep releases for protocol changes
 

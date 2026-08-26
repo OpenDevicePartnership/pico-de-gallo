@@ -891,12 +891,14 @@ you push any `*-v*` tag:
      cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings && \
      cargo build --release --locked --target thumbv8m.main-none-eabihf
    ```
-2. Do not create or push any component tag while this branch's
-   `SpiError` / `DeviceInfo` wire shape is new but
-   `pico-de-gallo-internal` still reports the old schema version.
-   `PicoDeGallo::validate()` cannot detect that mismatch. Land the
-   lockstep version bump, dep-spec rewrites, and both lockfiles first;
-   build every host and firmware artifact from that bumped commit.
+2. Confirm the schema version is honest before tagging. If the branch
+   changed any wire shape — a request/response field, an endpoint, or an
+   appended enum variant — `pico-de-gallo-internal`'s `[package].version`
+   must already carry the matching bump, because `SCHEMA_VERSION_*` is
+   derived from it (§6.2) and `PicoDeGallo::validate()` cannot detect a
+   shape change hidden behind an unchanged version. Land the lockstep
+   version bump, dep-spec rewrites, and both lockfiles first; build every
+   host and firmware artifact from that bumped commit.
 3. Confirm `git tag --points-at HEAD` matches expectation **and**
    that the workflow YAML at HEAD is the version you want CI to run
    (see §13.13).
