@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- The `i2c_write` and `i2c_batch` tools reject an empty write payload with an
+  invalid-argument error before connecting to a board, naming the offending
+  operation index in the batch case. Previously the empty payload was
+  forwarded and surfaced as a device error, which misattributed a bad
+  argument to the hardware. `parse_bytes` is deliberately unchanged and still
+  maps `""` to an empty vector, because `i2c_write_read` legitimately accepts
+  an empty write phase. Closes #136.
+
 - Documented that the `i2c_batch` tool executes one I²C transaction: adjacent
   same-direction operations concatenate, direction changes use a repeated
   START, and only the final operation receives a STOP. A bus failure reports

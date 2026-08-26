@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `I2c::write(addr, &[])` and any transaction containing an empty `Write`
+  operation now fail without a USB round-trip, inheriting the guard added to
+  `pico-de-gallo-lib`. No HAL code changed. `embedded-hal` permits an empty
+  write and some drivers use it as a probe, but this hardware genuinely
+  cannot perform one, so the honest answer is an error: `I2cHalError::I2c(
+  ZeroLengthWrite)`, whose `ErrorKind` is `Other`. It is deliberately not
+  `NoAcknowledge`, which would wrongly imply the bus was driven and the
+  target stayed silent. Tests pin both the conversion and the kind. Closes
+  #136.
+
 - Documented the corrected I²C transaction semantics inherited from firmware.
   The HAL implements only `I2c::transaction`; the embedded-hal defaults for
   `read`, `write`, and `write_read` all route through it and therefore through

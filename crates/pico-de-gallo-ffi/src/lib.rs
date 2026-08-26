@@ -844,6 +844,16 @@ pub unsafe extern "C" fn gallo_i2c_write(
         return Status::InvalidArgument;
     }
 
+    // Refuse an empty payload before touching the device (issue #136).
+    // The RP2040/RP2350 I2C block cannot emit an address-only
+    // transaction, so this can never succeed; firmware refuses it too,
+    // but refusing here costs no USB round-trip. Probe an address with
+    // `gallo_i2c_read` or `gallo_i2c_scan` instead.
+    if len == 0 {
+        eprintln!("zero-length I2C write is not supported by this hardware");
+        return Status::InvalidArgument;
+    }
+
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
     let gallo = unsafe { &*gallo };
@@ -1443,9 +1453,12 @@ pub unsafe extern "C" fn gallo_spi_batch(
 /// | 0     | `Read`  | `read_len`          |
 /// | 1     | `Write` | `data`, `data_len`  |
 ///
-/// Unused fields for a given variant are ignored. `data` may be `NULL`
-/// when `data_len` is zero. The tag values are part of the stable C ABI;
-/// do not renumber.
+/// Unused fields for a given variant are ignored. For a `Write`,
+/// `data_len` must be non-zero and `data` must point to that many bytes:
+/// this hardware cannot emit an address-only transaction, so a
+/// zero-length write is refused with [`Status::InvalidArgument`] before
+/// any bus access, and `out_failed_op` names the offending operation.
+/// The tag values are part of the stable C ABI; do not renumber.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct GalloI2cBatchOp {
@@ -1490,8 +1503,9 @@ pub struct GalloI2cBatchOp {
 /// Caller must ensure that:
 /// - `gallo` is a valid opaque pointer returned by `gallo_init()`.
 /// - `ops` points to `ops_count` initialized [`GalloI2cBatchOp`] values.
-/// - For each op with `data_len > 0`, the `data` pointer is valid for
-///   `data_len` bytes for the duration of the call.
+/// - For each `Write` op, `data` is valid for `data_len` bytes for the
+///   duration of the call. `data_len` must be non-zero; a zero-length
+///   write is refused before any bus access (issue #136).
 /// - `out_buf` is valid for `out_capacity` bytes when `out_capacity > 0`.
 /// - `out_len` is non-NULL and points to a writable `usize`.
 /// - `out_failed_op`, if non-NULL, points to a writable `u16`.
@@ -1527,9 +1541,6 @@ pub unsafe extern "C" fn gallo_i2c_batch(
         return Status::InvalidArgument;
     }
 
-    // Safety: caller must ensure that `gallo` is a valid opaque pointer.
-    let gallo = unsafe { &*gallo };
-
     // Safety: caller must ensure `ops` is valid for `ops_count` elements.
     let raw_ops: &[GalloI2cBatchOp] = if ops_count == 0 {
         &[]
@@ -1537,21 +1548,40 @@ pub unsafe extern "C" fn gallo_i2c_batch(
         unsafe { std::slice::from_raw_parts(ops, ops_count) }
     };
 
+    // Refuse an empty Write payload before touching the device (issue
+    // #136). This runs with the other argument checks, ahead of the
+    // device dereference, so an invalid batch costs neither a USB
+    // round-trip nor a valid `gallo` pointer. `out_failed_op` names the
+    // offending operation, matching the firmware's contract for
+    // validation errors.
+    for (i, op) in raw_ops.iter().enumerate() {
+        if op.tag == GalloI2cBatchOpTag::Write as u8 && op.data_len == 0 {
+            eprintln!("op {i}: zero-length I2C write is not supported by this hardware");
+            if !out_failed_op.is_null() {
+                unsafe { *out_failed_op = i as u16 };
+            }
+            unsafe { *out_len = 0 };
+            return Status::InvalidArgument;
+        }
+    }
+
+    // Safety: caller must ensure that `gallo` is a valid opaque pointer.
+    let gallo = unsafe { &*gallo };
+
     let mut typed: Vec<I2cBatchOp<'_>> = Vec::with_capacity(raw_ops.len());
     for (i, op) in raw_ops.iter().enumerate() {
         let typed_op = match op.tag {
             0 => I2cBatchOp::Read { len: op.read_len },
             1 => {
-                let data = if op.data_len == 0 {
-                    &[][..]
-                } else if op.data.is_null() {
+                if op.data.is_null() {
                     eprintln!("op {i}: NULL data with non-zero data_len");
                     return Status::InvalidArgument;
-                } else {
-                    // Safety: caller must ensure data is valid for data_len bytes.
-                    unsafe { std::slice::from_raw_parts(op.data, op.data_len) }
-                };
-                I2cBatchOp::Write { data }
+                }
+                // Safety: caller must ensure data is valid for data_len bytes.
+                // `data_len == 0` was already refused above.
+                I2cBatchOp::Write {
+                    data: unsafe { std::slice::from_raw_parts(op.data, op.data_len) },
+                }
             }
             other => {
                 eprintln!("op {i}: invalid tag {other}");
@@ -4821,5 +4851,112 @@ mod tests {
 
         assert_eq!(GalloI2cBatchOpTag::Read as u8, 0);
         assert_eq!(GalloI2cBatchOpTag::Write as u8, 1);
+    }
+
+    // --- Zero-length I2C write refusal (issue #136) ---
+    //
+    // These use the `0xDEAD_BEEF` device sentinel: the guards under test
+    // fire before the pointer is ever dereferenced, so no real device is
+    // needed. A test that reached the device would dereference the
+    // sentinel and crash, which is itself the proof the guard ran first.
+
+    #[test]
+    fn i2c_write_zero_len_returns_invalid_argument() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let buf = [0u8; 1];
+        let status = unsafe { gallo_i2c_write(sentinel, 0x48, buf.as_ptr(), 0) };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn i2c_write_zero_len_null_buf_still_returns_invalid_argument() {
+        // The pre-existing NULL check already covers this pair; pin it so
+        // adding the length guard cannot accidentally reorder the two into
+        // returning something else for (NULL, 0).
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let status = unsafe { gallo_i2c_write(sentinel, 0x48, std::ptr::null(), 0) };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn i2c_batch_zero_len_write_returns_invalid_argument_and_sets_failed_op() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let payload = [0xAAu8];
+        let ops = [
+            GalloI2cBatchOp {
+                tag: GalloI2cBatchOpTag::Write as u8,
+                read_len: 0,
+                data: payload.as_ptr(),
+                data_len: 1,
+            },
+            GalloI2cBatchOp {
+                tag: GalloI2cBatchOpTag::Read as u8,
+                read_len: 2,
+                data: std::ptr::null(),
+                data_len: 0,
+            },
+            GalloI2cBatchOp {
+                tag: GalloI2cBatchOpTag::Write as u8,
+                read_len: 0,
+                data: std::ptr::null(),
+                data_len: 0,
+            },
+        ];
+        let mut out = [0u8; 8];
+        let mut out_len: usize = 99;
+        let mut failed_op: u16 = 0xFFFF;
+        let status = unsafe {
+            gallo_i2c_batch(
+                sentinel,
+                0x48,
+                ops.as_ptr(),
+                ops.len(),
+                out.as_mut_ptr(),
+                out.len(),
+                &mut out_len as *mut usize,
+                &mut failed_op as *mut u16,
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
+        assert_eq!(failed_op, 2, "must name the offending op, not the first");
+        assert_eq!(out_len, 0, "a refused batch returns no read data");
+    }
+
+    #[test]
+    fn i2c_batch_zero_len_write_tolerates_null_failed_op() {
+        let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
+        let ops = [GalloI2cBatchOp {
+            tag: GalloI2cBatchOpTag::Write as u8,
+            read_len: 0,
+            data: std::ptr::null(),
+            data_len: 0,
+        }];
+        let mut out_len: usize = 99;
+        let status = unsafe {
+            gallo_i2c_batch(
+                sentinel,
+                0x48,
+                ops.as_ptr(),
+                ops.len(),
+                std::ptr::null_mut(),
+                0,
+                &mut out_len as *mut usize,
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(status, Status::InvalidArgument);
+        assert_eq!(out_len, 0);
+    }
+
+    #[test]
+    fn zero_length_write_maps_to_invalid_argument_not_buffer_too_long() {
+        // `BufferTooLong` displays as "buffer exceeds firmware limit",
+        // which is actively misleading for a zero-byte buffer. Pin the
+        // mapping so a future edit cannot quietly reuse it, and pin the
+        // numeric value because Status is stable C ABI.
+        let status = i2c_error_to_status(PicoDeGalloError::Endpoint(I2cError::ZeroLengthWrite));
+        assert_eq!(status, Status::InvalidArgument);
+        assert_ne!(status, Status::BufferTooLong);
+        assert_eq!(status as i32, -5);
     }
 }

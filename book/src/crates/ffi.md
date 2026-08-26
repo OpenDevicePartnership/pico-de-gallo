@@ -197,7 +197,7 @@ name than a number — see [Limits and configuration enums](#limits-and-configur
 typedef struct GalloI2cBatchOp {
     uint8_t       tag;       // 0 = Read, 1 = Write
     uint16_t      read_len;  // Read variant
-    const uint8_t *data;     // Write variant (may be NULL when data_len == 0)
+    const uint8_t *data;     // Write variant (must be non-NULL; data_len > 0)
     size_t        data_len;  // Write variant
 } GalloI2cBatchOp;
 
@@ -214,6 +214,13 @@ precede the first operation; adjacent operations of the same type are sent back
 to back with no STOP and no repeated START between them, so two adjacent Write
 ops form one gather write; a direction change emits a repeated START and
 re-addresses the target; and only the last operation is followed by a STOP.
+
+A `Write` op must carry at least one byte. `gallo_i2c_batch` rejects
+`data_len == 0` with `InvalidArgument` before contacting the device,
+writing the offending operation's index to `*out_failed_op`. Likewise
+`gallo_i2c_write` rejects `len == 0`. This hardware cannot emit an
+address-only transaction — see
+[Zero-length writes](../interfaces/i2c.md#zero-length-writes-are-not-supported).
 
 This requires firmware built from schema 0.7 or newer. Older firmware executes
 each operation as a separate transaction. Zero-length writes are rejected.

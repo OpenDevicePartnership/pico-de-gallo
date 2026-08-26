@@ -148,7 +148,15 @@ pub fn list_devices() -> Vec<DeviceDescription> {
 pub enum PicoDeGalloError<E> {
     /// A transport-level communication error (USB disconnect, timeout, wire format error).
     Comms(HostErr<WireError>),
-    /// The firmware processed the request but returned an error.
+    /// The request was rejected with an endpoint-specific error.
+    ///
+    /// Usually the firmware processed the request and returned this. A few
+    /// requests are refused locally, before transmission, when the host can
+    /// prove the firmware would reject them — a zero-length I2C write, for
+    /// instance (issue #136). Those carry the identical error value the
+    /// firmware would have returned, so callers need not distinguish the
+    /// two, and must not assume this variant implies the device was
+    /// contacted.
     Endpoint(E),
 }
 
@@ -282,6 +290,59 @@ fn check_schema_compatible(info: &DeviceInfo) -> Result<(), ValidateError> {
             expected_minor: SCHEMA_VERSION_MINOR,
             actual_minor: info.schema_minor,
         });
+    }
+    Ok(())
+}
+
+/// Returns `Err(I2cError::ZeroLengthWrite)` if `contents` is empty.
+///
+/// The RP2040/RP2350 `DW_apb_i2c` block cannot emit an address-only
+/// transaction: the address phase is driven solely by pushing at least one
+/// byte into `IC_DATA_CMD`, so a zero-length write is not merely
+/// unsupported but physically unreachable. Forwarding one to firmware
+/// built before schema 0.7 wedges the device dispatcher outright — every
+/// endpoint, not just I2C — until USB re-enumeration (issue #101).
+///
+/// Current firmware refuses it, so this guard is not what keeps the device
+/// alive. It exists so the refusal costs no USB round-trip, and so every
+/// host surface reports the same thing whatever firmware is attached.
+/// Probe an address with a 1-byte read or with `i2c/scan` instead.
+///
+/// `i2c/write-read` is deliberately **not** guarded: an empty write phase
+/// there is legal and useful, because that transfer does not terminate
+/// with a STOP and so returns rather than parking.
+///
+/// Extracted so the policy is independently testable (issue #136).
+fn check_i2c_write_payload(contents: &[u8]) -> Result<(), I2cError> {
+    if contents.is_empty() {
+        return Err(I2cError::ZeroLengthWrite);
+    }
+    Ok(())
+}
+
+/// Returns `Err` naming the first [`I2cBatchOp::Write`] in `ops` that
+/// carries an empty payload.
+///
+/// Validates the whole list before anything is transmitted, mirroring the
+/// firmware, which validates a batch up front rather than mid-execution so
+/// that a rejected batch never drives its earlier operations onto the bus.
+///
+/// `failed_op` carries the offending operation's exact index. This matches
+/// the firmware's contract for *validation* errors; only *bus* errors
+/// collapse to `failed_op = 0`, because an atomic transaction fails as a
+/// unit (issue #128).
+///
+/// Extracted so the policy is independently testable (issue #136).
+fn check_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Result<(), I2cBatchError> {
+    for (i, op) in ops.iter().enumerate() {
+        if let I2cBatchOp::Write { data } = op
+            && let Err(kind) = check_i2c_write_payload(data)
+        {
+            return Err(I2cBatchError {
+                failed_op: i as u16,
+                kind,
+            });
+        }
     }
     Ok(())
 }
@@ -493,6 +554,7 @@ impl PicoDeGallo {
 
     /// Write `contents` to the I2C device at `address`.
     pub async fn i2c_write(&self, address: u8, contents: &[u8]) -> Result<(), PicoDeGalloError<I2cError>> {
+        check_i2c_write_payload(contents).map_err(PicoDeGalloError::Endpoint)?;
         self.client
             .send_resp::<I2cWrite>(&I2cWriteRequest { address, contents })
             .await?
@@ -572,6 +634,7 @@ impl PicoDeGallo {
         address: u8,
         ops: &[I2cBatchOp<'_>],
     ) -> Result<Vec<u8>, PicoDeGalloError<I2cBatchError>> {
+        check_i2c_batch_ops(ops).map_err(PicoDeGalloError::Endpoint)?;
         let encoded = encode_i2c_batch_ops(ops);
         self.client
             .send_resp::<I2cBatch>(&I2cBatchRequest {
@@ -1499,6 +1562,12 @@ mod tests {
                 "device/info"
             } else if hdr.key == VarKey::Key8(SpiBatch::REQ_KEY) {
                 "spi/batch"
+            } else if hdr.key == VarKey::Key8(I2cWrite::REQ_KEY) {
+                "i2c/write"
+            } else if hdr.key == VarKey::Key8(I2cBatch::REQ_KEY) {
+                "i2c/batch"
+            } else if hdr.key == VarKey::Key8(I2cWriteRead::REQ_KEY) {
+                "i2c/write-read"
             } else {
                 "other"
             };
@@ -2361,5 +2430,268 @@ mod tests {
             second.num_gpios, 4,
             "validate() must report the stored byte, not the freshly fetched one"
         );
+    }
+
+    // --- Zero-length I2C write refusal (issue #136) ---
+    //
+    // The firmware has refused an empty payload since #133, so these tests
+    // are about refusing it *here*, without spending a USB round-trip to be
+    // told no. The `count(...) == 0` assertions are the load-bearing ones:
+    // they prove the guard fires before transmission rather than merely
+    // reshaping the error that comes back.
+    //
+    // Each refusal test scripts a `CloseWire` it never expects to consume.
+    // Without the guard the request is transmitted and the scripted reply
+    // fails the call promptly; with an unscripted (`Silent`) plan the same
+    // test would instead hang forever, exactly as the wedged device does —
+    // an accurate reproduction, but a useless test failure.
+
+    #[tokio::test]
+    async fn i2c_write_empty_payload_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.i2c_write(0x48, &[]).await {
+            Err(PicoDeGalloError::Endpoint(I2cError::ZeroLengthWrite)) => {}
+            other => panic!("expected Endpoint(ZeroLengthWrite), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/write"), 0, "a local refusal must transmit nothing");
+    }
+
+    #[tokio::test]
+    async fn i2c_write_non_empty_payload_reaches_the_wire() {
+        // Positive control for the test above: proves the harness can see an
+        // `i2c/write` at all, so its `count == 0` is a real observation and
+        // not an artifact of the classifier missing the endpoint.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.i2c_write(0x48, &[0x01]).await;
+        assert_eq!(script.count("i2c/write"), 1, "a non-empty write must still be sent");
+    }
+
+    #[tokio::test]
+    async fn i2c_batch_empty_write_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![I2cBatchOp::Write { data: &[] }];
+        match pg.i2c_batch(0x48, &ops).await {
+            Err(PicoDeGalloError::Endpoint(I2cBatchError {
+                failed_op,
+                kind: I2cError::ZeroLengthWrite,
+            })) => assert_eq!(failed_op, 0),
+            other => panic!("expected Endpoint(I2cBatchError{{ZeroLengthWrite}}), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/batch"), 0, "a local refusal must transmit nothing");
+    }
+
+    #[tokio::test]
+    async fn i2c_batch_reports_index_of_offending_write() {
+        // Catches a guard that always reports 0, and an off-by-one. The
+        // firmware retains the exact index for validation errors (only bus
+        // errors collapse to 0, because the transaction fails as a unit), so
+        // the local refusal must agree. Confirmed on hardware: a batch of
+        // [Read(1), Write([])] is refused by firmware with failed_op == 1.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![
+            I2cBatchOp::Write { data: &[0x01] },
+            I2cBatchOp::Read { len: 2 },
+            I2cBatchOp::Write { data: &[] },
+        ];
+        match pg.i2c_batch(0x48, &ops).await {
+            Err(PicoDeGalloError::Endpoint(I2cBatchError {
+                failed_op,
+                kind: I2cError::ZeroLengthWrite,
+            })) => assert_eq!(failed_op, 2, "must name the offending operation, not the first"),
+            other => panic!("expected Endpoint(I2cBatchError{{ZeroLengthWrite}}), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn i2c_batch_all_non_empty_writes_reach_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![I2cBatchOp::Write { data: &[0x01] }, I2cBatchOp::Read { len: 2 }];
+        let _ = pg.i2c_batch(0x48, &ops).await;
+        assert_eq!(script.count("i2c/batch"), 1, "a valid batch must still be sent");
+    }
+
+    #[tokio::test]
+    async fn i2c_write_read_still_accepts_empty_contents() {
+        // `i2c/write-read` with an empty payload is legal and must stay that
+        // way: `write_read_async` passes `send_stop = false`, so it returns
+        // early instead of parking on a `STOP_DET` that never arrives. This
+        // was verified on hardware in #135. A guard that leaks from
+        // `i2c_write` into this path would break address probing.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.i2c_write_read(0x48, &[], 2).await;
+        assert_eq!(
+            script.count("i2c/write-read"),
+            1,
+            "empty write-read must not be refused locally"
+        );
+    }
+}
+
+/// Hardware-in-the-loop checks for the zero-length I2C write guards
+/// (issue #136).
+///
+/// **Ignored by default**: these need a board attached, so CI — which has
+/// none — must not run them. Run them explicitly:
+///
+/// ```bash
+/// cargo test -p pico-de-gallo-lib -- --ignored --test-threads=1
+/// ```
+///
+/// # Bench setup
+///
+/// - One Pico de Gallo attached. Set `GALLO_TEST_SERIAL` to pick a
+///   specific board; with exactly one attached it may be omitted.
+/// - An I2C target that tolerates a pointer-register write at
+///   `GALLO_TEST_I2C_ADDR` (default `0x48`, a TMP102). Only
+///   [`empty_batch_write_never_reaches_the_bus`] needs it; the others
+///   need any responding address.
+///
+/// # Why these exist on top of the unit tests
+///
+/// The unit tests prove the guards refuse locally and transmit nothing,
+/// against a scripted transport. They cannot prove the guards left real
+/// bus behaviour alone. These do: a positive control that a normal write
+/// still works, the `write-read` path that is legal-but-empty, and a
+/// pointer-register witness showing a refused batch never drove its
+/// leading operation onto the bus.
+///
+/// # What these cannot prove
+///
+/// They cannot show the refusal was *local*. Firmware has refused an
+/// empty payload since #133 and this guard deliberately returns the
+/// identical error value, so removing the host guard would leave every
+/// assertion here still passing — only slower. Locality is proven by the
+/// `count(...) == 0` assertions in the unit tests, and nowhere else.
+///
+/// A useful bench control, since three of these drive the bus: point
+/// `GALLO_TEST_I2C_ADDR` at an unpopulated address and they must fail
+/// with `NoAcknowledge`. Only
+/// [`empty_write_is_refused_and_the_device_stays_responsive`] should
+/// still pass, because its guard fires before any addressing happens.
+#[cfg(test)]
+mod hardware {
+    use super::*;
+
+    /// Serialises the suite over the single board. WinUSB grants exclusive
+    /// interface access, so two concurrent tests would fight over the claim
+    /// and fail as if the driver were broken.
+    static BENCH: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    /// Open the board under test, failing loudly if the bench is not set up.
+    ///
+    /// Validates up front so a schema mismatch is reported as a bench
+    /// problem here rather than as a mysterious product failure later.
+    async fn board() -> PicoDeGallo {
+        let pg = match std::env::var("GALLO_TEST_SERIAL") {
+            Ok(s) => PicoDeGallo::try_new_with_serial_number(&s)
+                .unwrap_or_else(|e| panic!("GALLO_TEST_SERIAL={s} is set but that board did not open: {e}")),
+            Err(_) => {
+                let attached = list_devices();
+                assert_eq!(
+                    attached.len(),
+                    1,
+                    "expected exactly one attached board (found {}); set GALLO_TEST_SERIAL to choose one",
+                    attached.len()
+                );
+                PicoDeGallo::try_new().expect("the sole attached board did not open")
+            }
+        };
+        pg.validate()
+            .await
+            .expect("attached firmware failed validation; flash a build matching this tree");
+        pg
+    }
+
+    /// The witness target address.
+    fn addr() -> u8 {
+        match std::env::var("GALLO_TEST_I2C_ADDR") {
+            Ok(s) => {
+                let t = s.trim();
+                let parsed = t
+                    .strip_prefix("0x")
+                    .or_else(|| t.strip_prefix("0X"))
+                    .map(|h| u8::from_str_radix(h, 16))
+                    .unwrap_or_else(|| t.parse::<u8>());
+                parsed.unwrap_or_else(|e| panic!("GALLO_TEST_I2C_ADDR={s:?} is not a byte: {e}"))
+            }
+            Err(_) => 0x48,
+        }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board; see module docs"]
+    async fn empty_write_is_refused_and_the_device_stays_responsive() {
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+        let a = addr();
+
+        match pg.i2c_write(a, &[]).await {
+            Err(PicoDeGalloError::Endpoint(I2cError::ZeroLengthWrite)) => {}
+            other => panic!("expected Endpoint(ZeroLengthWrite), got {other:?}"),
+        }
+
+        // The whole point of issue #101 was that this request wedged every
+        // endpoint device-wide. Prove the device still answers.
+        pg.i2c_scan(false)
+            .await
+            .expect("device unresponsive after a refused empty write");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board; see module docs"]
+    async fn non_empty_write_still_reaches_the_bus() {
+        // Positive control. Without this, the test above would also pass if
+        // the guard refused *every* write.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+        pg.i2c_write(addr(), &[0x00])
+            .await
+            .expect("a one-byte pointer write must still succeed");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board and a TMP102-like target; see module docs"]
+    async fn empty_batch_write_never_reaches_the_bus() {
+        // Replicates the witness method from #135: if the refused batch had
+        // executed its leading operation, the target's pointer register
+        // would move and the follow-up read would return a different
+        // register. It must not.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+        let a = addr();
+
+        pg.i2c_write(a, &[0x00]).await.expect("seed pointer to register 0x00");
+        let before = pg.i2c_read(a, 2).await.expect("baseline read");
+
+        let ops = vec![I2cBatchOp::Write { data: &[0x01] }, I2cBatchOp::Write { data: &[] }];
+        match pg.i2c_batch(a, &ops).await {
+            Err(PicoDeGalloError::Endpoint(I2cBatchError {
+                failed_op,
+                kind: I2cError::ZeroLengthWrite,
+            })) => assert_eq!(failed_op, 1, "must name the offending operation"),
+            other => panic!("expected Endpoint(I2cBatchError{{ZeroLengthWrite}}), got {other:?}"),
+        }
+
+        let after = pg.i2c_read(a, 2).await.expect("witness read");
+        assert_eq!(
+            before, after,
+            "the refused batch moved the pointer register, so its leading write reached the bus"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board; see module docs"]
+    async fn empty_write_read_still_returns_data() {
+        // `i2c/write-read` with an empty write phase is legal, because that
+        // transfer does not terminate with a STOP. Verified on hardware in
+        // #135; pinned here so the write guard cannot leak into this path.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+        let got = pg
+            .i2c_write_read(addr(), &[], 2)
+            .await
+            .expect("empty write-read must still work");
+        assert_eq!(got.len(), 2);
     }
 }

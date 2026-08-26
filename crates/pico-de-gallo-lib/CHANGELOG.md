@@ -9,12 +9,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `PicoDeGallo::i2c_write` and `PicoDeGallo::i2c_batch` refuse a zero-length
+  write locally, before transmitting. Firmware has refused it since #101, so
+  this does not change which requests succeed — it removes a USB round-trip
+  spent being told no, and makes the refusal independent of the attached
+  firmware. Both return the value firmware would have returned:
+  `Endpoint(I2cError::ZeroLengthWrite)`, and for a batch an `I2cBatchError`
+  whose `failed_op` is the offending operation's exact index. A batch is
+  validated in full before anything is sent, so a rejected batch never drives
+  an earlier operation onto the bus. `i2c_write_read` is deliberately
+  unaffected: an empty write phase there is legal, because that transfer does
+  not terminate with a STOP. Closes #136.
+
+- Reworded `PicoDeGalloError::Endpoint` documentation. It previously said the
+  firmware had processed the request, which a locally refused request makes
+  untrue. Callers still need not distinguish the two cases, but must not infer
+  from this variant that the device was contacted.
+
 - Documented that `PicoDeGallo::i2c_batch` executes its operations as one I²C
   transaction: adjacent same-direction operations concatenate, direction
   changes use a repeated START, and only the final operation receives a STOP.
   Bus failures report `failed_op = 0` for the transaction as a whole, while
   validation failures retain an exact index. The Rust API and wire shape are
   unchanged. Closes #128.
+
+### Added
+
+- Hardware-in-the-loop tests for the zero-length write guards, `#[ignore]`d by
+  default so CI does not run them. Run with
+  `cargo test -p pico-de-gallo-lib -- --ignored --test-threads=1`; see the
+  `hardware` module documentation for bench setup.
 
 ## [0.8.0] — 2026-08-24
 

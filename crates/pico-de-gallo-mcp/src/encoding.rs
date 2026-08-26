@@ -108,6 +108,27 @@ pub fn validate_timeout_ms(ms: u32) -> Result<u32, String> {
     Ok(ms)
 }
 
+/// Validate that an I2C write payload is non-empty.
+///
+/// The RP2040/RP2350 I2C block cannot emit an address-only transaction,
+/// so a zero-length write can never succeed. Firmware refuses it, but
+/// refusing here reports it as an invalid argument — which it is — rather
+/// than as a device error, and costs no USB round-trip (issue #136).
+///
+/// Only the write paths use this. [`parse_bytes`] still maps `""` to an
+/// empty vector, because an empty write phase is legal for
+/// `i2c_write_read`, whose transfer does not terminate with a STOP.
+pub fn validate_i2c_write_payload(data: &[u8]) -> Result<(), String> {
+    if data.is_empty() {
+        return Err(
+            "zero-length I2C write is not supported by this hardware; probe an address \
+             with i2c_read or i2c_scan instead"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +193,31 @@ mod tests {
     fn validate_timeout_rejects_zero() {
         assert!(validate_timeout_ms(0).is_err());
         assert_eq!(validate_timeout_ms(1000).unwrap(), 1000);
+    }
+
+    // --- Zero-length I2C write refusal (issue #136) ---
+
+    #[test]
+    fn validate_i2c_write_payload_rejects_empty() {
+        let err = validate_i2c_write_payload(&[]).expect_err("empty payload must be refused");
+        assert!(
+            err.contains("zero-length"),
+            "message must name the problem, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn validate_i2c_write_payload_accepts_one_byte() {
+        assert!(validate_i2c_write_payload(&[0x00]).is_ok());
+    }
+
+    #[test]
+    fn parse_bytes_still_yields_empty_for_empty_input() {
+        // `parse_bytes` deliberately keeps returning an empty vec: an empty
+        // payload is legal for `i2c_write_read`, whose write phase does not
+        // terminate with a STOP. Only the write paths refuse it, and they
+        // do so via `validate_i2c_write_payload` rather than by tightening
+        // the shared parser.
+        assert_eq!(parse_bytes("").unwrap(), Vec::<u8>::new());
     }
 }

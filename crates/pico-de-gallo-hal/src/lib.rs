@@ -2263,6 +2263,56 @@ mod tests {
         assert_eq!(err.kind(), embedded_hal::i2c::ErrorKind::Other);
     }
 
+    // --- Zero-length I2C write refusal (issue #136) ---
+    //
+    // `pico-de-gallo-lib` refuses an empty write before transmitting, so
+    // the HAL inherits the guard rather than reimplementing it. These two
+    // tests pin the contract that inheritance depends on: the refusal must
+    // survive the error conversion intact, and must surface as a plain
+    // `Other`.
+
+    #[test]
+    fn zero_length_write_survives_conversion_from_lib_error() {
+        // If the `From` impl ever remapped or swallowed this variant, the
+        // HAL would report something other than what the lib decided.
+        let converted = I2cHalError::from(PicoDeGalloError::Endpoint(I2cError::ZeroLengthWrite));
+        match converted {
+            I2cHalError::I2c(I2cError::ZeroLengthWrite) => {}
+            other => panic!("expected I2c(ZeroLengthWrite), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn zero_length_write_survives_conversion_from_batch_error() {
+        let converted = I2cHalError::from(PicoDeGalloError::Endpoint(
+            pico_de_gallo_lib::I2cBatchError {
+                failed_op: 3,
+                kind: I2cError::ZeroLengthWrite,
+            },
+        ));
+        match converted {
+            I2cHalError::I2c(I2cError::ZeroLengthWrite) => {}
+            other => panic!("expected I2c(ZeroLengthWrite), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn i2c_error_kind_other_for_zero_length_write() {
+        // `embedded-hal` permits `I2c::write(addr, &[])` and some drivers
+        // use it as a probe, but this hardware genuinely cannot perform it.
+        // `Other` is the honest answer; mapping it to `NoAcknowledge` would
+        // wrongly imply the bus was driven and the target stayed silent.
+        use embedded_hal::i2c::Error as _;
+        let err = I2cHalError::I2c(I2cError::ZeroLengthWrite);
+        assert_eq!(err.kind(), embedded_hal::i2c::ErrorKind::Other);
+        assert_ne!(
+            err.kind(),
+            embedded_hal::i2c::ErrorKind::NoAcknowledge(
+                embedded_hal::i2c::NoAcknowledgeSource::Unknown
+            )
+        );
+    }
+
     #[test]
     fn spi_error_kind_is_other() {
         use embedded_hal::spi::Error as _;

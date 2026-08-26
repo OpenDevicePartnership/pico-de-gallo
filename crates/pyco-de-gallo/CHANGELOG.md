@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `PycoDeGallo.i2c_write(addr, b"")`, and any `i2c_batch` containing an empty
+  write payload, now raise `RuntimeError` without a USB round-trip,
+  inheriting the guard added to `pico-de-gallo-lib`. No binding code changed
+  and the Python API is unchanged; the message is the same one firmware
+  returned before. `i2c_write_read` still accepts an empty write phase.
+  Closes #136.
+
 - Documented that `PycoDeGallo.i2c_batch` executes one I²C transaction:
   adjacent same-direction operations concatenate, direction changes use a
   repeated START, and only the final operation receives a STOP. A bus failure
