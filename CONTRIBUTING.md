@@ -18,7 +18,7 @@ pull request so that the project team can discuss the situation with you.
 
 We use [Conventional Commits](https://www.conventionalcommits.org/)
 with a crate scope for readable history, scoping, and to guide the
-hand-written CHANGELOG at release time (see
+hand-written per-crate CHANGELOGs at release time (see
 [`.github/RELEASE.md`](.github/RELEASE.md)).
 
 Format:

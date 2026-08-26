@@ -3,8 +3,8 @@
 Releases in this repository are performed **by hand**. There is no
 release automation: no release-please, no bots opening release PRs,
 no auto-generated CHANGELOG. A maintainer bumps versions, writes the
-CHANGELOG, merges to `main`, and pushes tags. The tag-triggered
-publish workflows then take over.
+per-crate CHANGELOGs, merges to `main`, and pushes tags. The
+tag-triggered publish workflows then take over.
 
 > **Why manual?** The release-please setup caused repeated,
 > hard-to-diagnose problems (version/manifest drift that silently
@@ -111,9 +111,11 @@ component. Adjust the crate set for a non-wire, single-crate release.
    - `hal`, `ffi`, `application`, `mcp`, `pyco` → `lib`
    - `firmware` → `internal` (separate workspace — do not forget it)
 
-4. **Update `CHANGELOG.md`** by hand, following
-   [Keep a Changelog](https://keepachangelog.com/). Add a dated
-   section per crate that changed. This is no longer generated — an
+4. **Update each changed crate's `crates/<crate>/CHANGELOG.md`** by
+   hand, following [Keep a Changelog](https://keepachangelog.com/).
+   There is no root `CHANGELOG.md`: every crate owns its own, and the
+   Zephyr module uses `zephyr/CHANGELOG.md`. Add a dated section per
+   crate that changed. This is no longer generated — an
    empty or missing entry means the release ships undocumented.
 
 5. **Regenerate both lockfiles** so they match the new versions:
@@ -141,7 +143,7 @@ component. Adjust the crate set for a non-wire, single-crate release.
    chore(release): internal/lib/hal 0.7.0, ffi/application 0.8.0, ...
    ```
    The version bumps, dep-spec bumps, both `Cargo.lock`s, and the
-   `CHANGELOG.md` edits all belong in one commit.
+   per-crate `CHANGELOG.md` edits all belong in one commit.
 
 8. **Open a PR, get CI green, merge to `main`** (rebase or
    merge-commit — no squash).

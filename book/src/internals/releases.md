@@ -22,15 +22,18 @@ Each published surface has its own release tag prefix:
 ## What drives a release?
 
 Releases are **manual**. A maintainer bumps each crate's
-`[package].version`, updates the cross-crate dependency specs and the
-`CHANGELOG.md`, merges to `main`, and then pushes one tag per component. The
-tag-triggered `release-*.yml` workflows publish to crates.io / PyPI and build
-the binary artifacts.
+`[package].version`, updates the cross-crate dependency specs and each
+changed crate's `crates/<crate>/CHANGELOG.md`, merges to `main`, and then
+pushes one tag per component. The tag-triggered `release-*.yml` workflows
+publish to crates.io / PyPI and build the binary artifacts.
+
+There is no root changelog. Every crate owns its own, and the Zephyr module
+uses `zephyr/CHANGELOG.md`.
 
 Contributors still land Conventional Commits with crate scopes such as
 `feat(internal): ...` or `fix(firmware): ...` — that scoped history is what a
-maintainer reads when hand-writing the CHANGELOG and deciding which crates to
-bump.
+maintainer reads when hand-writing those changelogs and deciding which crates
+to bump.
 
 > [!TIP]
 > The scope is not decoration. It tells the release author what changed in each
