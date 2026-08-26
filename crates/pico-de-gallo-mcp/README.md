@@ -29,6 +29,20 @@ attached; tools begin working as soon as a Pico de Gallo is plugged in. Logs
 go to stderr; stdout carries the
 MCP protocol.
 
+## Protocol revisions
+
+`gallo-mcp` supports MCP `2024-11-05`, `2025-03-26`, `2025-06-18`,
+`2025-11-25`, and `2026-07-28`, negotiating during `initialize`: it echoes the
+revision the client requests when it is one of those, and otherwise falls back
+to `2025-11-25`.
+
+The tool surface does not vary by revision — the same tools, arguments,
+annotations, and JSON payloads are served to every client. Only the envelope
+differs: a session on `2026-07-28` receives the `resultType` discriminator and
+`ttlMs`/`cacheScope` cache hints on results, and may start with a stateless
+`server/discover` instead of `initialize`. Sessions on `2025-11-25` and older
+keep the legacy wire shape unchanged.
+
 ## SPI chip-select preflight
 
 `spi_batch` runs its steps in a fixed order: parse every operation

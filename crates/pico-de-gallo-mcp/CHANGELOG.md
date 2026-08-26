@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Support for the MCP **2026-07-28** protocol revision, via `rmcp` 3.1.4. A
+  session that negotiates it now receives the SEP-2322 `resultType`
+  discriminator and the SEP-2549 `ttlMs`/`cacheScope` cache hints on results,
+  and the server answers the new stateless `server/discover` RPC. Sessions on
+  2025-11-25 and older keep their existing wire shape byte for byte.
+
+  This closes a gap rather than opening one. `rmcp` 2.2.0 already listed
+  `2026-07-28` in `ProtocolVersion::KNOWN_VERSIONS` and its
+  `negotiate_protocol_version` echoed any known version, so `gallo-mcp`
+  already answered `"protocolVersion": "2026-07-28"` to a client that asked
+  for it — while implementing none of that revision's semantics
+  (`result_type`, `ttl_ms` and `cache_scope` appear nowhere in the 2.2.0
+  source, and `server/discover` did not exist). The advertised revision is
+  now one the server actually serves.
+
 ### Changed
 
 - The `i2c_write` and `i2c_batch` tools reject an empty write payload with an
@@ -16,6 +33,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   argument to the hardware. `parse_bytes` is deliberately unchanged and still
   maps `""` to an empty vector, because `i2c_write_read` legitimately accepts
   an empty write phase. Closes #136.
+
+- Bumped `rmcp` from 2.2.0 to 3.1.4. The tool surface is unchanged: all 43
+  tools, their names, arguments, annotations and JSON payloads are identical,
+  and no handler needed editing. The 3.0 breaking change with the widest
+  blast radius — MRTR-aware handler return types — is absorbed by
+  `#[tool_handler]`, because this crate implements only `get_info` by hand
+  and never matches on `ServerResult`. The `server`, `macros`,
+  `transport-io` and `schemars` features all still exist and mean the same
+  thing; `server` additionally implies `schemars` and `uuid` in 3.x. Closes
+  #138.
 
 - Documented that the `i2c_batch` tool executes one I²C transaction: adjacent
   same-direction operations concatenate, direction changes use a repeated
