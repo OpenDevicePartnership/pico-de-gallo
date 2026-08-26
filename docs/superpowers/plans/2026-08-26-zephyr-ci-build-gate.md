@@ -816,10 +816,11 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 
 **Files:**
 - Create: `.github/workflows/zephyr.yml`
+- Modify: `zephyr/README.md` (the pinned-SHA line only — the rest of the README lands in Task 5)
 
 **Interfaces:**
 - Consumes: `zephyr/scripts/ci-build.sh` and its `--self-test` mode.
-- Produces: two job IDs, `selftest` and `build`.
+- Produces: two job IDs, `selftest` and `build`; and the literal SHA string in `zephyr/README.md` that this workflow's guard greps for.
 
 - [ ] **Step 1: Write the workflow**
 
@@ -992,19 +993,41 @@ Expected: `CR=0`.
 ```
 Expected: exit 0, no output. The baseline across the ten pre-existing workflows is clean, so any finding belongs to this file.
 
-- [ ] **Step 4: Confirm the SHA agreement step would currently fail**
+- [ ] **Step 4: Record the pinned SHA in the README, so this commit stands alone**
 
-The README does not yet contain the SHA — Task 5 adds it. Confirm the guard is real rather than vacuous:
+The workflow's agreement guard fails against the current README. AGENTS.md rule
+9 requires each commit to build cleanly on its own, so the README line lands
+here rather than in Task 5.
+
+`zephyr/README.md:26` currently reads, in the "Zephyr revision" table row:
+
+> The measured build environment was `main` at `v4.4.0-6123-g26f811ee9d0`.
+
+Replace that first sentence with:
+
+> The measured build environment was `main` at `v4.4.0-6123-g26f811ee9d0d`, commit `26f811ee9d0dc8f67e8e596f6aef9e6e79a55db0`. CI pins that exact commit; `.github/workflows/zephyr.yml` fails if this line and its `ZEPHYR_REVISION` disagree.
+
+Leave the rest of the row — the API dependencies and the "verified baseline
+rather than an asserted minimum" sentence — unchanged. Note the corrected
+`g26f811ee9d0d` spelling: the existing text truncates the `git describe` output
+by one character relative to
+`docs/superpowers/specs/2026-08-17-zephyr-mfd-m1-parent.md:242`.
+
+Then prove the guard is real rather than vacuous, by running both halves of it:
 
 ```powershell
+# The guard's own grep, as the workflow runs it.
 Select-String -Path zephyr/README.md -Pattern '26f811ee9d0dc8f67e8e596f6aef9e6e79a55db0' -Quiet
+# And that the workflow carries the same literal.
+Select-String -Path .github/workflows/zephyr.yml -Pattern '26f811ee9d0dc8f67e8e596f6aef9e6e79a55db0' -Quiet
 ```
-Expected now: `False`. After Task 5: `True`. Record both.
+Expected: `True` twice. If either is `False` the guard is broken, not satisfied.
 
 - [ ] **Step 5: Commit**
 
 ```powershell
-git add .github/workflows/zephyr.yml
+dos2unix .github/workflows/zephyr.yml zephyr/README.md
+git add .github/workflows/zephyr.yml zephyr/README.md
 git commit -m "ci(zephyr): Add the build-only Zephyr module workflow" -m "A fast selftest job runs the assertion parsers against checked-in
 fixtures with no Zephyr workspace, and gates the heavy build job so a
 broken parser does not burn a multi-gigabyte west checkout first.
@@ -1035,25 +1058,24 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 Makes every affected document true. Per AGENTS.md §15.1's carve-out, `zephyr/` has no book chapter, so `zephyr/README.md` plus `zephyr/CHANGELOG.md` satisfies the parity rule and **no `book/src/**` change is required**.
 
 **Files:**
-- Modify: `zephyr/README.md`
+- Modify: `zephyr/README.md` (add the CI section; the SHA line already landed in Task 4)
 - Modify: `zephyr/CHANGELOG.md`
 - Modify: `AGENTS.md` (four sites)
 
 **Interfaces:**
-- Consumes: the literal SHA from the workflow `env:`.
-- Produces: the README string the workflow's agreement step greps for.
+- Consumes: the SHA line Task 4 wrote to `zephyr/README.md`.
+- Produces: nothing later tasks depend on.
 
-- [ ] **Step 1: Record the full SHA in the README**
+- [ ] **Step 1: Confirm the pinned SHA is already recorded**
 
-`zephyr/README.md:26` currently reads, in the "Zephyr revision" table row:
+Task 4 added the SHA line to `zephyr/README.md:26` so that its own commit would
+stand alone. Verify it survived and do not add it twice:
 
-> The measured build environment was `main` at `v4.4.0-6123-g26f811ee9d0`.
-
-Replace that first sentence with:
-
-> The measured build environment was `main` at `v4.4.0-6123-g26f811ee9d0d`, commit `26f811ee9d0dc8f67e8e596f6aef9e6e79a55db0`. CI pins that exact commit; `.github/workflows/zephyr.yml` fails if this line and its `ZEPHYR_REVISION` disagree.
-
-Leave the rest of the row — the API dependencies and the "verified baseline rather than an asserted minimum" sentence — unchanged. Note the corrected `g26f811ee9d0d` spelling: the existing text truncates the `git describe` output by one character relative to `docs/superpowers/specs/2026-08-17-zephyr-mfd-m1-parent.md:242`.
+```powershell
+Select-String -Path zephyr/README.md -Pattern '26f811ee9d0dc8f67e8e596f6aef9e6e79a55db0' | ForEach-Object { "$($_.LineNumber): $($_.Line.Trim())" }
+```
+Expected: exactly one match. If there are zero, Task 4 regressed — restore it
+before continuing. If there are two, remove the duplicate.
 
 - [ ] **Step 2: Add a CI section to the README**
 
@@ -1181,9 +1203,9 @@ the module compiles and links and is not evidence it works. The
 distinction the original paragraph protected survives; only the
 'nothing builds it at all' claim goes.
 
-The README now records the full 40-character commit, which the
-workflow greps for, and corrects the git describe spelling that was
-truncated by one character against the M1 spec.
+The README gains a section documenting how to reproduce a CI failure
+locally and restating the build-only limit, since a green check is
+exactly what a reader will be tempted to over-read.
 
 No book change: AGENTS.md section 15.1's carve-out makes
 zephyr/README.md and zephyr/CHANGELOG.md authoritative for
@@ -1396,7 +1418,7 @@ Expected: no commit mentioning MUTATION; the final run green.
 | Criterion | Satisfied by |
 |---|---|
 | A workflow builds at least the two viable samples for `native_sim/native/64` on PRs touching `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/` | Task 4. Exceeded: eight targets, and `Cargo.toml`/`Cargo.lock` added to the filter because Corrosion imports with `LOCKED` |
-| The pinned Zephyr revision is recorded in the workflow and in `zephyr/README.md`, and the two agree | Task 4 Step 1 (the guard), Task 5 Step 1 (the README). Enforced mechanically, not by convention |
+| The pinned Zephyr revision is recorded in the workflow and in `zephyr/README.md`, and the two agree | Task 4 Steps 1 and 4 — the workflow `env:`, the README line, and the guard that fails the job when they disagree, all in one commit. Enforced mechanically, not by convention |
 | A deliberate FFI symbol rename fails the job (do not merge the mutation) | Task 6 Steps 4-5 |
 | `actionlint` passes; the workflow file is LF-only per AGENTS.md §3 | Task 4 Steps 2-3, re-checked in Task 6 Step 1 |
 | Item 2 of Suggested scope: assert the IS31 samples fail identically to baseline | Task 3 `assert_basefail`, per M1 §6.2 and M6 §3.5 |
