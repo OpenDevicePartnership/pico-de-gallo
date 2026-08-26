@@ -5,6 +5,20 @@ All notable changes to `pico-de-gallo-internal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- Appended `I2cError::ZeroLengthWrite` at index 7, after `Other`. The
+  firmware now returns it instead of forwarding an empty payload to
+  `embassy_rp::i2c::write_async`, which never returns on RP2040/RP2350
+  and wedges the dispatcher device-wide. Closes #101.
+- Appending a wire enum variant requires a schema minor bump under
+  AGENTS.md §6.2. Schema 0.7 is bumped in-repo but **not yet tagged or
+  published**, so a maintainer may either fold this variant into the
+  unreleased 0.7.0 or take internal to 0.8.0. That is a deliberate
+  release-time decision; no version is assigned here.
+
 ## [0.7.0] — 2026-08-24
 
 ### Breaking Changes

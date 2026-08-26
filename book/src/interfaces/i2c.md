@@ -212,6 +212,34 @@ side; FFI returns negative `Status` values:
 | `BufferTooLong`      | Request exceeds firmware buffer limit    |
 | `AddressOutOfRange`  | Address outside the 7-bit range          |
 | `Other`              | Unspecified firmware error               |
+| `ZeroLengthWrite`    | Write requested with an empty payload    |
 
 The full status-code mapping for FFI lives in
 [`appendix/status-codes.md`](../appendix/status-codes.md).
+`ZeroLengthWrite` maps to `InvalidArgument` (-5).
+
+## Zero-Length Writes Are Not Supported
+
+A write with an empty payload — the address-only `START + ADDR + STOP`
+probe that some I²C stacks use for bus scanning — is rejected by the
+firmware with `ZeroLengthWrite`. This applies to `i2c/write` and to any
+`Write` operation inside an `i2c/batch`; the batch is refused as a whole
+during validation, so no earlier operation in it reaches the bus.
+
+The restriction is a hardware limitation, not a firmware policy choice.
+The RP2040/RP2350 `DW_apb_i2c` block drives the address phase only as a
+side effect of pushing data into `IC_DATA_CMD`, so there is no way to
+emit an address without at least one payload byte. See
+[rp-rs/rp-hal#678](https://github.com/rp-rs/rp-hal/issues/678) and
+[embassy-rs/embassy#4474](https://github.com/embassy-rs/embassy/issues/4474).
+
+To probe for a device, use a 1-byte read instead:
+
+```bash
+gallo i2c read --address 0x48 --count 1   # NoAcknowledge => absent
+gallo i2c scan                            # or scan the whole bus
+```
+
+`i2c/scan` already probes this way. Note that a read probe is not
+semantically identical to a write probe: a write-only device may
+acknowledge its write address while refusing a read address.

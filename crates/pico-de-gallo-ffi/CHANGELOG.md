@@ -5,6 +5,17 @@ All notable changes to `pico-de-gallo-ffi` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `I2cError::ZeroLengthWrite` (new upstream in `pico-de-gallo-internal`)
+  maps to the existing `InvalidArgument = -5`. No new status code is
+  added: `Status` values are stable C ABI, and a new value falls through
+  the exhaustive `switch ((enum Status)x)` that C consumers are told to
+  write. A zero-length write is an argument this hardware cannot honour,
+  so `InvalidArgument` is the honest existing code. Closes #101.
+
 ## [0.8.0] — 2026-08-24
 
 ### Added

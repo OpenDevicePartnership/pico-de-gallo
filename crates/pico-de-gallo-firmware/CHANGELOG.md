@@ -5,6 +5,26 @@ All notable changes to `pico-de-gallo-firmware` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `i2c/write` and `i2c/batch` now refuse an empty write payload with
+  `I2cError::ZeroLengthWrite` instead of forwarding it to
+  `embassy_rp::i2c::write_async`. The RP2040/RP2350 `DW_apb_i2c` block
+  drives the address phase only by pushing bytes into `IC_DATA_CMD`, so
+  an address-only `START + ADDR + STOP` is physically unreachable
+  (rp-rs/rp-hal#678, embassy-rs/embassy#4474). embassy-rp 0.10.0 guards
+  this in `write_blocking_internal` but not in `write_async_internal`:
+  with an empty iterator it queues no command, starts no transaction, and
+  then still awaits a `STOP_DET`/`TX_ABRT` interrupt that can never fire.
+  Because postcard-rpc dispatches handlers serially, that await wedged
+  every endpoint on the device until USB re-enumeration, and the
+  independently fed watchdog did not fire. Reachable from the C FFI,
+  `pico-de-gallo-lib`, the embedded-hal `I2c::write` impl, Python, MCP
+  and Zephyr. In a batch the refusal happens during validation, so no
+  earlier operation in that batch reaches the bus. Closes #101.
+
 ## [0.11.0] — 2026-08-24
 
 ### Fixed

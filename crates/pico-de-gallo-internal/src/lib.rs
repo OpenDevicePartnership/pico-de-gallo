@@ -362,6 +362,18 @@ pub enum I2cError {
     AddressOutOfRange,
     /// An unspecified error occurred in the firmware.
     Other,
+    /// A write was requested with an empty payload.
+    ///
+    /// The RP2040/RP2350 `DW_apb_i2c` block cannot emit an address-only
+    /// transaction: the address phase is driven solely by pushing at least
+    /// one byte into `IC_DATA_CMD`, so `START + ADDR + STOP` is physically
+    /// unreachable (rp-rs/rp-hal#678, embassy-rs/embassy#4474). Forwarding
+    /// such a write to `embassy_rp::i2c::write_async` starts no transaction
+    /// yet still waits for a `STOP_DET`/`TX_ABRT` interrupt that can never
+    /// arrive, which wedges the firmware dispatcher device-wide. The
+    /// firmware therefore refuses the request up front. Probe an address
+    /// with a 1-byte read (`i2c/read`) or with `i2c/scan` instead.
+    ZeroLengthWrite,
 }
 
 impl core::fmt::Display for I2cError {
@@ -374,6 +386,9 @@ impl core::fmt::Display for I2cError {
             Self::BufferTooLong => write!(f, "buffer exceeds firmware limit"),
             Self::AddressOutOfRange => write!(f, "I2C address out of range"),
             Self::Other => write!(f, "I2C error"),
+            Self::ZeroLengthWrite => {
+                write!(f, "zero-length I2C write is not supported by this hardware")
+            }
         }
     }
 }
@@ -1839,21 +1854,88 @@ mod tests {
 
     // --- Error enum round-trip tests ---
 
+    /// Compile-time exhaustiveness tripwire. Appending a variant to
+    /// [`I2cError`] is legal on the wire, but must not happen silently:
+    /// this stops compiling until the author has seen — and extended — the
+    /// hand-maintained tables below and the exhaustive match sites in
+    /// `pico-de-gallo-ffi`.
+    fn i2c_error_variant_index_witness(e: I2cError) -> u8 {
+        match e {
+            I2cError::Bus => 0,
+            I2cError::NoAcknowledge => 1,
+            I2cError::ArbitrationLoss => 2,
+            I2cError::Overrun => 3,
+            I2cError::BufferTooLong => 4,
+            I2cError::AddressOutOfRange => 5,
+            I2cError::Other => 6,
+            I2cError::ZeroLengthWrite => 7,
+        }
+    }
+
+    const I2C_ERROR_VARIANTS: [I2cError; 8] = [
+        I2cError::Bus,
+        I2cError::NoAcknowledge,
+        I2cError::ArbitrationLoss,
+        I2cError::Overrun,
+        I2cError::BufferTooLong,
+        I2cError::AddressOutOfRange,
+        I2cError::Other,
+        I2cError::ZeroLengthWrite,
+    ];
+
     #[test]
     fn i2c_error_variants_round_trip() {
-        for err in [
-            I2cError::Bus,
-            I2cError::NoAcknowledge,
-            I2cError::ArbitrationLoss,
-            I2cError::Overrun,
-            I2cError::BufferTooLong,
-            I2cError::AddressOutOfRange,
-            I2cError::Other,
-        ] {
+        for err in I2C_ERROR_VARIANTS {
             let bytes = to_allocvec(&err).unwrap();
             let decoded: I2cError = from_bytes(&bytes).unwrap();
             assert_eq!(err, decoded);
         }
+    }
+
+    #[test]
+    fn i2c_error_variant_indices_are_stable() {
+        // These values are deployed wire ABI. This test must NOT be updated
+        // to accommodate an insertion, a swap, or a deletion — changing an
+        // index is a deployed wire break. Appending a new variant at index 8
+        // is the only legal change. See AGENTS.md §6.1 and §13.17.
+        for (index, variant) in I2C_ERROR_VARIANTS.iter().copied().enumerate() {
+            let n = u8::try_from(index).unwrap();
+            assert_eq!(to_allocvec(&variant).unwrap().as_slice(), &[n][..]);
+            let decoded: I2cError = from_bytes(&[n]).unwrap();
+            assert_eq!(decoded, variant);
+            assert_eq!(i2c_error_variant_index_witness(variant), n);
+        }
+    }
+
+    #[test]
+    fn i2c_error_encodings_are_distinct() {
+        for (i, a_variant) in I2C_ERROR_VARIANTS.iter().enumerate() {
+            for (j, b_variant) in I2C_ERROR_VARIANTS.iter().enumerate().skip(i + 1) {
+                let a = to_allocvec(a_variant).unwrap();
+                let b = to_allocvec(b_variant).unwrap();
+                assert_ne!(a, b, "I2cError variants {i} and {j} share an encoding");
+            }
+        }
+    }
+
+    #[test]
+    fn i2c_error_rejects_unknown_variant_index() {
+        // Index 8 is one past the last defined variant. If a ninth variant
+        // is ever appended, this probe must move to the new first-unused
+        // index rather than being deleted.
+        assert!(from_bytes::<I2cError>(&[8u8]).is_err());
+    }
+
+    #[test]
+    fn i2c_error_zero_length_write_is_appended_last() {
+        // Regression guard for issue #101. `ZeroLengthWrite` was appended
+        // after `Other`; asserting its index here means a future insertion
+        // above it fails loudly instead of silently remapping a deployed
+        // firmware's error codes.
+        assert_eq!(
+            to_allocvec(&I2cError::ZeroLengthWrite).unwrap().as_slice(),
+            &[7u8][..]
+        );
     }
 
     #[test]
@@ -1901,6 +1983,10 @@ mod tests {
             "I2C address out of range"
         );
         assert_eq!(format!("{}", I2cError::Other), "I2C error");
+        assert_eq!(
+            format!("{}", I2cError::ZeroLengthWrite),
+            "zero-length I2C write is not supported by this hardware"
+        );
     }
 
     /// Compile-time exhaustiveness tripwire. Appending a variant to

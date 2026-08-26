@@ -402,6 +402,12 @@ fn i2c_error_to_status(e: PicoDeGalloError<I2cError>) -> Status {
         PicoDeGalloError::Endpoint(I2cError::BufferTooLong) => Status::BufferTooLong,
         PicoDeGalloError::Endpoint(I2cError::AddressOutOfRange) => Status::I2cAddressOutOfRange,
         PicoDeGalloError::Endpoint(I2cError::Other) => Status::I2cReadFailed,
+        // Deliberately reuses the existing InvalidArgument code rather than
+        // adding a new one: Status values are stable C ABI, and a new value
+        // falls through existing C consumers' exhaustive switches (AGENTS.md
+        // §8, and the 2026-08-17 row in §13.17). A zero-length write is an
+        // argument this hardware cannot honour, so InvalidArgument is honest.
+        PicoDeGalloError::Endpoint(I2cError::ZeroLengthWrite) => Status::InvalidArgument,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
     }
 }
@@ -3819,6 +3825,41 @@ mod tests {
     fn num_gpios_null_handle_takes_precedence_over_null_output() {
         let status = unsafe { gallo_num_gpios(std::ptr::null(), std::ptr::null_mut()) };
         assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn i2c_error_to_status_maps_zero_length_write_to_invalid_argument() {
+        // Issue #101. A zero-length write is refused by the firmware because
+        // the RP2350 cannot put an address-only transaction on the wire. It
+        // is deliberately mapped onto the pre-existing InvalidArgument code
+        // rather than a new one: Status values are stable C ABI, and adding
+        // one silently falls through `switch ((enum Status)x)` in existing C
+        // consumers (see AGENTS.md §8 and the 2026-08-17 row in §13.17).
+        assert_eq!(
+            i2c_error_to_status(PicoDeGalloError::Endpoint(I2cError::ZeroLengthWrite)),
+            Status::InvalidArgument
+        );
+    }
+
+    #[test]
+    fn i2c_error_to_status_zero_length_write_does_not_displace_other_arms() {
+        // Regression: the new arm must not shadow the pre-existing mappings.
+        assert_eq!(
+            i2c_error_to_status(PicoDeGalloError::Endpoint(I2cError::NoAcknowledge)),
+            Status::I2cNack
+        );
+        assert_eq!(
+            i2c_error_to_status(PicoDeGalloError::Endpoint(I2cError::BufferTooLong)),
+            Status::BufferTooLong
+        );
+        assert_eq!(
+            i2c_error_to_status(PicoDeGalloError::Endpoint(I2cError::Other)),
+            Status::I2cReadFailed
+        );
+        assert_eq!(
+            i2c_error_to_status(PicoDeGalloError::Comms(lib::HostErr::Closed)),
+            Status::CommsFailed
+        );
     }
 
     #[test]
