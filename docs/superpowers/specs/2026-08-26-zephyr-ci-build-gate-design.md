@@ -240,19 +240,41 @@ Target 6 deliberately does not link `m5_bottom.c`; its `CMakeLists.txt` says so
 explicitly ("This image uses only the Zephyr GPIO API. It needs no host-context
 shim"). Target 5 sets `CONFIG_GPIO=n` and `CONFIG_SPI=n` in `prj.conf`.
 
-Object-file suffix is matched tolerantly (`.o` or `.obj`) because it varies by
-generator and platform.
+The two halves are detected by different means, following M4's measured
+practice. Zephyr-side translation units appear in the build's
+`compile_commands.json`; native_simulator-side units do not, because the runner
+is a separate sub-build, so those are located as object files. Object-file
+suffix is matched tolerantly (`.o` or `.obj`) because it varies by generator and
+platform.
 
 ## 5. Assertion contracts
+
+All four mechanisms below are taken from
+`docs/superpowers/specs/2026-08-19-zephyr-mfd-m4-acceptance.md` (checks A-01,
+A-08 and A-11) and `2026-08-17-zephyr-mfd-m3-gpio-tests.md` §"Ordinal
+resolution". They are reused verbatim rather than reinvented, because they were
+executed against real builds of this module and this design cannot be executed
+locally before merge.
 
 ### 5.1 Pass targets (1, 2, 5, 6, 7, 8)
 
 1. `west build` exits zero.
 2. `libpico_de_gallo_ffi.a` exists under the build directory — proves Corrosion
    built the crate and cbindgen generated the header.
-3. Every Zephyr-side object in the §4.1 row exists under the build directory.
-4. Every native_simulator-side object in the §4.1 row exists under the build
-   directory — this is the half that actually calls `gallo_*`.
+3. `grep -o 'pdg_[a-z0-9_]*\.c' <build>/compile_commands.json | sort -u` equals
+   the target's Zephyr-side set from §4.1. This is M4 A-01's mechanism.
+4. Every native_simulator-side object in the §4.1 row is found under the build
+   directory by name — this is the half that actually calls `gallo_*`. M4 A-08
+   locates the same objects this way.
+5. `<build>/zephyr/.config` contains `CONFIG_MFD_PICO_DE_GALLO=y` plus the
+   `CONFIG_{GPIO,I2C,SPI}_PICO_DE_GALLO=y` entries implied by the target's §4.1
+   row. A Kconfig symbol silently dropping to `n` is the precise mechanism by
+   which a vacuous pass would occur, so it is asserted directly rather than
+   inferred from the compiled set.
+
+Assertion 3 uses set equality, not containment: a target that compiles *more*
+drivers than its overlay enables is as much a signal of a broken overlay as one
+that compiles fewer.
 
 ### 5.2 Baseline-failure targets (3, 4)
 
@@ -266,12 +288,24 @@ generator and platform.
 4. `N` equals the ordinal resolved for the `is31fl3743b@0` node from
    `<build>/zephyr/include/generated/zephyr/devicetree_generated.h`.
 
-The ordinal in step 4 is recovered by matching the generated `#define` whose name
-contains the node identifier `is31fl3743b_0` and ends in `_ORD`, then taking its
-value. The full define name embeds the node's whole devicetree path, which the
-shield may change, so the script matches on the node fragment and the `_ORD`
-suffix rather than on a hard-coded symbol. The exact generated spelling is
-confirmed on the first CI run; §7.3 records it as a known first-run risk.
+Step 4 reuses M3's measured resolution idiom, which maps ordinal to node rather
+than the reverse:
+
+```bash
+grep -o '__device_dts_ord_[0-9]*' "$log" | sort -u | while read -r s; do
+  n=${s##*_}
+  grep -n "DT_N_.*ORD $n\$" "$build"/zephyr/include/generated/zephyr/devicetree_generated.h
+done
+```
+
+The trailing `$` anchor is load-bearing: it pins the match to the `_ORD` define
+whose value is the bare ordinal, excluding the sibling `_ORD_STR_SORTABLE`
+define, whose value is a quoted string. The resolved define name embeds the
+node's full devicetree path, which the shield can change, so the resulting name
+is then required to contain `is31fl3743b`. M4 A-11 recorded the resolved path as
+`/pico-de-gallo/spi/is31fl3743b@0` for both targets, and recorded distinct
+ordinals for them (49 and 50), which is why cross-sample ordinal identity must
+never be asserted.
 
 Steps 3 and 4 together are the per-sample attribution D5 requires, expressed
 without reference to any literal ordinal.
@@ -347,10 +381,24 @@ The mutation is never merged.
 
 ### 7.3 Not verifiable before first CI run
 
-Everything else. The first CI run is the first execution of both new files. The
-most likely first-run failures, in descending order of probability, are a missing
-apt package, an object-file path or suffix mismatch in the §5.1 assertion, and the
-`devicetree_generated.h` define spelling in §5.2 step 4.
+Everything else. The first CI run is the first execution of both new files.
+
+Reusing M3's and M4's measured idioms (§5) removes the largest category of
+guesswork, since those greps ran against real builds of this module. What remains
+unverified is the surrounding scaffolding rather than the assertion logic. In
+descending order of expected probability:
+
+1. A missing or misnamed apt package in the runner setup.
+2. `west` workspace or `ZEPHYR_BASE` resolution, mitigated by invoking builds
+   from the workspace root with absolute source paths.
+3. The native_simulator object-file path or suffix in §5.1 assertion 4, which is
+   the one place a `find` by name could come up empty for a benign reason.
+4. Cache key or restore behaviour on the first populated run.
+
+None of these are silent-pass failures: each fails loudly and visibly. The
+failure mode this design most needs to avoid — a green run that proves nothing —
+is guarded by §5.1 assertions 3 and 5, and independently by the §7.2 mutation
+check.
 
 ## 8. Follow-ups, deliberately not in this change
 
