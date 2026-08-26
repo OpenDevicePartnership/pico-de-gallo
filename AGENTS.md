@@ -44,8 +44,10 @@ the project — see §6.
 │   ├── copilot-instructions.md      # Detailed agent reference (read it)
 │   └── RELEASE.md                   # manual release playbook
 ├── book/                            # mdBook → opendevicepartnership.github.io/pico-de-gallo/
+├── docs/                            # design specs, plans, agent guides (NOT the book)
 ├── hardware/                        # KiCad landing-board PCB
 ├── case/                            # FreeCAD enclosure
+├── zephyr/                          # Zephyr module — documented in its own README (§15.1)
 ├── Cargo.toml                       # HOST workspace (7 members)
 ├── Cargo.lock                       # COMMITTED — keep it in sync
 └── crates/
@@ -854,6 +856,30 @@ update at least the chapter(s) on the right:
 | `zephyr/` — drivers, DT bindings, sample overlays           | `zephyr/README.md`, `zephyr/CHANGELOG.md`, the relevant `book/src/interfaces/*` chapter |
 | `hardware/` — KiCad changes (new revision, pin remap)       | `book/src/hardware/{overview,revisions,pinout}.md`                       |
 | `CHANGELOG.md`                                              | Hand-write the entry (Keep a Changelog); it is not auto-generated.       |
+
+**Carve-out — `zephyr/` has no book chapter, deliberately.** The
+Zephyr module is documented in `zephyr/README.md` (the authoritative
+detailed guide) and `zephyr/CHANGELOG.md`, **not** in `book/`. The
+book carries only deliberate cross-references into it: the Zephyr
+sections in `book/src/interfaces/{spi,gpio}.md`, the `BufferTooLong`
+entry in `book/src/appendix/troubleshooting.md`, and the 1013-byte
+containment warnings in `book/src/crates/{app,ffi,lib,mcp,python}.md`.
+
+This is a ruling, not an oversight. See
+`docs/superpowers/specs/2026-08-24-zephyr-mfd-m6-docs.md` §6.3 and
+§9 item 3: *"Add a dedicated Zephyr book chapter. Rejected as
+duplication while the module remains WIP and `zephyr/README.md` is
+intentionally authoritative."* Consequences:
+
+- **Reviewers must not block a `zephyr/`-only PR for lacking a
+  `book/src/**` change.** Updating `zephyr/README.md` and
+  `zephyr/CHANGELOG.md` satisfies §15.1 for that PR.
+- A `zephyr/` change that alters something the book *does* describe
+  (an interface chapter's Zephyr section, a transfer limit, a
+  status code) still needs the paired book edit.
+- **Revisit trigger:** the chapter question reopens when the
+  upstreaming work in #98 lands. M6 §12 defers it explicitly to
+  "after upstreaming" — until then, do not re-litigate it per PR.
 
 **Reviewer checklist (humans *and* the GitHub Copilot reviewer).**
 For every PR, confirm:
