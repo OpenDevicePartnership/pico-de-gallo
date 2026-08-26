@@ -4,6 +4,8 @@ use defmt::{debug, warn};
 use embassy_embedded_hal::SetConfig;
 use embassy_rp::i2c;
 use embassy_time::{Duration, with_timeout};
+use embedded_hal_async::i2c::{I2c as _, Operation};
+use heapless::Vec as HeaplessVec;
 use pico_de_gallo_internal::{
     I2cBatchError, I2cBatchOp, I2cBatchRequest, I2cBatchResponse, I2cError, I2cFrequency, I2cGetConfigurationResponse,
     I2cReadRequest, I2cReadResponse, I2cScanRequest, I2cScanResponse, I2cSetConfigurationRequest,
@@ -138,12 +140,17 @@ pub(crate) async fn i2c_scan_handler<'a>(
     Ok(&context.buf[..found])
 }
 
-/// Handler for `i2c/batch` — executes multiple I2C operations in one USB transfer.
+/// Handler for `i2c/batch` — executes multiple I2C operations as one transaction.
 ///
-/// Decodes postcard-serialized ops and executes each operation sequentially.
-/// Read data is accumulated in `context.buf`. If any operation fails,
-/// subsequent operations are skipped and the error includes the index of
-/// the failed operation.
+/// Decodes postcard-serialized ops and issues a single
+/// `embedded_hal_async::i2c::I2c::transaction`, so the batch matches the
+/// `embedded-hal` contract: adjacent same-type operations concatenate with no
+/// intervening STOP, a direction change emits a repeated START, and only the
+/// last operation carries a STOP.
+///
+/// Read data is accumulated in `context.buf` in operation order. Validation
+/// failures name the offending operation; a bus failure applies to the
+/// transaction as a whole and reports `failed_op = 0`.
 pub(crate) async fn i2c_batch_handler<'a>(
     context: &'a mut Context,
     _header: VarHeader,
@@ -208,44 +215,51 @@ pub(crate) async fn i2c_batch_handler<'a>(
         req.address, count, total_read
     );
 
-    // Execute ops
-    let mut remaining = ops;
-    let mut read_offset = 0usize;
-    let mut op_index = 0u16;
+    // Split the context so the bus and the scratch buffer are borrowed disjointly.
+    let Context { i2c, buf, .. } = context;
 
-    while !remaining.is_empty() {
-        let (op, rest) = postcard::take_from_bytes::<I2cBatchOp>(remaining).unwrap();
-        remaining = rest;
-
-        match op {
-            I2cBatchOp::Read { len } => {
-                let len = len as usize;
-                let buf = &mut context.buf[read_offset..read_offset + len];
-                context
-                    .i2c
-                    .read_async(req.address, buf)
-                    .await
-                    .map_err(|e| I2cBatchError {
-                        failed_op: op_index,
-                        kind: map_i2c_error(e),
-                    })?;
-                read_offset += len;
-            }
-            I2cBatchOp::Write { data } => {
-                context
-                    .i2c
-                    .write_async(req.address, data.iter().copied())
-                    .await
-                    .map_err(|e| I2cBatchError {
-                        failed_op: op_index,
-                        kind: map_i2c_error(e),
-                    })?;
+    // Materialise the operations, carving disjoint read slices out of buf, then
+    // run the whole list as ONE transaction. Adjacent same-type operations
+    // concatenate with no intervening STOP, a direction change emits a repeated
+    // START, and only the final operation is followed by a STOP.
+    let mut ops_vec: HeaplessVec<Operation<'_>, MAX_BATCH_OPS> = HeaplessVec::new();
+    {
+        let mut free = &mut buf[..total_read];
+        let mut remaining = ops;
+        while !remaining.is_empty() {
+            // Validation above already proved every op decodes.
+            let (op, rest) = postcard::take_from_bytes::<I2cBatchOp>(remaining).unwrap();
+            remaining = rest;
+            let pushed = match op {
+                I2cBatchOp::Read { len } => {
+                    let (head, tail) = free.split_at_mut(len as usize);
+                    free = tail;
+                    ops_vec.push(Operation::Read(head))
+                }
+                I2cBatchOp::Write { data } => ops_vec.push(Operation::Write(data)),
+            };
+            // `count <= MAX_BATCH_OPS` was checked above, so this cannot overflow.
+            if pushed.is_err() {
+                return Err(I2cBatchError {
+                    failed_op: 0,
+                    kind: I2cError::BufferTooLong,
+                });
             }
         }
-        op_index += 1;
-    }
 
-    Ok(&context.buf[..read_offset])
+        // A bus failure belongs to the transaction as a whole and cannot be
+        // attributed to one operation, so it reports `failed_op = 0`.
+        // Validation failures above keep their exact index.
+        i2c.transaction(req.address, &mut ops_vec)
+            .await
+            .map_err(|e| I2cBatchError {
+                failed_op: 0,
+                kind: map_i2c_error(e),
+            })?;
+    }
+    drop(ops_vec);
+
+    Ok(&buf[..total_read])
 }
 
 /// Handler for `i2c/set-config` — reconfigures I2C bus parameters.
