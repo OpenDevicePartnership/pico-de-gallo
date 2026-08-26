@@ -9,4 +9,9 @@ members = [
     "crates/pico-de-gallo-mcp",
     "crates/pyco-de-gallo",
 ]
-exclude = [ "crates/pico-de-gallo-firmware" ]
+# ".worktrees" holds agent-created linked worktrees. Without it, a nested
+# checkout's firmware crate escapes its own workspace root (that root excludes
+# "crates/pico-de-gallo-firmware", so Cargo keeps walking up) and gets adopted
+# by *this* workspace, which breaks every firmware cargo command run from a
+# worktree.
+exclude = [ "crates/pico-de-gallo-firmware", ".worktrees" ]
