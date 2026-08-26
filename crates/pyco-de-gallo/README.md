@@ -141,7 +141,7 @@ directory.
 
 ## Documentation
 
-- Project book: <https://opendevicepartnership.github.io/pico-de-gallo/>
+- Project book: <https://balbi.sh/pico-de-gallo/>
 - Source and issues: <https://github.com/OpenDevicePartnership/pico-de-gallo>
 
 ## License

@@ -33,7 +33,7 @@ USB — a compact, typed, binary RPC protocol.
 
 ## Book
 
-The [Pico de Gallo Book](https://felipebalbi.github.io/pico-de-gallo/)
+The [Pico de Gallo Book](https://balbi.sh/pico-de-gallo/)
 covers hardware assembly, firmware flashing, and a step-by-step guide to
 writing an embedded device driver using Pico de Gallo.
 

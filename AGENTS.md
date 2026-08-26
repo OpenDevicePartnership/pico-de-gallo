@@ -43,7 +43,7 @@ the project — see §6.
 │   ├── pull_request_template.md
 │   ├── copilot-instructions.md      # Detailed agent reference (read it)
 │   └── RELEASE.md                   # manual release playbook
-├── book/                            # mdBook → opendevicepartnership.github.io/pico-de-gallo/
+├── book/                            # mdBook → balbi.sh/pico-de-gallo/
 ├── docs/                            # design specs, plans, agent guides (NOT the book)
 ├── hardware/                        # KiCad landing-board PCB
 ├── case/                            # FreeCAD enclosure
@@ -941,7 +941,7 @@ git --no-pager show <tag>:.github/workflows/release-firmware.yml \
 - **`.github/RELEASE.md`** — manual release playbook.
 - **`CONTRIBUTING.md`** — human-facing contribution guide.
 - **`book/`** — user-facing documentation
-  ([online](https://opendevicepartnership.github.io/pico-de-gallo/)).
+  ([online](https://balbi.sh/pico-de-gallo/)).
 - **`crates/<crate>/src/lib.rs`** — every crate has top-level `//!`
   docs that summarize its public surface.
 - **`deny.toml`** — dependency policy (advisory ignores, license

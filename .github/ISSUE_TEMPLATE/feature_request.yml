@@ -15,7 +15,7 @@ body:
 
         Before filing, please:
         - Search [existing issues](https://github.com/OpenDevicePartnership/pico-de-gallo/issues?q=is%3Aissue) and [discussions](https://github.com/OpenDevicePartnership/pico-de-gallo/discussions) for prior art.
-        - Skim the [book](https://opendevicepartnership.github.io/pico-de-gallo/) to confirm the feature isn't already supported.
+        - Skim the [book](https://balbi.sh/pico-de-gallo/) to confirm the feature isn't already supported.
 
   - type: checkboxes
     id: preflight

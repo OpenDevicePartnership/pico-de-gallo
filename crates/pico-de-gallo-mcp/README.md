@@ -104,5 +104,5 @@ client's permission system (e.g. opencode `permission`) to prompt before
 destructive tool calls. Under a client with no permission system, an agent can
 actuate hardware without confirmation.
 
-See the [book chapter](https://opendevicepartnership.github.io/pico-de-gallo/crates/mcp.html)
+See the [book chapter](https://balbi.sh/pico-de-gallo/crates/mcp.html)
 for the full tool catalog and details.

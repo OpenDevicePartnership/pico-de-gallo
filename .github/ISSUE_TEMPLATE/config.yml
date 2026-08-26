@@ -1,7 +1,7 @@
 blank_issues_enabled: false
 contact_links:
   - name: 📖 Documentation
-    url: https://felipebalbi.github.io/pico-de-gallo/
+    url: https://balbi.sh/pico-de-gallo/
     about: Read the Pico de Gallo book before opening an issue — many questions are answered there.
   - name: 💬 Discussions
     url: https://github.com/OpenDevicePartnership/pico-de-gallo/discussions
