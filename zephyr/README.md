@@ -92,11 +92,12 @@ Zephyr is used if you have stale entries in `~/.cmake/packages/Zephyr`.
 ## Continuous integration
 
 `.github/workflows/zephyr.yml` builds this module on every pull request that
-touches `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/`
-or either root Cargo file. It pins Zephyr to the commit recorded above and
-drives `zephyr/scripts/ci-build.sh`, which builds eight targets: the two viable
-samples, the two IS31 samples (asserted to fail exactly as they do at baseline),
-and the four M5 test applications.
+touches `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/`,
+either root Cargo file, or its own `.github/workflows/zephyr.yml` definition.
+It pins Zephyr to the commit recorded above and drives
+`zephyr/scripts/ci-build.sh`, which builds eight targets: the two viable samples,
+the two IS31 samples (asserted to fail exactly as they do at baseline), and the
+four M5 test applications.
 
 To reproduce a CI failure locally, with a Zephyr workspace already set up:
 

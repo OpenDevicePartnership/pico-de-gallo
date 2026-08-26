@@ -908,7 +908,8 @@ complaint. Two specific obligations:
 
 **Both gates now run in CI, within limits.** `.github/workflows/zephyr.yml`
 builds the module on every PR touching `zephyr/`, `crates/pico-de-gallo-ffi/`,
-`crates/pico-de-gallo-internal/` or either root Cargo file, so
+`crates/pico-de-gallo-internal/`, either root Cargo file, or its own
+`.github/workflows/zephyr.yml` definition, so
 `-Werror=switch` and those `_Static_assert`s fire automatically. The
 `_Static_assert`s only compile in the M5 targets, which the gate builds
 for exactly that reason.
