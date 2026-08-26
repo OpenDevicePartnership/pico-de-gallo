@@ -21,3 +21,4 @@ fp-info-cache
 
 # agent tool state
 /.superpowers/
+/.worktrees/
