@@ -1,0 +1,10 @@
+-- west build: building application
+[1/9] Generating include/generated/zephyr/devicetree_generated.h
+[8/9] Linking C executable zephyr/zephyr.elf
+[9/9] Linking C executable zephyr/zephyr.exe
+FAILED: zephyr/zephyr.exe
+/usr/bin/ld: zephyr/libzephyr.a(main.c.obj): in function `main':
+main.c:(.text.main+0x1a): undefined reference to `__device_dts_ord_49'
+/usr/bin/ld: main.c:(.text.main+0x2e): undefined reference to `__device_dts_ord_49'
+collect2: error: ld returned 1 exit status
+ninja: build stopped: subcommand failed.

@@ -28,7 +28,6 @@ set -o pipefail
 SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 # shellcheck disable=SC2034  # consumed by the build path added in a later commit
 PDG_ROOT=$(CDPATH='' cd -- "${SCRIPT_DIR}/../.." && pwd)
-# shellcheck disable=SC2034  # consumed by the build path added in a later commit
 TESTDATA_DIR="${SCRIPT_DIR}/testdata"
 
 # shellcheck disable=SC2034  # consumed by the build path added in a later commit
@@ -77,6 +76,55 @@ target_field() {
 	printf '%s' "$1" | cut -d'|' -f"$2"
 }
 
+#
+# Extract the distinct ordinals of every undefined __device_dts_ord_N in a
+# build log, sorted, space-separated. Empty output means none.
+#
+# The idiom is M3's, from 2026-08-17-zephyr-mfd-m3-gpio-tests.md.
+#
+undefined_ords() {
+	local log=$1
+	[ -f "$log" ] || die "no such log: $log"
+	grep -o '__device_dts_ord_[0-9]*' "$log" \
+		| sed 's/.*_//' \
+		| sort -un \
+		| tr '\n' ' ' \
+		| sed 's/ *$//'
+}
+
+#
+# Echo the names of generated defines whose value is exactly <ordinal>.
+#
+# The trailing anchor is load-bearing. Zephyr emits both
+#
+#     #define DT_N_..._ORD 49
+#     #define DT_N_..._ORD_STR_SORTABLE "00049"
+#
+# and only the first has the bare ordinal as its value. Anchoring on
+# "ORD <n>" at end of line selects it and rejects the sibling, and also
+# prevents 4 from matching the 49 line.
+#
+resolve_ord_defines() {
+	local dtheader=$1 ordinal=$2
+	[ -f "$dtheader" ] || die "no such devicetree header: $dtheader"
+	grep -E "^#define (DT_N_[A-Za-z0-9_]*_ORD) ${ordinal}\$" "$dtheader" \
+		| awk '{print $2}'
+}
+
+#
+# Echo the sorted unique pdg_*.c translation units named in a compile database.
+#
+# The idiom is M4 A-01's, from 2026-08-19-zephyr-mfd-m4-acceptance.md.
+#
+tu_set() {
+	local ccjson=$1
+	[ -f "$ccjson" ] || die "no such compile database: $ccjson"
+	grep -o 'pdg_[a-z0-9_]*\.c' "$ccjson" \
+		| sort -u \
+		| tr '\n' ' ' \
+		| sed 's/ *$//'
+}
+
 ST_PASS=0
 ST_FAIL=0
 
@@ -105,6 +153,30 @@ self_test() {
 	st_check "named overlay field is preserved" \
 		"$(target_field "${PDG_TARGETS[4]}" 4)" \
 		"zephyr/tests/pdg_mfd_m5/reset_subscriptions/reset.overlay"
+
+	# --- undefined_ords ---
+	st_check "undefined_ords finds the sole ordinal, deduplicated" \
+		"$(undefined_ords "${TESTDATA_DIR}/undefined-ord.log")" "49"
+	st_check "undefined_ords is empty for a clean log" \
+		"$(undefined_ords "${TESTDATA_DIR}/compile_commands.json")" ""
+
+	# --- resolve_ord_defines ---
+	st_check "resolve_ord_defines maps 49 to exactly one define" \
+		"$(resolve_ord_defines "${TESTDATA_DIR}/devicetree_generated.h" 49)" \
+		"DT_N_S_pico_de_gallo_S_spi_S_is31fl3743b_0_ORD"
+	st_check "resolve_ord_defines ignores the _ORD_STR_SORTABLE sibling" \
+		"$(resolve_ord_defines "${TESTDATA_DIR}/devicetree_generated.h" 49 | wc -l | tr -d ' ')" \
+		"1"
+	st_check "resolve_ord_defines does not prefix-match 4 against 49" \
+		"$(resolve_ord_defines "${TESTDATA_DIR}/devicetree_generated.h" 4)" ""
+	st_check "resolve_ord_defines resolves a different node" \
+		"$(resolve_ord_defines "${TESTDATA_DIR}/devicetree_generated.h" 50)" \
+		"DT_N_S_pico_de_gallo_S_i2c_S_tmp117_48_ORD"
+
+	# --- tu_set ---
+	st_check "tu_set extracts sorted unique driver translation units" \
+		"$(tu_set "${TESTDATA_DIR}/compile_commands.json")" \
+		"pdg_gpio.c pdg_mfd.c pdg_spi.c"
 
 	printf '\n%d passed, %d failed\n' "$ST_PASS" "$ST_FAIL"
 	[ "$ST_FAIL" -eq 0 ]
