@@ -1,8 +1,11 @@
 # pico-de-gallo Zephyr Module
 
 This README describes the `pico-de-gallo/zephyr` Zephyr module, including how
-to build and run it. It lives here rather than in `pico-de-gallo/book` because
-the module is still work-in-progress (and may not live in this repo long term).
+to build and run it. It is the **authoritative** guide for the module: by a
+deliberate ruling recorded in `AGENTS.md` §15.1, the module has no `book/`
+chapter while it remains work-in-progress. That ruling is revisited once the
+upstreaming tracked in
+[#98](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/98) lands.
 
 `pico-de-gallo/zephyr` is a Zephyr module that lets Zephyr applications drive
 real I2C, SPI and GPIO peripherals from `native_sim`. It provides the

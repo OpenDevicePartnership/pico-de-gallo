@@ -6,7 +6,7 @@ body:
       value: |
         Welcome! 🌶️ Got a question about using Pico de Gallo? You're in the right place.
 
-        Before posting, please skim the [book](https://opendevicepartnership.github.io/pico-de-gallo/)
+        Before posting, please skim the [book](https://balbi.sh/pico-de-gallo/)
         and search existing [issues](https://github.com/OpenDevicePartnership/pico-de-gallo/issues?q=is%3Aissue)
         and [discussions](https://github.com/OpenDevicePartnership/pico-de-gallo/discussions) — answers to common
         questions (wiring, firmware flashing, Python install, schema-version mismatch) often live there already.

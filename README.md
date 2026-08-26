@@ -33,7 +33,7 @@ USB — a compact, typed, binary RPC protocol.
 
 ## Book
 
-The [Pico de Gallo Book](https://felipebalbi.github.io/pico-de-gallo/)
+The [Pico de Gallo Book](https://balbi.sh/pico-de-gallo/)
 covers hardware assembly, firmware flashing, and a step-by-step guide to
 writing an embedded device driver using Pico de Gallo.
 
@@ -81,6 +81,15 @@ projects.
 
 Shared wire-protocol crate defining all postcard-rpc endpoints, request
 and response types, and constants. Used by both firmware and host crates.
+
+## Zephyr
+
+Zephyr module that lets a Zephyr application running on `native_sim` drive
+real I²C, SPI, and GPIO peripherals through the `pico_de_gallo` shield — so
+you can write and debug a Zephyr driver on your laptop against real silicon,
+without cross-compiling or flashing. See [`zephyr/README.md`](zephyr) for the
+full guide; the module is documented there rather than in the book, by the
+carve-out recorded in `AGENTS.md` §15.1.
 
 ## Hardware
 
