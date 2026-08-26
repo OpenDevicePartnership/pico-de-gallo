@@ -23,7 +23,7 @@ laptop, against the real silicon, without cross-compiling or flashing.
 
 | Requirement | Notes |
 |---|---|
-| Zephyr revision | The measured build environment was `main` at `v4.4.0-6123-g26f811ee9d0`. The driver uses `spi_cs_control.delay`, `spi_context`'s `ctx->num_cs_gpios`, `SPI_CONTEXT_CS_GPIOS_INITIALIZE`, and `DEVICE_API`. This checkout does not establish the earliest compatible Zephyr release; treat `main` as the verified baseline rather than an asserted minimum. |
+| Zephyr revision | The measured build environment was `main` at `v4.4.0-6123-g26f811ee9d0d`, commit `26f811ee9d0dc8f67e8e596f6aef9e6e79a55db0`. CI pins that exact commit; `.github/workflows/zephyr.yml` fails if this line and its `ZEPHYR_REVISION` disagree. The driver uses `spi_cs_control.delay`, `spi_context`'s `ctx->num_cs_gpios`, `SPI_CONTEXT_CS_GPIOS_INITIALIZE`, and `DEVICE_API`. This checkout does not establish the earliest compatible Zephyr release; treat `main` as the verified baseline rather than an asserted minimum. |
 | A 64-bit `native_sim` | Always build `native_sim/native/64`. `zephyr/Kconfig` has `depends on 64BIT`, because `corrosion_set_hostbuild()` forces the rustc host triple. Plain `native_sim` is 32-bit and will not work. |
 | Rust 1.90+ and Cargo | The FFI is built from this repository by Corrosion during the Zephyr build. |
 | A host C toolchain | `native_sim` compiles with host GCC/Clang. No Zephyr SDK is required. |

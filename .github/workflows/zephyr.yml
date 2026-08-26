@@ -1,0 +1,147 @@
+on:
+  push:
+    branches: [main]
+    paths:
+      - "zephyr/**"
+      - "crates/pico-de-gallo-ffi/**"
+      - "crates/pico-de-gallo-internal/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/zephyr.yml"
+  pull_request:
+    paths:
+      - "zephyr/**"
+      - "crates/pico-de-gallo-ffi/**"
+      - "crates/pico-de-gallo-internal/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/zephyr.yml"
+
+# The Zephyr drivers are a consumer of pico-de-gallo-ffi: they call gallo_*
+# through the cbindgen-generated header, linked by Corrosion at Zephyr build
+# time. Before this workflow, an FFI change could break them while every other
+# gate stayed green -- check.yml builds the FFI crate, which still compiles, and
+# cbindgen regenerates the header without complaint, but nothing ever compiled
+# the Zephyr translation unit that consumed the removed symbol.
+#
+# Two compile-time gates already existed in the tree and never fired:
+# -Werror=switch over the Status-to-errno mapping in drivers/common/common.c,
+# and the _Static_asserts pinning the mirrored FFI enums in
+# tests/pdg_mfd_m5/common/m5_bottom.c. This workflow is what makes them fire.
+#
+# BUILD ONLY. Nothing here executes a produced binary. Runtime coverage needs an
+# attached board and remains the manual zephyr/tests/pdg_mfd_m5/run-m5.sh
+# procedure. A green run here means the module still compiles and links.
+#
+# Cargo.lock is in the path filter because zephyr/CMakeLists.txt imports the
+# crate with corrosion_import_crate(... LOCKED), so a manifest/lock split breaks
+# the Zephyr build too, not just check.yml's lockfile job.
+name: zephyr
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  # Pinned to the revision zephyr/README.md records as the measured baseline.
+  # A step below fails the job if the two ever disagree.
+  ZEPHYR_REVISION: 26f811ee9d0dc8f67e8e596f6aef9e6e79a55db0
+
+jobs:
+  selftest:
+    # Exercises the assertion parsers against checked-in fixtures. Needs no
+    # Zephyr workspace, so it fails in seconds rather than behind a
+    # multi-gigabyte west checkout.
+    runs-on: ubuntu-latest
+
+    name: ubuntu / host / zephyr selftest
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: ci-build.sh --self-test
+        run: zephyr/scripts/ci-build.sh --self-test
+
+  build:
+    # Builds every target in the ci-build.sh table. Gated on selftest so a
+    # broken parser does not burn a full west checkout first.
+    needs: selftest
+
+    runs-on: ubuntu-latest
+
+    name: ubuntu / host / zephyr build
+
+    env:
+      ZEPHYR_TOOLCHAIN_VARIANT: host
+      ZEPHYR_BASE: ${{ github.workspace }}/zephyrproject/zephyr
+      # Shared so the eight builds do not each pay a full release build of
+      # pico-de-gallo-ffi. If Corrosion overrides it, the only cost is time.
+      CARGO_TARGET_DIR: /tmp/pdg-cargo-target
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Assert the pinned revision matches zephyr/README.md
+        run: |
+          if ! grep -qF "$ZEPHYR_REVISION" zephyr/README.md; then
+            echo "zephyr/README.md does not record $ZEPHYR_REVISION" >&2
+            echo "The workflow pin and the README must agree." >&2
+            exit 1
+          fi
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            ninja-build gperf device-tree-compiler python3-venv libmagic1
+
+      - name: Install west
+        # A venv, not a bare pip install: ubuntu-latest ships a PEP 668
+        # externally-managed Python, where `pip install west` hard-fails. This
+        # also matches the setup zephyr/README.md documents.
+        run: |
+          python3 -m venv "$HOME/zephyr-venv"
+          "$HOME/zephyr-venv/bin/pip" install --upgrade pip west
+          echo "$HOME/zephyr-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore the west workspace
+        id: west-cache
+        uses: actions/cache@v4
+        with:
+          path: zephyrproject
+          key: zephyr-ws-${{ env.ZEPHYR_REVISION }}-v1
+
+      - name: Initialise the west workspace
+        if: steps.west-cache.outputs.cache-hit != 'true'
+        run: |
+          west init -m https://github.com/zephyrproject-rtos/zephyr \
+            --mr "$ZEPHYR_REVISION" zephyrproject
+          cd zephyrproject
+          west update --narrow -o=--filter=blob:none
+
+      - name: Install Zephyr Python dependencies
+        working-directory: zephyrproject
+        run: west packages pip --install
+
+      - name: Report the Zephyr revision actually checked out
+        working-directory: zephyrproject/zephyr
+        run: |
+          git --no-pager log -1 --format='%H %cI %s'
+          test "$(git rev-parse HEAD)" = "$ZEPHYR_REVISION"
+
+      - name: Build the Zephyr module
+        working-directory: zephyrproject
+        run: |
+          "$GITHUB_WORKSPACE/zephyr/scripts/ci-build.sh" \
+            --build-root /tmp/pdg-ci \
+            --summary "$GITHUB_STEP_SUMMARY"
