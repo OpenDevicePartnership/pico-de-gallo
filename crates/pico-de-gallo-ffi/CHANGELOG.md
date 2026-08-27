@@ -5,9 +5,21 @@ All notable changes to `pico-de-gallo-ffi` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] — 2026-08-27
+
+### Added
+
+- Added `gallo_num_gpios` and the coherent #104 status set:
+  `SpiInvalidCsPin = -71`, `SpiCsPinUnavailable = -72`,
+  `SpiCsPinMonitored = -73`, `SpiNoGpios = -74`, and
+  `DeviceInfoTimeout = -75`. Existing C ABI status codes remain stable
+  and are never renumbered.
 
 ### Changed
+
+- SPI batch calls now bound-check chip-select against device-reported
+  metadata on the host, keeping an invalid pin, zero GPIOs, and metadata
+  failure as distinct outcomes. Closes #104.
 
 - `gallo_i2c_write` rejects `len == 0`, and `gallo_i2c_batch` rejects a
   `Write` op with `data_len == 0`, returning `InvalidArgument` before the
@@ -37,22 +49,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the exhaustive `switch ((enum Status)x)` that C consumers are told to
   write. A zero-length write is an argument this hardware cannot honour,
   so `InvalidArgument` is the honest existing code. Closes #101.
-
-## [0.8.0] — 2026-08-24
-
-### Added
-
-- Added `gallo_num_gpios` and the coherent #104 status set:
-  `SpiInvalidCsPin = -71`, `SpiCsPinUnavailable = -72`,
-  `SpiCsPinMonitored = -73`, `SpiNoGpios = -74`, and
-  `DeviceInfoTimeout = -75`. Existing C ABI status codes remain stable
-  and are never renumbered.
-
-### Changed
-
-- SPI batch calls now bound-check chip-select against device-reported
-  metadata on the host, keeping an invalid pin, zero GPIOs, and metadata
-  failure as distinct outcomes. Closes #104.
 
 ## [0.7.1] — 2026-08-03
 

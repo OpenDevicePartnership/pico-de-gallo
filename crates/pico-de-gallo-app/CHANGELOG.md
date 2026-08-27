@@ -5,17 +5,7 @@ All notable changes to `gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
-### Changed
-
-- Documented that `gallo i2c batch` sends one I²C transaction rather than one
-  independent transaction per operation. Adjacent same-direction operations
-  concatenate, direction changes use a repeated START, and only the final
-  operation receives a STOP. The command-line surface is unchanged. Closes
-  #128.
-
-## [0.9.0] — 2026-08-24
+## [0.9.0] — 2026-08-27
 
 ### Breaking Changes
 
@@ -28,6 +18,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - `spi batch --cs` is validated against device-reported metadata before
   operations are parsed or anything is transmitted. Closes #104.
+
+- Documented that `gallo i2c batch` sends one I²C transaction rather than one
+  independent transaction per operation. Adjacent same-direction operations
+  concatenate, direction changes use a repeated START, and only the final
+  operation receives a STOP. The command-line surface is unchanged. Closes
+  #128.
 
 ## [0.8.0] — 2026-08-19
 

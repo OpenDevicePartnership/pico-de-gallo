@@ -5,7 +5,25 @@ All notable changes to `pico-de-gallo-hal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] — 2026-08-27
+
+### Breaking Changes
+
+- `Hal::spi_device(cs_pin)` is now fallible because it validates the
+  index against the device-reported GPIO count. Metadata failure, zero
+  GPIOs, and an invalid index remain distinct errors. Closes #104.
+
+### Added
+
+- Added public, runtime-authoritative `Hal::num_gpios()`. Closes #104.
+
+- `embedded-io` 0.7 support. `Uart` now implements the blocking and
+  async `Read`/`Write` traits from `embedded-io` 0.7 /
+  `embedded-io-async` 0.7 under the additive `embedded-io-07`
+  feature. The existing 0.6 impls remain enabled by default behind
+  `embedded-io-06`; enable `embedded-io-07` alongside it to support
+  both majors. Either feature can be selected alone, or disable both
+  to drop the `embedded-io` dependency entirely.
 
 ### Changed
 
@@ -25,28 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `i2c/batch`. Adjacent same-direction operations now concatenate, direction
   changes use a repeated START, and only the final operation receives a STOP.
   The Rust API is unchanged. Closes #128.
-
-### Added
-
-- `embedded-io` 0.7 support. `Uart` now implements the blocking and
-  async `Read`/`Write` traits from `embedded-io` 0.7 /
-  `embedded-io-async` 0.7 under the additive `embedded-io-07`
-  feature. The existing 0.6 impls remain enabled by default behind
-  `embedded-io-06`; enable `embedded-io-07` alongside it to support
-  both majors. Either feature can be selected alone, or disable both
-  to drop the `embedded-io` dependency entirely.
-
-## [0.7.0] — 2026-08-24
-
-### Breaking Changes
-
-- `Hal::spi_device(cs_pin)` is now fallible because it validates the
-  index against the device-reported GPIO count. Metadata failure, zero
-  GPIOs, and an invalid index remain distinct errors. Closes #104.
-
-### Added
-
-- Added public, runtime-authoritative `Hal::num_gpios()`. Closes #104.
 
 ## [0.6.0] — 2026-06-22
 

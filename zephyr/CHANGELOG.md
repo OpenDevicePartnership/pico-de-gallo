@@ -8,285 +8,6 @@ The format is based on
 
 ## [Unreleased]
 
-### Added
-
-- **Twister metadata for the seven buildable applications**, and a `twister` job
-  in `.github/workflows/zephyr.yml` that runs them.
-  ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
-
-  The file is `tests.yaml`, not `sample.yaml` or `testcase.yaml`. Upstream has
-  retired both older names: against `zephyrproject-rtos/zephyr`,
-  `filename:sample.yaml` and `filename:testcase.yaml path:tests/drivers` each
-  return zero results, while `tests/drivers` alone holds 268 `tests.yaml`.
-  Samples keep their `sample:` key inside `tests.yaml`.
-
-  Every scenario is `build_only: true`. Twister classifies `native_sim` as
-  `type: native` and would otherwise execute the binary, which reaches
-  `gallo_init_strict()` and needs an attached board. None declares
-  `depends_on`, because that key matches the board's `supported:` list and
-  `native_sim/native/64` names neither `i2c` nor `spi` — only the 32-bit
-  `native_sim` does — so claiming it would silently filter the scenario to
-  nothing on the sole platform this module targets.
-
-  This is mostly redundant with `zephyr/scripts/ci-build.sh`, and weaker: there
-  is no twister equivalent of that script's two-sided translation-unit and
-  Kconfig assertions. It is worth having for two things `ci-build.sh` cannot do.
-  Twister forces `CONFIG_COMPILER_WARNINGS_AS_ERRORS=y` **and**
-  `--edtlib-Werror`, turning devicetree *binding* warnings into build failures
-  — this module ships four custom bindings and a plain `west build` never
-  checks them that way. And `type: unit` scenarios run only under twister.
-
-  `samples/spi_bridge` and `samples/combined_i2c_spi_bridge` deliberately get no
-  `tests.yaml`. They cannot build (the IS31FL3743B driver is not upstream), and
-  `ci-build.sh`'s `assert_basefail()` already pins their failure far more
-  precisely than a twister scenario could — it requires exactly one undefined
-  `__device_dts_ord_N` resolving to an `is31fl3743b` node.
-
-### Removed
-
-- **`snippet_root: zephyr` from `zephyr/module.yml`.** It pointed at a
-  `zephyr/snippets/` directory that has never existed. `tests: - zephyr/tests`
-  was reported as dangling by the same issue but is now backed by a real
-  directory.
-  ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
-
-### Fixed
-
-- **`i2c_burst_write()` no longer returns `-ENOTSUP`.** The I2C controller
-  accepted a `I2C_MSG_STOP`-delimited message group only when it held one
-  message, or a write followed by a repeated-start read. Zephyr's
-  `i2c_burst_write()` emits two *writes* — `I2C_MSG_WRITE`, then
-  `I2C_MSG_WRITE | I2C_MSG_STOP` — which matched neither and was rejected. So
-  was every hand-rolled gather write, which is where most affected in-tree
-  sensor, EEPROM and display drivers actually are; `i2c_burst_write()` and
-  `i2c_burst_write_dt()` were the only `i2c.h` helpers that produced the
-  rejected shape.
-  ([#102](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/102))
-
-  A group's write messages now concatenate into a single payload and reach the
-  bus as one transaction: one START, one address phase, all the bytes, one
-  STOP. That is what a real controller emits for this message sequence. Three
-  shapes are supported — N writes, a single read, and N writes followed by one
-  read. Rejections are narrower but still explicit: a read that is not the last
-  message of its group, and more than one read in a group, remain `-ENOTSUP`,
-  because the FFI has no shape for reading and then continuing within one
-  transaction and splitting the group would insert a STOP the caller never
-  asked for.
-
-  Requiring `I2C_MSG_RESTART` on the terminating read of a multi-message group
-  is **unchanged**: a group that was rejected for lacking it before is still
-  rejected for lacking it now.
-
-  This was deliberately **not** fixed by routing through the `i2c/batch`
-  firmware endpoint. Zephyr's SPI driver moved *away* from `spi/batch` for
-  unrelated reasons, and more importantly `i2c/batch` only became atomic
-  recently (#128) inside unreleased schema 0.7, where `validate()` cannot tell
-  the two firmware behaviours apart. Depending on it would have converted a
-  loud `-ENOTSUP` into silent register corruption against a firmware built
-  before that fix. `gallo_i2c_write()` has no such ambiguity.
-
-- **The transfer size limit is now checked per group, not per message.** Two
-  4096-byte writes each passed the old per-message check and would have
-  concatenated to 8192. The check is now an overflow-safe running total over a
-  group's writes, with the group's terminating read bounded separately, both
-  against the same 4096-byte figure and both returning `-EMSGSIZE`.
-
-  This does not narrow what was previously accepted: the reachable payload
-  range was already `[0, 4096]` through a single `i2c_msg`, and it still is.
-
-  **4096 remains unmeasured.** It is `pico_de_gallo_internal::MAX_TRANSFER_SIZE`,
-  the firmware's declared argument bound, and not a demonstrated end-to-end
-  ceiling for this transport. `PDG_SPI_MAX_BUFFER` started from the same figure
-  and had to be lowered to 1013 after 4096 was measured to fail `-ECOMM` and
-  1015 to wedge the firmware dispatcher device-wide. `i2c/write` carries its
-  payload in the request frame exactly as `spi/transfer` does. It was left at
-  4096 rather than lowered by analogy, because a bound measured on a
-  differently framed endpoint is a guess and lowering it would reject
-  single-message writes that work today.
-  ([#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146))
-
-- **A `NULL` message buffer is now refused only when the message claims to
-  carry bytes.** Zephyr's I2C API permits `msg.buf == NULL` whenever
-  `msg.len == 0`, and both `i2c_write(dev, NULL, 0, addr)` and
-  `i2c_write_read(dev, addr, NULL, 0, rx, n)` produce exactly that. The driver
-  rejected every `NULL` buffer with `-EINVAL` regardless of length.
-  ([#137](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/137))
-
-  Relaxing that check alone would have accomplished nothing. The FFI rejects a
-  `NULL` pointer unconditionally, *before* any length check, because
-  `slice::from_raw_parts(NULL, 0)` is undefined behaviour in Rust. So the
-  pointer had to be kept away from it rather than merely allowed past the
-  driver's own guard.
-
-- **A validated group is now reduced to the operation its data bytes actually
-  require.** A new `classify_group_()` judges a group by #147's `write_len` —
-  already the concatenated total of its writes — and the length of its
-  terminating read, and no message carrying zero bytes is forwarded:
-
-  | group | operation |
-  |---|---|
-  | writes total > 0, read > 0 | write-then-read (unchanged) |
-  | writes total > 0, no read or read == 0 | plain write; the empty read phase is dropped |
-  | writes total == 0, read > 0 | plain read; the empty writes are dropped |
-  | writes total == 0, no read or read == 0 | address-only probe |
-
-  This composes with #147's gather rather than replacing it: `W(0 NULL) + W(3)`
-  still gathers to a 3-byte write, and an empty write consumes none of the
-  per-group size budget. No `NULL` pointer and no zero length reaches the FFI.
-
-- **An address-only probe is refused with `-ENOTSUP`,** in the validation
-  pre-pass — before the controller mutex and before any group reaches the bus,
-  preserving the "validation is a complete pre-pass, no partial bus traffic"
-  property #147 relies on.
-
-  The refusal is a hardware limitation, not a policy choice. The RP2040/RP2350
-  `DW_apb_i2c` block drives the address phase only as a side effect of pushing
-  bytes into `IC_DATA_CMD`, so `START + ADDR + STOP` is physically unreachable
-  ([rp-rs/rp-hal#678](https://github.com/rp-rs/rp-hal/issues/678),
-  [embassy-rs/embassy#4474](https://github.com/embassy-rs/embassy/issues/4474)).
-
-  This also corrects a **live wrong answer** that was independent of the `NULL`
-  question. Zephyr's shell `i2c scan` (`drivers/i2c/i2c_shell.c`) probes each
-  address with a single `{ buf = &dst, len = 0, flags = I2C_MSG_WRITE |
-  I2C_MSG_STOP }` message. `buf` is non-`NULL` there, so the old check never
-  blocked it: it reached `gallo_i2c_write(..., 0)` and, since the host-surface
-  guard in #136, returned `InvalidArgument` for every address. **`i2c scan`
-  prints `0 devices found` on a populated bus today.** At the new default it
-  still reports every address absent, but for a stated reason rather than
-  silently; with the new Kconfig below it produces a correct answer.
-
-### Added
-
-- `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ` (default `n`). Substitutes a
-  1-byte read to the same address for an address-only probe: an ACK means the
-  device is present, a NACK surfaces as `-ENXIO`. That makes Zephyr's shell
-  `i2c scan` work, at one blocking USB round trip per address — about 116 for
-  the `0x04..0x77` range the shell scans.
-  ([#137](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/137))
-
-  Selected with `IS_ENABLED()` inside an ordinary `if`, never `#ifdef`, so both
-  arms compile in every configuration.
-
-  It is off by default for two reasons that must be documented rather than
-  discovered. A read probe is **not** semantically identical to a write probe:
-  a write-only device may acknowledge its write address while NACKing its read
-  address, so a scan performed this way can under-report — the same known
-  limitation the firmware's own `i2c/scan` carries. And the substituted read
-  consumes a byte, which can pop a FIFO or step an EEPROM address pointer;
-  Zephyr's own `i2c_shell.c` carries the same warning, that scanning "can
-  confuse your I2C bus, cause data loss, and is known to corrupt the Atmel
-  AT24RF08 EEPROM". A bus scan is a deliberate act, whereas a driver silently
-  turning every zero-length write into a read is not.
-
-  The supported way to scan through this bridge remains `gallo i2c scan`, or
-  the firmware's `i2c/scan` endpoint, which probes the whole bus in one round
-  trip.
-
-- `CONFIG_HEAP_MEM_POOL_ADD_SIZE_PDG_I2C` (default 8192). The I2C driver now
-  `k_malloc()`s a merge buffer for a group holding two or more non-empty
-  writes, at most `PDG_I2C_MAX_BUFFER` (4096) bytes and at most one live at a
-  time. Declaring the contribution is mandatory, not optional: `k_malloc()`
-  lives in `kernel/mempool.c`, which Zephyr compiles only when the system heap
-  is non-empty, and `CONFIG_HEAP_MEM_POOL_SIZE` defaults to 0 — omitting it
-  reproduces #111 exactly, as an undefined reference to `k_malloc` at link
-  time.
-
-  Nothing allocates on the common paths. A single message, a single write
-  followed by a read, and a group whose writes are all empty are each sent
-  straight from the caller's buffers with no copy. Excluding the all-empty case
-  from the merge path is deliberate: an empty payload has nothing to merge, and
-  allocating for it would introduce an `-ENOMEM` failure mode on a call that
-  can otherwise not fail locally. An all-empty group no longer reaches the
-  firmware at all: #137 reduces it to an address-only probe and refuses it
-  locally, described under *Fixed* above.
-
-- `tests/pdg_i2c_burst`, a board-attached regression image for #102. Covers
-  `i2c_burst_write()`, a three-message hand-rolled gather, a gathered
-  write-then-read, the three rejection shapes, and the per-group running total
-  — including that the oversize rejection emits no bus traffic at all. Every
-  assertion compares against a reference read-back through a single-message
-  `i2c_write()` rather than against the bytes written, so it holds on parts
-  that mask register bits. Registered in `zephyr/scripts/ci-build.sh`, which
-  brings the CI target count to nine; that gate builds and links it but, like
-  every other target, never runs it.
-
-### Verification
-
-- **#137 is built-only, not behaviourally verified.** No Zephyr environment on
-  the authoring machine, no host-side unit-test harness in the module, and no
-  board. `.github/workflows/zephyr.yml` gates the PR (path-filtered,
-  `zephyr/**` touched) but is **build-only** — it never executes a produced
-  binary — and it builds only the default configuration, so the
-  `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ=y` arm compiles by construction
-  (`IS_ENABLED`, not `#ifdef`) and is never exercised.
-
-  One thing *was* executed. `struct pdg_i2c_group`, `enum pdg_i2c_op`,
-  `validate_group_()` and `classify_group_()` were extracted **verbatim** from
-  `pdg_i2c.c` into a throwaway host harness and driven through **18 group
-  shapes**: the pre-existing shapes; #147's gather shapes crossed with zero
-  lengths (`W(1)+W(0 NULL)`, `W(0 NULL)+W(3)`, `W(0)+W(0)`, `W(0)+W(0)+R(2)`,
-  `W(2)+W(1)+R(0 NULL)`); the Zephyr shell scan probe; both `NULL`-buffer
-  forms; #147's three rejection shapes, which still reject; and the per-group
-  running total at and over the 4096-byte limit. All 18 matched, clean under
-  `-Wall -Wextra -Werror -Wswitch-enum -Wformat=2` at `-O0`, `-Os`, `-O2` and
-  `-O3`.
-
-  The harness is **not committed and is not a test suite**. It covers four
-  items and says nothing about `pdg_i2c_transfer()`, `gather_writes_()`, the
-  Kconfig wiring, or any transport behaviour, and it cannot fail in CI. Note
-  that `tests/pdg_i2c_burst` (added for #102) is board-attached and is not run
-  by CI either.
-
-- **Upstream `tests/drivers/spi/spi_loopback` on `native_sim/native/64`:
-  41 PASS / 12 SKIP / 1 FAIL / 2 NOT BUILT.** This is **not** a clean upstream
-  pass, and must not be read as one.
-
-  The single FAIL is upstream's own `test_spi_complete_multiple_timed`. It is
-  **unrunnable on this target rather than a driver defect**: `spi.c:406` asserts
-  `time_spent_us >= minimum_transfer_time_us`, a **lower** bound, measured with
-  the Zephyr clock — which on `native_sim` does not advance while the host
-  thread is blocked inside a USB call, so every transfer measures 0 µs.
-  `CONFIG_SPI_IDEAL_TRANSFER_DURATION_SCALING` bounds only the **upper** limit,
-  so **no multiplier value can affect this assertion**. It fails on SLOW and
-  passes on FAST purely because SLOW's theoretical minimum (432 µs) is larger;
-  that is structural, not flaky.
-
-  The 12 SKIPs are all expected and were verified exactly: five word sizes
-  rejected by the driver with `-ENOTSUP`, `test_spi_deinit` (no
-  `miso-gpios`/`mosi-gpios` on `zephyr,user`) and `test_spi_hold_on_cs`
-  (HOLD without LOCK is unsupported), across two spec iterations. The 2 NOT
-  BUILT are the async cases, which require `CONFIG_SPI_ASYNC=y`; this driver
-  `BUILD_ASSERT`s that off.
-
-### Known Issues
-
-- **A 1015-byte TX-only `spi/transfer` never returns and wedges the firmware
-  dispatcher device-wide.** Deterministic, reproduced across two byte-identical
-  consecutive runs on board `5256657D8A5D7F03`.
-
-  Once triggered, **every** subsequent RPC hangs — including from a freshly
-  started host process, and including `system/reset-subscriptions`, which is
-  the endpoint that exists to recover orphaned state. The condition therefore
-  survives host process death entirely.
-
-  The 2 s watchdog does **not** catch it: the dedicated feeder task keeps
-  feeding while a request handler blocks, which is precisely the gap left open
-  by the serial-dispatch hazard recorded in AGENTS.md §13.17 (2026-06-03).
-
-  In the reproduced tests, the device resumed responding after USB
-  re-enumeration. On Windows/WSL this was `usbipd detach` followed by attach.
-  This is an observed procedure, not proof that detach directly cancels the
-  blocked handler, and it has not been generalized to other dispatcher-wedge
-  triggers. On Linux/macOS use cable reconnect or USB unbind/rebind; power-cycle
-  if re-enumeration is unavailable or ineffective. The blocked dispatcher cannot
-  service `system/reset-subscriptions`.
-
-  Root cause is in the firmware/wire layer (`crates/`) and is out of scope for
-  this module. `PDG_SPI_MAX_BUFFER = 1013` puts the hang out of reach *through
-  this driver* by rejecting 1014 and above locally with `-EMSGSIZE` before any
-  transport call, but that is containment, not a fix, and it does not prove
-  that no other hang window exists below 1013.
-
 ### Breaking Changes
 
 - **A zero-length I2C write now returns `-ENOTSUP` rather than `-EINVAL`.**
@@ -459,6 +180,91 @@ The format is based on
 
 ### Added
 
+- **Twister metadata for the seven buildable applications**, and a `twister` job
+  in `.github/workflows/zephyr.yml` that runs them.
+  ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
+
+  The file is `tests.yaml`, not `sample.yaml` or `testcase.yaml`. Upstream has
+  retired both older names: against `zephyrproject-rtos/zephyr`,
+  `filename:sample.yaml` and `filename:testcase.yaml path:tests/drivers` each
+  return zero results, while `tests/drivers` alone holds 268 `tests.yaml`.
+  Samples keep their `sample:` key inside `tests.yaml`.
+
+  Every scenario is `build_only: true`. Twister classifies `native_sim` as
+  `type: native` and would otherwise execute the binary, which reaches
+  `gallo_init_strict()` and needs an attached board. None declares
+  `depends_on`, because that key matches the board's `supported:` list and
+  `native_sim/native/64` names neither `i2c` nor `spi` — only the 32-bit
+  `native_sim` does — so claiming it would silently filter the scenario to
+  nothing on the sole platform this module targets.
+
+  This is mostly redundant with `zephyr/scripts/ci-build.sh`, and weaker: there
+  is no twister equivalent of that script's two-sided translation-unit and
+  Kconfig assertions. It is worth having for two things `ci-build.sh` cannot do.
+  Twister forces `CONFIG_COMPILER_WARNINGS_AS_ERRORS=y` **and**
+  `--edtlib-Werror`, turning devicetree *binding* warnings into build failures
+  — this module ships four custom bindings and a plain `west build` never
+  checks them that way. And `type: unit` scenarios run only under twister.
+
+  `samples/spi_bridge` and `samples/combined_i2c_spi_bridge` deliberately get no
+  `tests.yaml`. They cannot build (the IS31FL3743B driver is not upstream), and
+  `ci-build.sh`'s `assert_basefail()` already pins their failure far more
+  precisely than a twister scenario could — it requires exactly one undefined
+  `__device_dts_ord_N` resolving to an `is31fl3743b` node.
+
+- `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ` (default `n`). Substitutes a
+  1-byte read to the same address for an address-only probe: an ACK means the
+  device is present, a NACK surfaces as `-ENXIO`. That makes Zephyr's shell
+  `i2c scan` work, at one blocking USB round trip per address — about 116 for
+  the `0x04..0x77` range the shell scans.
+  ([#137](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/137))
+
+  Selected with `IS_ENABLED()` inside an ordinary `if`, never `#ifdef`, so both
+  arms compile in every configuration.
+
+  It is off by default for two reasons that must be documented rather than
+  discovered. A read probe is **not** semantically identical to a write probe:
+  a write-only device may acknowledge its write address while NACKing its read
+  address, so a scan performed this way can under-report — the same known
+  limitation the firmware's own `i2c/scan` carries. And the substituted read
+  consumes a byte, which can pop a FIFO or step an EEPROM address pointer;
+  Zephyr's own `i2c_shell.c` carries the same warning, that scanning "can
+  confuse your I2C bus, cause data loss, and is known to corrupt the Atmel
+  AT24RF08 EEPROM". A bus scan is a deliberate act, whereas a driver silently
+  turning every zero-length write into a read is not.
+
+  The supported way to scan through this bridge remains `gallo i2c scan`, or
+  the firmware's `i2c/scan` endpoint, which probes the whole bus in one round
+  trip.
+
+- `CONFIG_HEAP_MEM_POOL_ADD_SIZE_PDG_I2C` (default 8192). The I2C driver now
+  `k_malloc()`s a merge buffer for a group holding two or more non-empty
+  writes, at most `PDG_I2C_MAX_BUFFER` (4096) bytes and at most one live at a
+  time. Declaring the contribution is mandatory, not optional: `k_malloc()`
+  lives in `kernel/mempool.c`, which Zephyr compiles only when the system heap
+  is non-empty, and `CONFIG_HEAP_MEM_POOL_SIZE` defaults to 0 — omitting it
+  reproduces #111 exactly, as an undefined reference to `k_malloc` at link
+  time.
+
+  Nothing allocates on the common paths. A single message, a single write
+  followed by a read, and a group whose writes are all empty are each sent
+  straight from the caller's buffers with no copy. Excluding the all-empty case
+  from the merge path is deliberate: an empty payload has nothing to merge, and
+  allocating for it would introduce an `-ENOMEM` failure mode on a call that
+  can otherwise not fail locally. An all-empty group no longer reaches the
+  firmware at all: #137 reduces it to an address-only probe and refuses it
+  locally, described under *Fixed* above.
+
+- `tests/pdg_i2c_burst`, a board-attached regression image for #102. Covers
+  `i2c_burst_write()`, a three-message hand-rolled gather, a gathered
+  write-then-read, the three rejection shapes, and the per-group running total
+  — including that the oversize rejection emits no bus traffic at all. Every
+  assertion compares against a reference read-back through a single-message
+  `i2c_write()` rather than against the bytes written, so it holds on parts
+  that mask register bits. Registered in `zephyr/scripts/ci-build.sh`, which
+  brings the CI target count to nine; that gate builds and links it but, like
+  every other target, never runs it.
+
 - CI gate (`.github/workflows/zephyr.yml`) building the module against a pinned
   Zephyr revision on `native_sim/native/64`, driven by
   `zephyr/scripts/ci-build.sh`. Covers the two viable samples, baseline-failure
@@ -530,3 +336,193 @@ The format is based on
   a real GPIO controller and replaced that temporary mapping with required,
   same-parent standard `cs-gpios`; the Zephyr path now uses checked GPIO edges
   around `spi/transfer`, while non-Zephyr `spi/batch` remains supported.
+
+### Removed
+
+- **`snippet_root: zephyr` from `zephyr/module.yml`.** It pointed at a
+  `zephyr/snippets/` directory that has never existed. `tests: - zephyr/tests`
+  was reported as dangling by the same issue but is now backed by a real
+  directory.
+  ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
+
+### Fixed
+
+- **`i2c_burst_write()` no longer returns `-ENOTSUP`.** The I2C controller
+  accepted a `I2C_MSG_STOP`-delimited message group only when it held one
+  message, or a write followed by a repeated-start read. Zephyr's
+  `i2c_burst_write()` emits two *writes* — `I2C_MSG_WRITE`, then
+  `I2C_MSG_WRITE | I2C_MSG_STOP` — which matched neither and was rejected. So
+  was every hand-rolled gather write, which is where most affected in-tree
+  sensor, EEPROM and display drivers actually are; `i2c_burst_write()` and
+  `i2c_burst_write_dt()` were the only `i2c.h` helpers that produced the
+  rejected shape.
+  ([#102](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/102))
+
+  A group's write messages now concatenate into a single payload and reach the
+  bus as one transaction: one START, one address phase, all the bytes, one
+  STOP. That is what a real controller emits for this message sequence. Three
+  shapes are supported — N writes, a single read, and N writes followed by one
+  read. Rejections are narrower but still explicit: a read that is not the last
+  message of its group, and more than one read in a group, remain `-ENOTSUP`,
+  because the FFI has no shape for reading and then continuing within one
+  transaction and splitting the group would insert a STOP the caller never
+  asked for.
+
+  Requiring `I2C_MSG_RESTART` on the terminating read of a multi-message group
+  is **unchanged**: a group that was rejected for lacking it before is still
+  rejected for lacking it now.
+
+  This was deliberately **not** fixed by routing through the `i2c/batch`
+  firmware endpoint. Zephyr's SPI driver moved *away* from `spi/batch` for
+  unrelated reasons, and more importantly `i2c/batch` only became atomic
+  recently (#128) inside unreleased schema 0.7, where `validate()` cannot tell
+  the two firmware behaviours apart. Depending on it would have converted a
+  loud `-ENOTSUP` into silent register corruption against a firmware built
+  before that fix. `gallo_i2c_write()` has no such ambiguity.
+
+- **The transfer size limit is now checked per group, not per message.** Two
+  4096-byte writes each passed the old per-message check and would have
+  concatenated to 8192. The check is now an overflow-safe running total over a
+  group's writes, with the group's terminating read bounded separately, both
+  against the same 4096-byte figure and both returning `-EMSGSIZE`.
+
+  This does not narrow what was previously accepted: the reachable payload
+  range was already `[0, 4096]` through a single `i2c_msg`, and it still is.
+
+  **4096 remains unmeasured.** It is `pico_de_gallo_internal::MAX_TRANSFER_SIZE`,
+  the firmware's declared argument bound, and not a demonstrated end-to-end
+  ceiling for this transport. `PDG_SPI_MAX_BUFFER` started from the same figure
+  and had to be lowered to 1013 after 4096 was measured to fail `-ECOMM` and
+  1015 to wedge the firmware dispatcher device-wide. `i2c/write` carries its
+  payload in the request frame exactly as `spi/transfer` does. It was left at
+  4096 rather than lowered by analogy, because a bound measured on a
+  differently framed endpoint is a guess and lowering it would reject
+  single-message writes that work today.
+  ([#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146))
+
+- **A `NULL` message buffer is now refused only when the message claims to
+  carry bytes.** Zephyr's I2C API permits `msg.buf == NULL` whenever
+  `msg.len == 0`, and both `i2c_write(dev, NULL, 0, addr)` and
+  `i2c_write_read(dev, addr, NULL, 0, rx, n)` produce exactly that. The driver
+  rejected every `NULL` buffer with `-EINVAL` regardless of length.
+  ([#137](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/137))
+
+  Relaxing that check alone would have accomplished nothing. The FFI rejects a
+  `NULL` pointer unconditionally, *before* any length check, because
+  `slice::from_raw_parts(NULL, 0)` is undefined behaviour in Rust. So the
+  pointer had to be kept away from it rather than merely allowed past the
+  driver's own guard.
+
+- **A validated group is now reduced to the operation its data bytes actually
+  require.** A new `classify_group_()` judges a group by #147's `write_len` —
+  already the concatenated total of its writes — and the length of its
+  terminating read, and no message carrying zero bytes is forwarded:
+
+  | group | operation |
+  |---|---|
+  | writes total > 0, read > 0 | write-then-read (unchanged) |
+  | writes total > 0, no read or read == 0 | plain write; the empty read phase is dropped |
+  | writes total == 0, read > 0 | plain read; the empty writes are dropped |
+  | writes total == 0, no read or read == 0 | address-only probe |
+
+  This composes with #147's gather rather than replacing it: `W(0 NULL) + W(3)`
+  still gathers to a 3-byte write, and an empty write consumes none of the
+  per-group size budget. No `NULL` pointer and no zero length reaches the FFI.
+
+- **An address-only probe is refused with `-ENOTSUP`,** in the validation
+  pre-pass — before the controller mutex and before any group reaches the bus,
+  preserving the "validation is a complete pre-pass, no partial bus traffic"
+  property #147 relies on.
+
+  The refusal is a hardware limitation, not a policy choice. The RP2040/RP2350
+  `DW_apb_i2c` block drives the address phase only as a side effect of pushing
+  bytes into `IC_DATA_CMD`, so `START + ADDR + STOP` is physically unreachable
+  ([rp-rs/rp-hal#678](https://github.com/rp-rs/rp-hal/issues/678),
+  [embassy-rs/embassy#4474](https://github.com/embassy-rs/embassy/issues/4474)).
+
+  This also corrects a **live wrong answer** that was independent of the `NULL`
+  question. Zephyr's shell `i2c scan` (`drivers/i2c/i2c_shell.c`) probes each
+  address with a single `{ buf = &dst, len = 0, flags = I2C_MSG_WRITE |
+  I2C_MSG_STOP }` message. `buf` is non-`NULL` there, so the old check never
+  blocked it: it reached `gallo_i2c_write(..., 0)` and, since the host-surface
+  guard in #136, returned `InvalidArgument` for every address. **`i2c scan`
+  prints `0 devices found` on a populated bus today.** At the new default it
+  still reports every address absent, but for a stated reason rather than
+  silently; with the new Kconfig below it produces a correct answer.
+
+### Known Issues
+
+- **A 1015-byte TX-only `spi/transfer` never returns and wedges the firmware
+  dispatcher device-wide.** Deterministic, reproduced across two byte-identical
+  consecutive runs on board `5256657D8A5D7F03`.
+
+  Once triggered, **every** subsequent RPC hangs — including from a freshly
+  started host process, and including `system/reset-subscriptions`, which is
+  the endpoint that exists to recover orphaned state. The condition therefore
+  survives host process death entirely.
+
+  The 2 s watchdog does **not** catch it: the dedicated feeder task keeps
+  feeding while a request handler blocks, which is precisely the gap left open
+  by the serial-dispatch hazard recorded in AGENTS.md §13.17 (2026-06-03).
+
+  In the reproduced tests, the device resumed responding after USB
+  re-enumeration. On Windows/WSL this was `usbipd detach` followed by attach.
+  This is an observed procedure, not proof that detach directly cancels the
+  blocked handler, and it has not been generalized to other dispatcher-wedge
+  triggers. On Linux/macOS use cable reconnect or USB unbind/rebind; power-cycle
+  if re-enumeration is unavailable or ineffective. The blocked dispatcher cannot
+  service `system/reset-subscriptions`.
+
+  Root cause is in the firmware/wire layer (`crates/`) and is out of scope for
+  this module. `PDG_SPI_MAX_BUFFER = 1013` puts the hang out of reach *through
+  this driver* by rejecting 1014 and above locally with `-EMSGSIZE` before any
+  transport call, but that is containment, not a fix, and it does not prove
+  that no other hang window exists below 1013.
+
+### Verification
+
+- **#137 is built-only, not behaviourally verified.** No Zephyr environment on
+  the authoring machine, no host-side unit-test harness in the module, and no
+  board. `.github/workflows/zephyr.yml` gates the PR (path-filtered,
+  `zephyr/**` touched) but is **build-only** — it never executes a produced
+  binary — and it builds only the default configuration, so the
+  `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ=y` arm compiles by construction
+  (`IS_ENABLED`, not `#ifdef`) and is never exercised.
+
+  One thing *was* executed. `struct pdg_i2c_group`, `enum pdg_i2c_op`,
+  `validate_group_()` and `classify_group_()` were extracted **verbatim** from
+  `pdg_i2c.c` into a throwaway host harness and driven through **18 group
+  shapes**: the pre-existing shapes; #147's gather shapes crossed with zero
+  lengths (`W(1)+W(0 NULL)`, `W(0 NULL)+W(3)`, `W(0)+W(0)`, `W(0)+W(0)+R(2)`,
+  `W(2)+W(1)+R(0 NULL)`); the Zephyr shell scan probe; both `NULL`-buffer
+  forms; #147's three rejection shapes, which still reject; and the per-group
+  running total at and over the 4096-byte limit. All 18 matched, clean under
+  `-Wall -Wextra -Werror -Wswitch-enum -Wformat=2` at `-O0`, `-Os`, `-O2` and
+  `-O3`.
+
+  The harness is **not committed and is not a test suite**. It covers four
+  items and says nothing about `pdg_i2c_transfer()`, `gather_writes_()`, the
+  Kconfig wiring, or any transport behaviour, and it cannot fail in CI. Note
+  that `tests/pdg_i2c_burst` (added for #102) is board-attached and is not run
+  by CI either.
+
+- **Upstream `tests/drivers/spi/spi_loopback` on `native_sim/native/64`:
+  41 PASS / 12 SKIP / 1 FAIL / 2 NOT BUILT.** This is **not** a clean upstream
+  pass, and must not be read as one.
+
+  The single FAIL is upstream's own `test_spi_complete_multiple_timed`. It is
+  **unrunnable on this target rather than a driver defect**: `spi.c:406` asserts
+  `time_spent_us >= minimum_transfer_time_us`, a **lower** bound, measured with
+  the Zephyr clock — which on `native_sim` does not advance while the host
+  thread is blocked inside a USB call, so every transfer measures 0 µs.
+  `CONFIG_SPI_IDEAL_TRANSFER_DURATION_SCALING` bounds only the **upper** limit,
+  so **no multiplier value can affect this assertion**. It fails on SLOW and
+  passes on FAST purely because SLOW's theoretical minimum (432 µs) is larger;
+  that is structural, not flaky.
+
+  The 12 SKIPs are all expected and were verified exactly: five word sizes
+  rejected by the driver with `-ENOTSUP`, `test_spi_deinit` (no
+  `miso-gpios`/`mosi-gpios` on `zephyr,user`) and `test_spi_hold_on_cs`
+  (HOLD without LOCK is unsupported), across two spec iterations. The 2 NOT
+  BUILT are the async cases, which require `CONFIG_SPI_ASYNC=y`; this driver
+  `BUILD_ASSERT`s that off.

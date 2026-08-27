@@ -5,9 +5,17 @@ All notable changes to `pico-de-gallo-firmware` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.0] — 2026-08-27
 
 ### Fixed
+
+- `spi/batch` now applies three ordered refusals before touching the
+  chip-select pin: invalid index, monitored pin, then `ExplicitInput`.
+  Only `ExplicitInput` would corrupt tracked state, so `LegacyAuto` and
+  `ExplicitOutput` remain accepted. An accepted pin is parked high; its
+  prior level is not restored, and `pin_modes` is not written. Removed
+  both pre-existing `.unwrap()` calls from the chip-select path. Closes
+  #104.
 
 - `i2c/batch` now issues one
   `embedded_hal_async::i2c::I2c::transaction()` instead of executing each
@@ -36,18 +44,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `pico-de-gallo-lib`, the embedded-hal `I2c::write` impl, Python, MCP
   and Zephyr. In a batch the refusal happens during validation, so no
   earlier operation in that batch reaches the bus. Closes #101.
-
-## [0.11.0] — 2026-08-24
-
-### Fixed
-
-- `spi/batch` now applies three ordered refusals before touching the
-  chip-select pin: invalid index, monitored pin, then `ExplicitInput`.
-  Only `ExplicitInput` would corrupt tracked state, so `LegacyAuto` and
-  `ExplicitOutput` remain accepted. An accepted pin is parked high; its
-  prior level is not restored, and `pin_modes` is not written. Removed
-  both pre-existing `.unwrap()` calls from the chip-select path. Closes
-  #104.
 
 ## [0.10.1] — 2026-08-04
 
