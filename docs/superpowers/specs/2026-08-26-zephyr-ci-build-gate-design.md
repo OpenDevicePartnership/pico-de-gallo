@@ -424,6 +424,15 @@ check.
   `snippet_root:` entries in `zephyr/module.yml`, and unit tests for the pure
   helper functions. This change deliberately does not add twister metadata; it
   drives `west build` directly.
+
+  > **Partly overtaken 2026-08-27.** Two of those premises were already stale
+  > when this was written, and a third was wrong. `zephyr/tests/` exists, so
+  > only `snippet_root:` dangled. And upstream has retired *both* `sample.yaml`
+  > and `testcase.yaml` in favour of `tests.yaml`
+  > (`filename:sample.yaml repo:zephyrproject-rtos/zephyr` → 0 results;
+  > `filename:testcase.yaml path:tests/drivers` → 0, against 268 `tests.yaml`).
+  > Twister metadata and a `twister` CI job landed under #109; the unit tests
+  > for the helpers remain outstanding.
 - **Hardware runs.** `run-m5.sh` remains a manual, board-attached procedure.
 
 ## 9. Documentation obligations
