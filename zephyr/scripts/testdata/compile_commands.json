@@ -1,0 +1,17 @@
+[
+  {
+    "directory": "/tmp/pdg-ci/spi_nor_id",
+    "command": "cc -o modules/pico-de-gallo/drivers/mfd/pdg_mfd.c.obj -c /src/zephyr/drivers/mfd/pdg_mfd.c",
+    "file": "/src/zephyr/drivers/mfd/pdg_mfd.c"
+  },
+  {
+    "directory": "/tmp/pdg-ci/spi_nor_id",
+    "command": "cc -o modules/pico-de-gallo/drivers/gpio/pdg_gpio.c.obj -c /src/zephyr/drivers/gpio/pdg_gpio.c",
+    "file": "/src/zephyr/drivers/gpio/pdg_gpio.c"
+  },
+  {
+    "directory": "/tmp/pdg-ci/spi_nor_id",
+    "command": "cc -o modules/pico-de-gallo/drivers/spi/pdg_spi.c.obj -c /src/zephyr/drivers/spi/pdg_spi.c",
+    "file": "/src/zephyr/drivers/spi/pdg_spi.c"
+  }
+]

@@ -222,6 +222,13 @@ The format is based on
 
 ### Added
 
+- CI gate (`.github/workflows/zephyr.yml`) building the module against a pinned
+  Zephyr revision on `native_sim/native/64`, driven by
+  `zephyr/scripts/ci-build.sh`. Covers the two viable samples, baseline-failure
+  assertions for the two IS31 samples, and the four M5 test applications.
+  Build-only: no produced binary is executed, so this adds no runtime coverage.
+  ([#130](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/130))
+
 - Added the `odp,pico-de-gallo-gpio` devicetree compatible and its Zephyr GPIO
   controller driver. The controller is a direct child of an enabled
   `odp,pico-de-gallo` parent, borrows the parent's USB connection and never

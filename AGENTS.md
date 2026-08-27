@@ -229,6 +229,7 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 | `deny`             | `cargo-deny check bans licenses sources advisories` in both workspaces.                        |
 | `actionlint`       | Lints every `.github/workflows/*.yml`. CRLF kills it, so does bad matrix syntax.               |
 | `nostd.yml`        | Builds firmware for both `hw-rev1` and `hw-rev2`.                                              |
+| `zephyr.yml`       | Builds the Zephyr module on `native_sim/native/64` against a pinned Zephyr revision. Build-only.|
 
 ### 5.4 Full CI workflow catalog
 
@@ -236,6 +237,7 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 |---------------------------|------------------------------------|-------------------------------------------------------------------------------------------------------------|
 | `check.yml`               | Push to `main`, PRs                | fmt, clippy, doc, hack (feature powerset), test, msrv, **lockfile drift**, **actionlint**, **cargo-deny**, **cargo-semver-checks** |
 | `nostd.yml`               | Push to `main`, PRs                | Firmware compiles + clippy for `thumbv8m.main-none-eabihf`, both `hw-rev1` and `hw-rev2`                    |
+| `zephyr.yml`              | Push to `main`, PRs (path-filtered)| Builds `zephyr/` for `native_sim/native/64` at a pinned Zephyr revision: 2 samples pass, 2 IS31 samples asserted to fail at baseline, 4 M5 apps. **Build-only** |
 | `gh-pages.yml`            | Push to `main`                     | Builds and deploys the mdBook docs to GitHub Pages                                                          |
 | `release-application.yml` | `application-v*` tags              | Builds `gallo` for Linux/Windows/macOS                                                                      |
 | `release-ffi.yml`         | `ffi-v*` tags                      | Builds `.so` / `.dll` / `.dylib` + C header                                                                 |
@@ -904,13 +906,21 @@ complaint. Two specific obligations:
   correspondence with `_Static_assert`s, so reordering a wire enum
   breaks the Zephyr test build.
 
-**Neither gate is automatic.** No CI job builds, compiles, or lints the
-Zephyr module (#130) — `rg -ln zephyr .github/workflows/` returns
-nothing — so `-Werror=switch` and those `_Static_assert`s only fire
-when a human runs a Zephyr build by hand. Until #130 lands, the table
-rows above are the only thing standing between an FFI change and a
-silently broken consumer. Do not treat a green CI run as evidence that
-`zephyr/` still builds.
+**Both gates now run in CI, within limits.** `.github/workflows/zephyr.yml`
+builds the module on every PR touching `zephyr/`, `crates/pico-de-gallo-ffi/`,
+`crates/pico-de-gallo-internal/`, either root Cargo file, or its own
+`.github/workflows/zephyr.yml` definition, so
+`-Werror=switch` and those `_Static_assert`s fire automatically. The
+`_Static_assert`s only compile in the M5 targets, which the gate builds
+for exactly that reason.
+
+Two limits still bind. The workflow is **path-filtered**, so a change
+outside those paths does not run it. And it is **build-only** — it never
+executes a produced binary, because that reaches `gallo_init_strict()`
+and needs an attached board. So a green run is evidence that `zephyr/`
+still *compiles and links*; it is not evidence that it still *works*.
+Behavioural claims still require the manual, board-attached
+`zephyr/tests/pdg_mfd_m5/run-m5.sh` procedure.
 
 **Carve-out — `zephyr/` has no book chapter, deliberately.** The
 Zephyr module is documented in `zephyr/README.md` (the authoritative
@@ -955,9 +965,11 @@ For every PR, confirm:
    referenced files) — CI builds the book on every PR via
    `.github/workflows/gh-pages.yml`'s build step.
 7. FFI or wire-protocol changes name the `zephyr/` consumer they
-   affect, or state in the PR body that none is affected. Do not
-   accept "CI is green" as evidence — no CI job builds the Zephyr
-   module (#130).
+   affect, or state in the PR body that none is affected. A green
+   `zephyr.yml` run is acceptable evidence that the consumer still
+   compiles and links. It is **not** evidence that behaviour is
+   unchanged, and it does not run at all if the PR touches none of
+   that workflow's filtered paths — check that it actually ran.
 
 Reviewers, including the automated Copilot reviewer, should flag
 PRs that violate any of the above as a **blocker**, not a nit.
