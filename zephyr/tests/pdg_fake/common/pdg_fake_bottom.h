@@ -35,15 +35,22 @@ void pdg_fake_reset(void);
  */
 int pdg_fake_open_count(void);
 
-/* How many times pdg_i2c_bottom_write() was called. The fake's
- * pdg_i2c_bottom_write_read() delegates its tx half to that same recorder, so
- * a write_read also increments this count and lands in the last-write buffer.
+/* How many times pdg_i2c_bottom_write() was called. Counts plain writes only:
+ * a write_read is counted by pdg_fake_i2c_write_read_count() instead, so a
+ * test can prove the driver issued a plain write and not a write-read.
  */
 int pdg_fake_i2c_write_count(void);
 
+/* How many times pdg_i2c_bottom_write_read() was called. */
+int pdg_fake_i2c_write_read_count(void);
+
 /* Copy the payload of the most recent pdg_i2c_bottom_write() into buf.
- * Returns the number of bytes written, or -1 if there was no such call or
- * the payload does not fit in buflen. Sets *addr to the target address.
+ * Returns the number of bytes written, or -1 if there was no such call, the
+ * payload does not fit in buflen, or buf is NULL with bytes to copy. Sets
+ * *addr to the target address; addr may be NULL.
+ *
+ * The tx half of a write_read is recorded here too, so this reflects the most
+ * recent write OR write_read. Use the two counters to tell them apart.
  */
 int pdg_fake_i2c_last_write(uint16_t *addr, uint8_t *buf, size_t buflen);
 

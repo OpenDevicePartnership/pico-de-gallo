@@ -58,6 +58,8 @@ static int open_count_latched;
  * pdg_fake_reset().
  */
 static int i2c_write_count;
+static int i2c_write_read_count;
+static int i2c_have_last_write;
 static uint16_t i2c_last_addr;
 static uint8_t i2c_last_buf[FAKE_MAX_PAYLOAD];
 static size_t i2c_last_len;
@@ -67,6 +69,8 @@ void pdg_fake_reset(void)
 {
 	/* open_count_latched is deliberately not cleared -- see above. */
 	i2c_write_count = 0;
+	i2c_write_read_count = 0;
+	i2c_have_last_write = 0;
 	i2c_last_addr = 0U;
 	i2c_last_len = 0U;
 	i2c_last_overflowed = 0;
@@ -83,9 +87,22 @@ int pdg_fake_i2c_write_count(void)
 	return i2c_write_count;
 }
 
+int pdg_fake_i2c_write_read_count(void)
+{
+	return i2c_write_read_count;
+}
+
 int pdg_fake_i2c_last_write(uint16_t *addr, uint8_t *buf, size_t buflen)
 {
-	if (i2c_write_count == 0 || i2c_last_overflowed || i2c_last_len > buflen) {
+	if (i2c_have_last_write == 0 || i2c_last_overflowed || i2c_last_len > buflen) {
+		return -1;
+	}
+
+	/* A NULL destination with bytes to hand back is a caller bug, not a
+	 * zero-byte result. Refuse it rather than reporting a length nobody
+	 * received.
+	 */
+	if (i2c_last_len > 0U && buf == NULL) {
 		return -1;
 	}
 
@@ -93,11 +110,34 @@ int pdg_fake_i2c_last_write(uint16_t *addr, uint8_t *buf, size_t buflen)
 		*addr = i2c_last_addr;
 	}
 
-	if (i2c_last_len > 0U && buf != NULL) {
+	if (i2c_last_len > 0U) {
 		memcpy(buf, i2c_last_buf, i2c_last_len);
 	}
 
 	return (int)i2c_last_len;
+}
+
+/*
+ * Shared payload capture for both write and write_read. The two call counters
+ * stay separate: a test that must prove the driver issued a PLAIN write
+ * cannot do so from a counter that a write_read also bumps.
+ */
+static void record_tx_(uint16_t addr, const uint8_t *buf, size_t len)
+{
+	i2c_have_last_write = 1;
+	i2c_last_addr = addr;
+
+	/*
+	 * Record the overflow rather than truncating silently: a test that asks
+	 * for a payload we could not store must fail, not pass on a prefix.
+	 */
+	i2c_last_overflowed = (len > FAKE_MAX_PAYLOAD);
+	if (!i2c_last_overflowed) {
+		i2c_last_len = len;
+		if (len > 0U && buf != NULL) {
+			memcpy(i2c_last_buf, buf, len);
+		}
+	}
 }
 
 /* Strong override of the weak definition in zephyr/drivers/common/common.c. */
@@ -138,19 +178,7 @@ int pdg_i2c_bottom_write(void *ctx, uint16_t addr, const uint8_t *buf, size_t le
 	(void)ctx;
 
 	i2c_write_count++;
-	i2c_last_addr = addr;
-
-	/*
-	 * Record the overflow rather than truncating silently: a test that asks
-	 * for a payload we could not store must fail, not pass on a prefix.
-	 */
-	i2c_last_overflowed = (len > FAKE_MAX_PAYLOAD);
-	if (!i2c_last_overflowed) {
-		i2c_last_len = len;
-		if (len > 0U && buf != NULL) {
-			memcpy(i2c_last_buf, buf, len);
-		}
-	}
+	record_tx_(addr, buf, len);
 
 	return 0;
 }
@@ -175,12 +203,16 @@ int pdg_i2c_bottom_read(void *ctx, uint16_t addr, uint8_t *buf, size_t len)
 int pdg_i2c_bottom_write_read(void *ctx, uint16_t addr, const uint8_t *tx, size_t txlen,
 			      uint8_t *rx, size_t rxlen)
 {
+	(void)ctx;
+
 	/*
-	 * Delegates so the tx half is recorded on the same path as a plain
-	 * write. This means pdg_fake_i2c_write_count() counts write_read calls
-	 * too -- see the note on that accessor in pdg_fake_bottom.h.
+	 * Captures the tx half into the same last-write buffer as a plain
+	 * write, but bumps its OWN counter. Sharing the counter would let a
+	 * driver that wrongly issued a write_read satisfy a test written to
+	 * prove it issued one plain write.
 	 */
-	pdg_i2c_bottom_write(ctx, addr, tx, txlen);
+	i2c_write_read_count++;
+	record_tx_(addr, tx, txlen);
 
 	if (rx != NULL && rxlen > 0) {
 		memset(rx, 0xA5, rxlen);

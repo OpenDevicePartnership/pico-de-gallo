@@ -65,6 +65,8 @@ ZTEST(pdg_fake_i2c, test_gather_write_concatenates_into_one_transfer)
 	zassert_equal(pdg_fake_i2c_write_count(), 1,
 		      "expected exactly one bus write, saw %d",
 		      pdg_fake_i2c_write_count());
+	zassert_equal(pdg_fake_i2c_write_read_count(), 0,
+		      "the gather path must issue a plain write, not a write-read");
 
 	len = pdg_fake_i2c_last_write(&addr, seen, sizeof(seen));
 	zassert_equal(len, 3, "expected a 3-byte payload, saw %d", len);
