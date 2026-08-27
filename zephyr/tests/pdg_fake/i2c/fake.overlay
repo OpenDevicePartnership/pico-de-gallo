@@ -1,0 +1,30 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Topology for the recording-fake suite: parent and I2C okay, nothing else.
+ *
+ * Mirrors zephyr/tests/pdg_i2c_burst/burst.overlay, minus the commentary about
+ * physical boards, because this image never reaches one. The bottom layer is
+ * replaced by a strong override in tests/pdg_fake/common/pdg_fake_bottom.c, so
+ * gallo_init_strict() is never entered and no USB device is opened.
+ *
+ * GPIO and SPI stay disabled. An enabled SPI controller would additionally
+ * park every cs-gpios pin as an inactive output at init, which this suite has
+ * no reason to provoke.
+ *
+ * No target device node is declared. No real bus traffic occurs, so there is
+ * no peer for one to describe.
+ *
+ * No serial-number is declared. The fake ignores the selector entirely, and
+ * only GPIO and SPI children require the parent to name one.
+ */
+
+&pdg0 {
+	status = "okay";
+};
+
+&pdg_i2c0 {
+	status = "okay";
+};
