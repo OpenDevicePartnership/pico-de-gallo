@@ -1,0 +1,22 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# See zephyr/samples/i2c_bridge/tests.yaml for why this is tests.yaml rather
+# than sample.yaml, why build_only is mandatory, why there is no depends_on,
+# and why no extra_args are needed.
+sample:
+  name: Pico de Gallo SPI NOR ID
+  description: Read the JEDEC ID of a SPI NOR flash behind a Pico de Gallo bridge
+common:
+  build_only: true
+  tags:
+    - spi
+    - flash
+    - shield
+    - pico_de_gallo
+tests:
+  sample.pico_de_gallo.spi_nor_id:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64

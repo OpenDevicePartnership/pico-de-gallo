@@ -155,3 +155,111 @@ jobs:
           "$GITHUB_WORKSPACE/zephyr/scripts/ci-build.sh" \
             --build-root /tmp/pdg-ci \
             --summary "$GITHUB_STEP_SUMMARY"
+
+  twister:
+    # Runs the twister scenarios declared by the seven tests.yaml files.
+    #
+    # This overlaps ci-build.sh and is deliberately the weaker of the two: it
+    # has no equivalent of that script's two-sided translation-unit and Kconfig
+    # assertions. It earns its place for two things ci-build.sh cannot do.
+    #
+    # First, twister forces CONFIG_COMPILER_WARNINGS_AS_ERRORS=y *and*
+    # --edtlib-Werror (scripts/pylib/twister/twisterlib/runner.py, run_cmake()),
+    # so devicetree BINDING warnings become build failures. This module ships
+    # four custom bindings and a plain `west build` never checks them that way.
+    #
+    # Second, `type: unit` scenarios only run under twister -- it is what
+    # selects BOARD=unit_testing. That is the vehicle for the hardware-free
+    # helper coverage in #109.
+    #
+    # `needs: build` rather than `needs: selftest` purely so the west workspace
+    # cache is already populated; the two jobs would otherwise both pay a cold
+    # checkout and race to save the same key.
+    needs: build
+
+    runs-on: ubuntu-latest
+
+    name: ubuntu / host / zephyr twister
+
+    env:
+      ZEPHYR_TOOLCHAIN_VARIANT: host
+      ZEPHYR_BASE: ${{ github.workspace }}/zephyrproject/zephyr
+      CARGO_TARGET_DIR: /tmp/pdg-cargo-target
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          submodules: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            ninja-build gperf device-tree-compiler python3-venv libmagic1
+
+      - name: Install west
+        run: |
+          python3 -m venv "$HOME/zephyr-venv"
+          "$HOME/zephyr-venv/bin/pip" install --upgrade pip west
+          echo "$HOME/zephyr-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Install stable
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Restore the west workspace
+        id: west-cache
+        uses: actions/cache@v4
+        with:
+          path: zephyrproject
+          key: zephyr-ws-${{ env.ZEPHYR_REVISION }}-v1
+
+      - name: Initialise the west workspace
+        if: steps.west-cache.outputs.cache-hit != 'true'
+        # Same shape as the build job; see the comment there for why this is a
+        # detached clone rather than `west init --mr`.
+        run: |
+          git clone --filter=blob:none \
+            https://github.com/zephyrproject-rtos/zephyr zephyrproject/zephyr
+          git -C zephyrproject/zephyr checkout --detach "$ZEPHYR_REVISION"
+          west init -l zephyrproject/zephyr
+          cd zephyrproject
+          west update --narrow -o=--filter=blob:none
+
+      - name: Install Zephyr Python dependencies
+        working-directory: zephyrproject
+        run: west packages pip --install
+
+      - name: Run twister
+        working-directory: zephyrproject
+        # The module is not in the west manifest, so twister does not read its
+        # zephyr/module.yml and cannot discover the `samples:`/`tests:` roots on
+        # its own. They are named explicitly with -T instead.
+        #
+        # EXTRA_ZEPHYR_MODULES is likewise not passed here. Every application's
+        # own CMakeLists.txt appends the module root before find_package(Zephyr),
+        # which is what makes the shield and the drivers resolve. That is the
+        # same mechanism a bare `west build <dir>` relies on.
+        #
+        # Both platforms are named. `type: unit` scenarios are matched to
+        # unit_testing, so a run limited to native_sim/native/64 would filter
+        # them out silently.
+        run: |
+          west twister \
+            --testsuite-root "$GITHUB_WORKSPACE/zephyr/samples" \
+            --testsuite-root "$GITHUB_WORKSPACE/zephyr/tests" \
+            --platform native_sim/native/64 \
+            --platform unit_testing \
+            --outdir /tmp/pdg-twister \
+            --inline-logs \
+            --verbose
+
+      - name: Upload the twister report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: twister-report
+          path: |
+            /tmp/pdg-twister/twister.json
+            /tmp/pdg-twister/twister.xml
+          if-no-files-found: warn
+

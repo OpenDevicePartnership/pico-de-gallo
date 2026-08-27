@@ -1,0 +1,37 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# Regression coverage for issue #102 (i2c_burst_write() returned -ENOTSUP).
+#
+# BUILD ONLY. This image drives a real TMP102 over a real bridge; running it
+# without one reaches gallo_init_strict() and fails. twister treats native_sim
+# as `type: native` and would execute the binary otherwise.
+#
+# A fixture gate (harness_config: fixture:) would describe the hardware need
+# more honestly than build_only does, and would let the suite be run on the
+# bench with `west twister --fixture ...`. It is not used here because a
+# fixture-filtered instance appears to be skipped rather than built, which would
+# forfeit the build coverage that is the only thing a boardless runner can give.
+# That behaviour was not verified; revisit if it turns out a filtered instance
+# still builds.
+#
+# The named overlay must be declared: Zephyr auto-applies app.overlay only, and
+# this suite uses burst.overlay so that zephyr/scripts/ci-build.sh can select it
+# per target. extra_dtc_overlay_files resolves relative to this directory.
+#
+# See zephyr/samples/i2c_bridge/tests.yaml for why the file is tests.yaml and
+# why no depends_on or extra_args appear here.
+common:
+  build_only: true
+  tags:
+    - drivers
+    - i2c
+    - pico_de_gallo
+tests:
+  drivers.pico_de_gallo.i2c.burst_write:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    extra_dtc_overlay_files:
+      - burst.overlay
