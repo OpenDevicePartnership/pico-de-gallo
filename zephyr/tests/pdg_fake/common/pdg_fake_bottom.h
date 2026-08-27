@@ -35,7 +35,10 @@ void pdg_fake_reset(void);
  */
 int pdg_fake_open_count(void);
 
-/* How many times pdg_i2c_bottom_write() was called. */
+/* How many times pdg_i2c_bottom_write() was called. The fake's
+ * pdg_i2c_bottom_write_read() delegates its tx half to that same recorder, so
+ * a write_read also increments this count and lands in the last-write buffer.
+ */
 int pdg_fake_i2c_write_count(void);
 
 /* Copy the payload of the most recent pdg_i2c_bottom_write() into buf.

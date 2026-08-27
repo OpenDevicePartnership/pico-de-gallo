@@ -36,3 +36,40 @@ ZTEST(pdg_fake_i2c, test_weak_override_replaces_the_bottom_layer)
 		     "the fake's pdg_common_bottom_open() was never called, so "
 		     "the weak override did not take effect");
 }
+
+/*
+ * Regression coverage for #102. i2c_burst_write() emits WRITE followed by
+ * WRITE | STOP, and the driver must concatenate the two into ONE bus write.
+ * Before the #102 fix the grouping refused that shape with -ENOTSUP.
+ *
+ * This is the first automated coverage of that regression: the pre-existing
+ * zephyr/tests/pdg_i2c_burst suite needs an attached board, so CI only ever
+ * built and linked it.
+ */
+ZTEST(pdg_fake_i2c, test_gather_write_concatenates_into_one_transfer)
+{
+	const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(pdg_i2c0));
+	uint8_t reg = 0x02;
+	uint8_t val[2] = { 0x03, 0x00 };
+	struct i2c_msg msgs[2] = {
+		{ .buf = &reg,  .len = 1U, .flags = I2C_MSG_WRITE },
+		{ .buf = val,   .len = 2U, .flags = I2C_MSG_WRITE | I2C_MSG_STOP },
+	};
+	uint8_t seen[8];
+	uint16_t addr = 0U;
+	int len;
+
+	pdg_fake_reset();
+	zassert_ok(i2c_transfer(dev, msgs, 2U, 0x48));
+
+	zassert_equal(pdg_fake_i2c_write_count(), 1,
+		      "expected exactly one bus write, saw %d",
+		      pdg_fake_i2c_write_count());
+
+	len = pdg_fake_i2c_last_write(&addr, seen, sizeof(seen));
+	zassert_equal(len, 3, "expected a 3-byte payload, saw %d", len);
+	zassert_equal(addr, 0x48, "wrong target address");
+	zassert_equal(seen[0], 0x02);
+	zassert_equal(seen[1], 0x03);
+	zassert_equal(seen[2], 0x00);
+}

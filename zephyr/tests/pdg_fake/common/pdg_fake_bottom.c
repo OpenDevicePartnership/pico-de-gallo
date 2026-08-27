@@ -19,7 +19,19 @@
 #include <stdint.h>
 #include <string.h>
 
+/*
+ * The declaration sites of the symbols overridden below. Included rather than
+ * hand-copied so a signature drift between production and this fake is a
+ * compile error instead of undefined behaviour that links cleanly. Both headers
+ * are FFI-free (stdint/stddef only), so including them here does not drag
+ * pico_de_gallo.h in.
+ */
+#include "common_bottom.h"
+#include "pdg_i2c_bottom.h"
+
 #include "pdg_fake_bottom.h"
+
+#define FAKE_MAX_PAYLOAD 4096
 
 /*
  * Any non-NULL value. pdg_mfd_init() only checks for NULL, and this file
@@ -42,12 +54,23 @@ static int fake_ctx_token;
  */
 static int open_count_latched;
 
+/* Per-call I2C recorders. Unlike open_count_latched, these ARE cleared by
+ * pdg_fake_reset().
+ */
+static int i2c_write_count;
+static uint16_t i2c_last_addr;
+static uint8_t i2c_last_buf[FAKE_MAX_PAYLOAD];
+static size_t i2c_last_len;
+static int i2c_last_overflowed;
+
 void pdg_fake_reset(void)
 {
-	/*
-	 * Nothing to clear yet. Task 2 adds the per-call I2C recorders and
-	 * resets them here. open_count_latched is never cleared -- see above.
-	 */
+	/* open_count_latched is deliberately not cleared -- see above. */
+	i2c_write_count = 0;
+	i2c_last_addr = 0U;
+	i2c_last_len = 0U;
+	i2c_last_overflowed = 0;
+	memset(i2c_last_buf, 0, sizeof(i2c_last_buf));
 }
 
 int pdg_fake_open_count(void)
@@ -57,15 +80,24 @@ int pdg_fake_open_count(void)
 
 int pdg_fake_i2c_write_count(void)
 {
-	return 0;
+	return i2c_write_count;
 }
 
 int pdg_fake_i2c_last_write(uint16_t *addr, uint8_t *buf, size_t buflen)
 {
-	(void)addr;
-	(void)buf;
-	(void)buflen;
-	return -1;
+	if (i2c_write_count == 0 || i2c_last_overflowed || i2c_last_len > buflen) {
+		return -1;
+	}
+
+	if (addr != NULL) {
+		*addr = i2c_last_addr;
+	}
+
+	if (i2c_last_len > 0U && buf != NULL) {
+		memcpy(buf, i2c_last_buf, i2c_last_len);
+	}
+
+	return (int)i2c_last_len;
 }
 
 /* Strong override of the weak definition in zephyr/drivers/common/common.c. */
@@ -86,16 +118,13 @@ void pdg_common_bottom_close(void *ctx)
  * Strong overrides of the four weak definitions in
  * zephyr/drivers/i2c/pdg_i2c_bottom.c.
  *
- * These exist in Task 1 for correctness, not for observation. pdg_i2c_init()
- * calls pdg_i2c_bottom_set_config() unconditionally (pdg_i2c.c:804) and treats
- * a negative return as fatal, nulling data->ctx. Without this override the
+ * Two jobs. First, correctness: pdg_i2c_init() calls
+ * pdg_i2c_bottom_set_config() unconditionally (pdg_i2c.c:804) and treats a
+ * negative return as fatal, nulling data->ctx. Without an override the
  * production shim would pass &fake_ctx_token to gallo_i2c_set_config() as a
- * PicoDeGallo *, and the Rust FFI would dereference an invalid opaque pointer
- * -- so the weak-override gate could fail even when weak/strong resolution
- * works perfectly, which is exactly the confound the gate must not have.
- *
- * They are therefore minimal no-ops returning success. Task 2 replaces these
- * bodies with the recording implementations that back pdg_fake_i2c_*().
+ * PicoDeGallo *, and the Rust FFI would dereference an invalid opaque pointer.
+ * Second, observation: the write path records what the driver asked the bus to
+ * do, which is what backs pdg_fake_i2c_*().
  */
 int pdg_i2c_bottom_set_config(void *ctx, uint8_t frequency)
 {
@@ -107,9 +136,22 @@ int pdg_i2c_bottom_set_config(void *ctx, uint8_t frequency)
 int pdg_i2c_bottom_write(void *ctx, uint16_t addr, const uint8_t *buf, size_t len)
 {
 	(void)ctx;
-	(void)addr;
-	(void)buf;
-	(void)len;
+
+	i2c_write_count++;
+	i2c_last_addr = addr;
+
+	/*
+	 * Record the overflow rather than truncating silently: a test that asks
+	 * for a payload we could not store must fail, not pass on a prefix.
+	 */
+	i2c_last_overflowed = (len > FAKE_MAX_PAYLOAD);
+	if (!i2c_last_overflowed) {
+		i2c_last_len = len;
+		if (len > 0U && buf != NULL) {
+			memcpy(i2c_last_buf, buf, len);
+		}
+	}
+
 	return 0;
 }
 
@@ -133,10 +175,12 @@ int pdg_i2c_bottom_read(void *ctx, uint16_t addr, uint8_t *buf, size_t len)
 int pdg_i2c_bottom_write_read(void *ctx, uint16_t addr, const uint8_t *tx, size_t txlen,
 			      uint8_t *rx, size_t rxlen)
 {
-	(void)ctx;
-	(void)addr;
-	(void)tx;
-	(void)txlen;
+	/*
+	 * Delegates so the tx half is recorded on the same path as a plain
+	 * write. This means pdg_fake_i2c_write_count() counts write_read calls
+	 * too -- see the note on that accessor in pdg_fake_bottom.h.
+	 */
+	pdg_i2c_bottom_write(ctx, addr, tx, txlen);
 
 	if (rx != NULL && rxlen > 0) {
 		memset(rx, 0xA5, rxlen);

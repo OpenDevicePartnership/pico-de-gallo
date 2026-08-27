@@ -21,3 +21,10 @@ target_include_directories(app PRIVATE ${CMAKE_CURRENT_LIST_DIR}/../common)
 # pdg_i2c_bottom.c. Same mechanism as zephyr/drivers/CMakeLists.txt.
 target_sources(native_simulator INTERFACE ${CMAKE_CURRENT_LIST_DIR}/../common/pdg_fake_bottom.c)
 target_include_directories(native_simulator INTERFACE ${CMAKE_CURRENT_LIST_DIR}/../common)
+
+# The fake includes the production declaration sites of every symbol it
+# overrides, so a signature drift is a compile error rather than undefined
+# behaviour that links cleanly. Both headers are FFI-free (stdint/stddef only).
+target_include_directories(native_simulator INTERFACE
+  ${PDG_MODULE_ROOT}/zephyr/drivers/common
+  ${PDG_MODULE_ROOT}/zephyr/drivers/i2c)
