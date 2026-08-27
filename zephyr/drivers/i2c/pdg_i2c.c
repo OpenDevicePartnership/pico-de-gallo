@@ -15,6 +15,7 @@
 #define DT_DRV_COMPAT odp_pico_de_gallo_i2c
 
 #include <inttypes.h>
+#include <string.h>
 
 #include <zephyr/device.h>
 #include <zephyr/drivers/i2c.h>
@@ -72,7 +73,31 @@ DT_INST_FOREACH_STATUS_OKAY(PDG_I2C_PARENT_ASSERTS)
 
 LOG_MODULE_REGISTER(i2c_pico_de_gallo, CONFIG_I2C_LOG_LEVEL);
 
-// Firmware single-transfer limit (pico_de_gallo_internal::MAX_TRANSFER_SIZE).
+/*
+ * Per-group transfer ceiling in bytes, applied separately to a group's
+ * concatenated write payload and to its terminating read.
+ *
+ * This is pico_de_gallo_internal::MAX_TRANSFER_SIZE, the firmware's declared
+ * single-transfer argument bound. It is NOT a measured end-to-end ceiling for
+ * this transport and must not be read as one. The sibling SPI driver carries
+ * PDG_SPI_MAX_BUFFER = 1013 precisely because starting from 4096 was wrong
+ * twice over: on spi/transfer, 4096 TX-only failed -ECOMM, a reasoned 3072
+ * full-duplex guess also failed -ECOMM, and 1015 TX-only wedged the firmware
+ * dispatcher device-wide (AGENTS.md 13.17, 2026-08-19). i2c/write carries its
+ * whole payload in the request frame exactly as spi/transfer does, so a lower
+ * real ceiling plausibly exists here too. Nobody has measured it. Issue #146.
+ *
+ * 4096 is kept rather than lowered by analogy for two reasons. A bound
+ * measured on a differently framed endpoint is a guess, not evidence, and the
+ * SPI constant's own comment warns against both raising and lowering it by
+ * guesswork. And lowering would reject single-message writes between any new
+ * bound and 4096 that this driver accepts today.
+ *
+ * Concatenating a group's writes does not widen the exposure: the reachable
+ * payload range was already [0, 4096] through one i2c_msg, and the running
+ * total in validate_group_() keeps it there. What changes is only how easy a
+ * large write is to construct.
+ */
 #define PDG_I2C_MAX_BUFFER 4096U
 
 struct pdg_i2c_config {
@@ -84,6 +109,22 @@ struct pdg_i2c_data {
 	void *ctx;
 	struct k_mutex lock;
 	uint32_t dev_config;
+};
+
+/*
+ * One STOP-delimited group of Zephyr I2C messages, classified into the shape
+ * the FFI can express.
+ *
+ * `write_count` leading write messages are followed by either nothing or, when
+ * `has_read` is set, exactly one terminating read. `write_len` is their
+ * combined length, which is what the single FFI call actually sends.
+ */
+struct pdg_i2c_group {
+	uint8_t first;
+	uint8_t count;
+	uint8_t write_count;
+	bool has_read;
+	size_t write_len;
 };
 
 /* helper to map a Zephyr I2C speed (see the zephyr I2C_SPEED_... macros) into a
@@ -154,25 +195,173 @@ static int freq_to_speed_(uint32_t clock_frequency, uint32_t* speed)
 	}
 }
 
-// helper for pdg_i2c_transfer() to validate a group of messages and make sure it is in a format that is supported by the current pico-de-gallo ffi API
-static int validate_group_(const struct i2c_msg *msgs, uint8_t first, uint8_t count)
+/*
+ * Classify one STOP-delimited group of messages and check its size bounds.
+ *
+ * Accepted shapes, all of which the FFI can express as exactly one call:
+ *
+ *   - N write messages, N >= 1. Their payloads concatenate into a single
+ *     gallo_i2c_write(): one START, one address phase, all the bytes, one
+ *     STOP. That is precisely what a real controller puts on the wire for
+ *     Zephyr's i2c_burst_write(), which emits I2C_MSG_WRITE followed by
+ *     I2C_MSG_WRITE | I2C_MSG_STOP and used to be rejected here. Issue #102.
+ *   - A single read message, which becomes gallo_i2c_read().
+ *   - N write messages followed by exactly one read, which becomes
+ *     gallo_i2c_write_read().
+ *
+ * Rejected: any group containing a read that is not the final message, and any
+ * group containing more than one read. The FFI has no shape for reading and
+ * then continuing within one transaction, and splitting such a group into
+ * several calls would insert a STOP the caller did not ask for.
+ *
+ * The terminating read of a multi-message group must carry I2C_MSG_RESTART. A
+ * direction change inside a transaction is a repeated START, which is what
+ * gallo_i2c_write_read() issues, and every Zephyr helper that produces this
+ * shape (i2c_write_read(), i2c_burst_read(), i2c_reg_read_byte()) sets the
+ * flag. This requirement is carried over unchanged from the two-message rule
+ * this function replaces; a group that was rejected for lacking it before is
+ * still rejected for lacking it now.
+ *
+ * This function is pure over `msgs` and is deliberately called twice per
+ * group: once during the pre-pass, and once during execution to recover the
+ * same classification without an array whose size would scale with num_msgs.
+ * It cannot disagree between the two calls, because a read writes into the
+ * bytes at msgs[i].buf and never into the i2c_msg descriptors themselves.
+ */
+static int validate_group_(const struct i2c_msg *msgs, uint8_t first, uint8_t count,
+			   struct pdg_i2c_group *group)
 {
-	// The current FFI supports one read, one write, or one write
-	// followed by a repeated-start read within a STOP-delimited group.
+	size_t write_len = 0U;
+	uint8_t write_count = 0U;
+	bool has_read = false;
 
-	if (count == 1U) {
+	for (uint8_t i = 0U; i < count; i++) {
+		const struct i2c_msg *msg = &msgs[first + i];
+
+		if ((msg->flags & I2C_MSG_READ) != 0U) {
+			if (i != (count - 1U)) {
+				LOG_ERR("I2C message %u is a read in the middle of a "
+					"STOP-delimited group of %u messages starting at "
+					"message %u. A read may only be the last message of a "
+					"group. Returning -ENOTSUP.",
+					first + i, count, first);
+				return -ENOTSUP;
+			}
+
+			has_read = true;
+			break;
+		}
+
+		/*
+		 * A running total, not a per-message check. Two 4096-byte
+		 * writes each pass individually and concatenate to 8192.
+		 * Subtracting from the limit rather than adding to the total
+		 * cannot overflow, because write_len never exceeds it.
+		 */
+		if (msg->len > (PDG_I2C_MAX_BUFFER - write_len)) {
+			LOG_ERR("The write messages of the I2C group starting at message %u "
+				"exceed the %u-byte transfer limit at message %u (%" PRIu32
+				" bytes after %zu). Returning -EMSGSIZE.",
+				first, PDG_I2C_MAX_BUFFER, first + i, msg->len, write_len);
+			return -EMSGSIZE;
+		}
+
+		write_len += msg->len;
+		write_count++;
+	}
+
+	if (has_read) {
+		const struct i2c_msg *read = &msgs[first + count - 1U];
+
+		if ((count > 1U) && ((read->flags & I2C_MSG_RESTART) == 0U)) {
+			LOG_ERR("I2C message %u terminates a write-then-read group starting at "
+				"message %u but does not set I2C_MSG_RESTART. Changing direction "
+				"inside a transaction requires a repeated start. Returning "
+				"-ENOTSUP.",
+				first + count - 1U, first);
+			return -ENOTSUP;
+		}
+
+		if (read->len > PDG_I2C_MAX_BUFFER) {
+			LOG_ERR("I2C read message %u is %" PRIu32 " bytes, which exceeds the "
+				"%u-byte transfer limit. Returning -EMSGSIZE.",
+				first + count - 1U, read->len, PDG_I2C_MAX_BUFFER);
+			return -EMSGSIZE;
+		}
+	}
+
+	group->first = first;
+	group->count = count;
+	group->write_count = write_count;
+	group->has_read = has_read;
+	group->write_len = write_len;
+
+	return 0;
+}
+
+/*
+ * Present a group's leading write messages as one contiguous payload.
+ *
+ * On success *payload points at the bytes to send and *scratch is either NULL
+ * or a k_malloc() block the caller must k_free(). Only called with
+ * group->write_count >= 1.
+ *
+ * No copy is made when the group holds fewer than two writes, or when every
+ * write in it is empty. In both cases msgs[first].buf together with
+ * group->write_len already denotes the exact payload, so the ordinary
+ * single-write and write-then-read paths stay allocation-free.
+ *
+ * The empty case is excluded from the merge path because an empty payload has
+ * nothing to merge, and allocating for it would introduce an -ENOMEM failure
+ * mode on a call that can otherwise not fail locally. (k_malloc(0) does
+ * succeed -- z_alloc_helper() adds a heap reference before allocating -- so
+ * this is a deliberate choice, not a workaround for a NULL return.) The
+ * resulting behaviour is identical to a lone empty write: the payload reaches
+ * the firmware and is refused there with I2cError::ZeroLengthWrite, mapped to
+ * -EINVAL (issue #101).
+ */
+static int gather_writes_(const struct i2c_msg *msgs, const struct pdg_i2c_group *group,
+			  const uint8_t **payload, uint8_t **scratch)
+{
+	uint8_t *flat;
+	size_t offset = 0U;
+
+	*scratch = NULL;
+
+	if ((group->write_count < 2U) || (group->write_len == 0U)) {
+		*payload = msgs[group->first].buf;
 		return 0;
 	}
 
-	if ((count == 2U) &&
-	    ((msgs[first].flags & I2C_MSG_READ) == 0U) &&
-	    ((msgs[first + 1U].flags & I2C_MSG_READ) != 0U) &&
-	    ((msgs[first + 1U].flags & I2C_MSG_RESTART) != 0U)) {
-		return 0;
+	flat = k_malloc(group->write_len);
+	if (flat == NULL) {
+		LOG_ERR("Failed to allocate a %zu-byte buffer to merge I2C messages %u-%u "
+			"into one write. Returning -ENOMEM.",
+			group->write_len, group->first, group->first + group->write_count - 1U);
+		return -ENOMEM;
 	}
 
-	LOG_ERR("Unsupported I2C message group starting at message %u with %u messages. Returning -ENOTSUP.", first, count);
-	return -ENOTSUP;
+	for (uint8_t i = 0U; i < group->write_count; i++) {
+		const struct i2c_msg *msg = &msgs[group->first + i];
+
+		/*
+		 * The NULL guard is deliberate even though pdg_i2c_transfer()
+		 * currently rejects a NULL buffer on every message: issue #101
+		 * asks for that rejection to be relaxed when len is 0, and
+		 * memcpy(dst, NULL, 0) is undefined behaviour in C even at
+		 * n == 0. Guarding here means the two changes cannot collide.
+		 */
+		if (msg->buf != NULL) {
+			memcpy(flat + offset, msg->buf, msg->len);
+		}
+
+		offset += msg->len;
+	}
+
+	*payload = flat;
+	*scratch = flat;
+
+	return 0;
 }
 
 static int pdg_i2c_configure(const struct device *dev, uint32_t dev_config)
@@ -279,14 +468,15 @@ static int pdg_i2c_transfer(const struct device *dev, struct i2c_msg *msgs, uint
 			return -ENOTSUP;
 		}
 
-		/* make sure the message size doesn't exceed pico-de-gallo's max buffer size */
-		if (msgs[i].len > PDG_I2C_MAX_BUFFER) {
-			LOG_ERR("I2C message %u is %u bytes, which exceeds the %u-byte transfer limit. Returning -EMSGSIZE.", i, msgs[i].len, PDG_I2C_MAX_BUFFER);
-			return -EMSGSIZE;
-		}
-
 		if ((msgs[i].flags & I2C_MSG_STOP) != 0U) {
-			ret = validate_group_(msgs, group_start, i - group_start + 1U);
+			/*
+			 * Size limits are checked per group rather than per
+			 * message, because the writes of a group are sent as
+			 * one payload. See validate_group_().
+			 */
+			struct pdg_i2c_group group;
+
+			ret = validate_group_(msgs, group_start, i - group_start + 1U, &group);
 			if (ret < 0) {
 				return ret;
 			}
@@ -315,48 +505,82 @@ static int pdg_i2c_transfer(const struct device *dev, struct i2c_msg *msgs, uint
 	/* loop through every message and send one FFI call per "message group"
 	 *
 	 * - a "message group" contains all messages since the previous STOP
-	 * - a "message group" can either be one or two messages, as enforced by
-         *    validate_group_().
+	 * - the shapes a group may take are enumerated by validate_group_(),
+	 *   which the pre-pass above has already run over every one of them
 	 *
-	 * the purpose of sending messages in  a "message group" is because pico-de-gallo-ffi uses STOP for each individual operation
+	 * the purpose of sending messages in a "message group" is because
+	 * pico-de-gallo-ffi uses STOP for each individual operation
 	 */
 	for (uint8_t i = 0U; i < num_msgs; i++) {
-		struct i2c_msg *first;
-		uint8_t group_count;
+		struct pdg_i2c_group group;
 
 		// if this message isn't a STOP it isn't the end to a message group, so we can skip
 		if ((msgs[i].flags & I2C_MSG_STOP) == 0U) {
 			continue;
 		}
 
-		first = &msgs[group_start];
-		group_count = i - group_start + 1U;
+		/*
+		 * Re-derives what the pre-pass already accepted. It cannot
+		 * fail here and cannot disagree: validate_group_() is pure
+		 * over msgs, and a completed read writes into the bytes at
+		 * msgs[].buf, never into the descriptors. Checked anyway so a
+		 * future edit that breaks that property fails loudly instead
+		 * of transferring against a stale classification.
+		 */
+		ret = validate_group_(msgs, group_start, i - group_start + 1U, &group);
+		if (ret < 0) {
+			LOG_ERR("I2C group starting at message %u passed validation but was "
+				"rejected during execution: errno=%d. This is a driver bug.",
+				group_start, ret);
+			break;
+		}
 
-		if (group_count == 1U) {
+		if (group.write_count == 0U) {
 			// group is just a single READ message
-			if ((first->flags & I2C_MSG_READ) != 0U) {
-				ret = pdg_i2c_bottom_read(data->ctx, addr, first->buf, first->len);
-				if (ret < 0) {
-					LOG_ERR("I2C read message %u from address 0x%02x failed (%u bytes): errno=%d.",
-							group_start, addr, first->len, ret);
-				}
-				// group is just a single WRITE message
-			} else {
-				ret = pdg_i2c_bottom_write(data->ctx, addr, first->buf, first->len);
-				if (ret < 0) {
-					LOG_ERR("I2C write message %u to address 0x%02x failed (%u bytes): errno=%d.",
-							group_start, addr, first->len, ret);
-				}
-			}
-			// group is a two-message WRITE READ operation
-		} else {
-			struct i2c_msg *second = &msgs[group_start + 1U];
+			const struct i2c_msg *read = &msgs[group.first];
 
-			ret = pdg_i2c_bottom_write_read(data->ctx, addr, first->buf, first->len, second->buf, second->len);
+			ret = pdg_i2c_bottom_read(data->ctx, addr, read->buf, read->len);
 			if (ret < 0) {
-				LOG_ERR("I2C write-read messages %u-%u at address 0x%02x failed (TX=%u bytes, RX=%u bytes): errno=%d.",
-						group_start, group_start + 1U, addr, first->len, second->len, ret);
+				LOG_ERR("I2C read message %u from address 0x%02x failed (%" PRIu32
+						" bytes): errno=%d.",
+						group.first, addr, read->len, ret);
 			}
+		} else {
+			// one or more WRITE messages, merged into a single payload
+			const uint8_t *payload;
+			uint8_t *scratch;
+
+			ret = gather_writes_(msgs, &group, &payload, &scratch);
+			if (ret < 0) {
+				break;
+			}
+
+			if (group.has_read) {
+				// group is a WRITE-then-READ operation
+				const struct i2c_msg *read = &msgs[group.first + group.write_count];
+
+				ret = pdg_i2c_bottom_write_read(data->ctx, addr, payload,
+						group.write_len, read->buf, read->len);
+				if (ret < 0) {
+					LOG_ERR("I2C write-read messages %u-%u at address 0x%02x "
+							"failed (TX=%zu bytes, RX=%" PRIu32
+							" bytes): errno=%d.",
+							group.first, group.first + group.count - 1U,
+							addr, group.write_len, read->len, ret);
+				}
+			} else {
+				// group is only WRITE messages
+				ret = pdg_i2c_bottom_write(data->ctx, addr, payload, group.write_len);
+				if (ret < 0) {
+					LOG_ERR("I2C write messages %u-%u to address 0x%02x failed "
+							"(%zu bytes): errno=%d.",
+							group.first, group.first + group.count - 1U,
+							addr, group.write_len, ret);
+				}
+			}
+
+			/* NULL whenever no copy was made; k_free() ignores it. */
+			k_free(scratch);
 		}
 
 		if (ret < 0) {

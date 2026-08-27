@@ -1,0 +1,29 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * I2C gather-write topology: parent and I2C okay, everything else disabled.
+ *
+ * GPIO and SPI stay disabled. This image touches nothing but the I2C bus, and
+ * an enabled SPI controller would additionally park every cs-gpios pin as an
+ * inactive output at init, which this test has no reason to provoke.
+ *
+ * No target device node is declared. The test drives raw i2c_* calls
+ * deliberately: the subject is the controller's message-group handling, and
+ * binding a sensor driver would hide the very message shapes being exercised.
+ * The target address and register live in src/main.c.
+ *
+ * No serial-number is declared either, matching samples/i2c_bridge. That is
+ * safe only when exactly one board is attached; see "Selecting a specific
+ * board" in zephyr/README.md if you have several. Only GPIO and SPI children
+ * require the parent to name a serial, because they actuate physical pins.
+ */
+
+&pdg0 {
+	status = "okay";
+};
+
+&pdg_i2c0 {
+	status = "okay";
+};
