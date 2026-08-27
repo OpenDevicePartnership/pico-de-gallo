@@ -5,9 +5,18 @@ All notable changes to `pyco-de-gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-08-27
+
+### Added
+
+- Added `DeviceInfo.num_gpios` and `PycoDeGallo.num_gpios()`.
+  Closes #104.
 
 ### Changed
+
+- SPI batch calls now check the runtime GPIO bound and raise distinct
+  `RuntimeError` messages for metadata failure, zero GPIOs, and an
+  invalid index. Closes #104.
 
 - `PycoDeGallo.i2c_write(addr, b"")`, and any `i2c_batch` containing an empty
   write payload, now raise `RuntimeError` without a USB round-trip,
@@ -21,19 +30,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   repeated START, and only the final operation receives a STOP. A bus failure
   reports `failed_op = 0` for the transaction as a whole; validation failures
   retain an exact index. The Python API is unchanged. Closes #128.
-
-## [0.5.0] — 2026-08-24
-
-### Added
-
-- Added `DeviceInfo.num_gpios` and `PycoDeGallo.num_gpios()`.
-  Closes #104.
-
-### Changed
-
-- SPI batch calls now check the runtime GPIO bound and raise distinct
-  `RuntimeError` messages for metadata failure, zero GPIOs, and an
-  invalid index. Closes #104.
 
 ## [0.4.2] — 2026-06-22
 

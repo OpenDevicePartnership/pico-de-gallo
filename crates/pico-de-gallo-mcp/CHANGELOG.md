@@ -5,7 +5,7 @@ All notable changes to `gallo-mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.0] — 2026-08-27
 
 ### Added
 
@@ -25,6 +25,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   now one the server actually serves.
 
 ### Changed
+
+- `spi_batch` validates `cs` against retained, already-validated
+  `DeviceInfo::num_gpios` before it transmits, and reports invalid
+  parameters distinctly. Payload parsing deliberately precedes `connect()`:
+  connecting calls `system_reset_subscriptions()`, which tears down every
+  GPIO subscription on the board, including subscriptions owned by other
+  processes, so malformed hex cannot cause that destructive cross-process
+  side effect. Closes #104.
 
 - The `i2c_write` and `i2c_batch` tools reject an empty write payload with an
   invalid-argument error before connecting to a board, naming the offending
@@ -59,18 +67,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logged `rmcp 2.2.0` — and would have silently started showing `rmcp 3.1.4`
   after the bump above. The version is read from `CARGO_PKG_VERSION` so a
   release bump cannot leave it stale.
-
-## [0.3.0] — 2026-08-24
-
-### Changed
-
-- `spi_batch` validates `cs` against retained, already-validated
-  `DeviceInfo::num_gpios` before it transmits, and reports invalid
-  parameters distinctly. Payload parsing deliberately precedes `connect()`:
-  connecting calls `system_reset_subscriptions()`, which tears down every
-  GPIO subscription on the board, including subscriptions owned by other
-  processes, so malformed hex cannot cause that destructive cross-process
-  side effect. Closes #104.
 
 ## [0.2.0] — 2026-08-05
 

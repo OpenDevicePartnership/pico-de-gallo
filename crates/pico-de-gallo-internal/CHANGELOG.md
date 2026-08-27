@@ -5,7 +5,21 @@ All notable changes to `pico-de-gallo-internal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.7.0] — 2026-08-27
+
+### Breaking Changes
+
+- Appended `SpiError::InvalidCsPin`, `SpiError::CsPinUnavailable`, and
+  `SpiError::CsPinMonitored`, in that order after `Other`, and added
+  `DeviceInfo::num_gpios: u8` as the final field. Both are append-only
+  wire changes, but AGENTS.md §6.2 still requires a lockstep schema
+  bump. This release is that bump: `SCHEMA_VERSION_MINOR` is derived
+  from this crate's version by `build.rs` and now reads 7. Closes #104.
+- Appended `I2cError::ZeroLengthWrite` at index 7, after `Other`. The
+  firmware now returns it instead of forwarding an empty payload to
+  `embassy_rp::i2c::write_async`, which never returns on RP2040/RP2350
+  and wedges the dispatcher device-wide. Ships inside this same schema
+  0.7 bump. Closes #101.
 
 ### Changed
 
@@ -15,29 +29,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and only the final operation is followed by a STOP. Validation failures keep
   their exact `failed_op`; a bus failure applies to the transaction as a whole
   and reports `failed_op = 0`. Closes #128.
-
-### Breaking Changes
-
-- Appended `I2cError::ZeroLengthWrite` at index 7, after `Other`. The
-  firmware now returns it instead of forwarding an empty payload to
-  `embassy_rp::i2c::write_async`, which never returns on RP2040/RP2350
-  and wedges the dispatcher device-wide. Closes #101.
-- Appending a wire enum variant requires a schema minor bump under
-  AGENTS.md §6.2. Schema 0.7 is bumped in-repo but **not yet tagged or
-  published**, so a maintainer may either fold this variant into the
-  unreleased 0.7.0 or take internal to 0.8.0. That is a deliberate
-  release-time decision; no version is assigned here.
-
-## [0.7.0] — 2026-08-24
-
-### Breaking Changes
-
-- Appended `SpiError::InvalidCsPin`, `SpiError::CsPinUnavailable`, and
-  `SpiError::CsPinMonitored`, in that order after `Other`, and added
-  `DeviceInfo::num_gpios: u8` as the final field. Both are append-only
-  wire changes, but AGENTS.md §6.2 still requires a lockstep schema
-  bump. That bump has not happened yet; no future version is assigned.
-  Closes #104.
 
 ## [0.6.0] — 2026-06-22
 

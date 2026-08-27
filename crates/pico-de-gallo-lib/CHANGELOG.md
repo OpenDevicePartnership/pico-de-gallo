@@ -5,9 +5,25 @@ All notable changes to `pico-de-gallo-lib` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.8.0] — 2026-08-27
+
+### Added
+
+- Added cached, runtime-authoritative `PicoDeGallo::num_gpios()`.
+  Closes #104.
+
+- Hardware-in-the-loop tests for the zero-length write guards, `#[ignore]`d by
+  default so CI does not run them. Run with
+  `cargo test -p pico-de-gallo-lib -- --ignored --test-threads=1`; see the
+  `hardware` module documentation for bench setup.
 
 ### Changed
+
+- `spi_batch` now refuses `cs_pin >= num_gpios` locally without
+  transmitting. A `device/info` failure remains a metadata error rather
+  than becoming an invalid chip-select, and `num_gpios == 0` is distinct.
+  The implicit metadata request uses the existing 300-second
+  `DEVICE_INFO_TIMEOUT`. Closes #104.
 
 - `PicoDeGallo::i2c_write` and `PicoDeGallo::i2c_batch` refuse a zero-length
   write locally, before transmitting. Firmware has refused it since #101, so
@@ -32,28 +48,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Bus failures report `failed_op = 0` for the transaction as a whole, while
   validation failures retain an exact index. The Rust API and wire shape are
   unchanged. Closes #128.
-
-### Added
-
-- Hardware-in-the-loop tests for the zero-length write guards, `#[ignore]`d by
-  default so CI does not run them. Run with
-  `cargo test -p pico-de-gallo-lib -- --ignored --test-threads=1`; see the
-  `hardware` module documentation for bench setup.
-
-## [0.8.0] — 2026-08-24
-
-### Added
-
-- Added cached, runtime-authoritative `PicoDeGallo::num_gpios()`.
-  Closes #104.
-
-### Changed
-
-- `spi_batch` now refuses `cs_pin >= num_gpios` locally without
-  transmitting. A `device/info` failure remains a metadata error rather
-  than becoming an invalid chip-select, and `num_gpios == 0` is distinct.
-  The implicit metadata request uses the existing 300-second
-  `DEVICE_INFO_TIMEOUT`. Closes #104.
 
 ## [0.7.1] — 2026-07-28
 
