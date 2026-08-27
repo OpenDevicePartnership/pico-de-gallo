@@ -186,11 +186,42 @@ boundary.
 
 ### 4.3 Scope of the substitution
 
-Only `zephyr/drivers/*/pdg_*_bottom.c` gain the attribute. In particular
-`zephyr/drivers/common/gallo_registry.c` - which owns `gallo_init_strict()` - is
-**not** in scope for this design. A suite that stubs the per-driver bottoms but
-still boots the real registry would try to open a USB device. How the test
-prevents the registry from running is an open question; see §6.
+> **Resolved 2026-08-27, after tracing the call graph.** An earlier draft of this
+> section left the registry question open. It is not open.
+
+`zephyr/drivers/mfd/pdg_mfd.c:76` calls `pdg_common_bottom_open(config->serial)`
+**directly**, and `zephyr/drivers/common/common.c:5` implements that as
+`pdg_registry_open(serial)`, which is what reaches `gallo_init_strict()`. The
+MFD parent owns the connection; children borrow it via `pdg_mfd_ctx()` and never
+open anything themselves.
+
+So the single chokepoint is `pdg_common_bottom_open()`. Weak-marking it and
+letting the test return a non-NULL sentinel means the registry is never entered
+and `gallo_registry.c` needs no change at all.
+
+The functions to mark weak are therefore:
+
+| File | Functions | Why |
+|---|---|---|
+| `zephyr/drivers/common/common.c` | `pdg_common_bottom_open`, `pdg_common_bottom_close` | Stops the device being opened. `pdg_common_status_to_errno` stays strong - the test wants the real mapping. |
+| `zephyr/drivers/i2c/pdg_i2c_bottom.c` | `pdg_i2c_bottom_set_config`, `_write`, `_read`, `_write_read` | Lets the fake observe what the driver asked for. `_open`/`_close` delegate to the common pair and need no separate treatment. |
+| `zephyr/drivers/spi/pdg_spi_bottom.c` | the transfer entry points | Same, for the SPI half. |
+
+### 4.4 How the test observes the fake
+
+The fake runs in the **host** context; the ztest assertions run in the
+**embedded** context. They share no globals, so the recording cannot simply be a
+`static` array the test reads.
+
+The module already solves this. `zephyr/tests/pdg_mfd_m5/common/m5_bottom.{c,h}`
+is a host-context shim whose embedded-facing header is restricted to basic C
+types, exactly like the driver bottoms. The fake follows that pattern: a
+`pdg_fake_bottom.h` declaring FFI-free accessors (`pdg_fake_reset()`,
+`pdg_fake_write_count()`, `pdg_fake_last_write()`), implemented in the
+host-context `pdg_fake_bottom.c` alongside the strong overrides.
+
+This is a real constraint on assertion design, not a formality: anything the
+test wants to assert about must be reachable through a basic-C-types accessor.
 
 ## 5. Verification obligations
 
@@ -211,10 +242,11 @@ reaches the real FFI fails in CI, where no board is attached. Therefore:
    is built by a plain Makefile whose rule is `%.c -> %.o`, not by CMake
    (`zephyr/scripts/ci-build.sh` assertion 4 documents this). Weak/strong
    resolution should behave normally, but this is unverified and is the first
-   thing to probe.
-2. **How is `gallo_registry.c` prevented from opening a device?** Options
-   include giving `gallo_init_strict()` the same weak treatment, or arranging
-   the devicetree so no MFD parent is instantiated. Unresolved.
+   thing to probe. It is also the single point on which the whole design turns:
+   if it fails, only the rejected Kconfig seam remains.
+2. ~~How is `gallo_registry.c` prevented from opening a device?~~ **Resolved -
+   see §4.3.** `pdg_common_bottom_open()` is the sole chokepoint; the registry
+   needs no change.
 3. **Is a fixture gate viable for the board-attached suites?** #149 chose
    `build_only: true` on the assumption that a fixture-filtered instance is
    skipped rather than built, forfeiting build coverage. That assumption was
