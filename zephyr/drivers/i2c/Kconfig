@@ -12,6 +12,33 @@ config I2C_PICO_DE_GALLO
 	  Zephyr I2C API calls to a Pico de Gallo USB bridge attached to the host
 	  running native_sim via the Pico de Gallo C FFI.
 
+config I2C_PICO_DE_GALLO_PROBE_WITH_READ
+	bool "Substitute a 1-byte read for an address-only I2C probe"
+	depends on I2C_PICO_DE_GALLO
+	help
+	  The RP2040/RP2350 I2C block cannot emit an address-only transaction:
+	  the address phase is driven solely by pushing data bytes, so
+	  START + ADDR + STOP is physically unreachable (rp-rs/rp-hal#678,
+	  embassy-rs/embassy#4474). A STOP-delimited group carrying no data
+	  bytes in either direction therefore cannot be performed as asked, and
+	  without this option the driver returns -ENOTSUP for it.
+
+	  Enable this to have the driver substitute a 1-byte read to the same
+	  address instead: an ACK means the device is present, a NACK surfaces
+	  as -ENXIO. That makes Zephyr's shell "i2c scan" work, at the cost of
+	  one blocking USB round trip per address.
+
+	  Two caveats. A write-only device may acknowledge its write address
+	  while NACKing its read address, so a scan performed this way can
+	  under-report. And the substituted read consumes a byte, which can pop
+	  a FIFO or step an EEPROM address pointer. Zephyr's own i2c_shell.c
+	  carries the same warning about read-based scanning. This is why the
+	  option is off by default: a bus scan is a deliberate act, whereas a
+	  driver silently turning every zero-length write into a read is not.
+
+	  gallo i2c scan, or the firmware's i2c/scan endpoint, probes the whole
+	  bus in one round trip and does not need this option.
+
 config HEAP_MEM_POOL_ADD_SIZE_PDG_I2C
 	int "Heap memory pool size for the Pico de Gallo I2C driver"
 	default 8192

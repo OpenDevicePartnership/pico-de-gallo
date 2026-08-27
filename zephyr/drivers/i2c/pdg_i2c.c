@@ -127,6 +127,63 @@ struct pdg_i2c_group {
 	size_t write_len;
 };
 
+/*
+ * What a validated group actually asks the bus to do, judged by the data bytes
+ * it carries rather than by its message shape.
+ *
+ * Zephyr permits msg.buf == NULL whenever msg.len == 0, and i2c_write(dev,
+ * NULL, 0, addr) and i2c_write_read(dev, addr, NULL, 0, rx, n) both produce
+ * exactly that (issue #137). A message carrying no bytes contributes nothing
+ * to the bus, so a group holding one collapses onto a simpler shape: writes
+ * that are all empty plus a real read is just a read, and real writes plus an
+ * empty read is just a write. Collapsing matters for more than tidiness -- the
+ * FFI rejects a NULL pointer unconditionally, before it looks at any length,
+ * because slice::from_raw_parts(NULL, 0) is undefined behaviour in Rust. So a
+ * NULL pointer must never be handed to the bottom shim at all.
+ *
+ * PDG_I2C_OP_PROBE is what is left when a group carries no data bytes in
+ * either direction. It is an address-only transaction, which the RP2040/RP2350
+ * I2C block cannot emit: the address phase is driven solely by pushing bytes,
+ * so START + ADDR + STOP is physically unreachable (rp-rs/rp-hal#678,
+ * embassy-rs/embassy#4474). It is handled separately, never forwarded.
+ */
+enum pdg_i2c_op {
+	PDG_I2C_OP_PROBE,
+	PDG_I2C_OP_READ,
+	PDG_I2C_OP_WRITE,
+	PDG_I2C_OP_WRITE_READ,
+};
+
+/*
+ * Pure over a group validate_group_() has already accepted, and called from
+ * both the pre-pass and the execution loop for the same reason validate_group_()
+ * is: the classification must be recoverable without an array whose size scales
+ * with num_msgs, and it cannot disagree between the two calls because a read
+ * writes into the bytes at msgs[i].buf and never into the i2c_msg descriptors.
+ *
+ * write_len is already the concatenated total of the group's writes, so N
+ * empty writes and one empty write are indistinguishable here, which is
+ * correct: neither puts a byte on the bus.
+ */
+static enum pdg_i2c_op classify_group_(const struct i2c_msg *msgs,
+				       const struct pdg_i2c_group *group)
+{
+	bool has_tx = group->write_len != 0U;
+	bool has_rx = group->has_read &&
+		      (msgs[group->first + group->count - 1U].len != 0U);
+
+	if (has_tx && has_rx) {
+		return PDG_I2C_OP_WRITE_READ;
+	}
+	if (has_tx) {
+		return PDG_I2C_OP_WRITE;
+	}
+	if (has_rx) {
+		return PDG_I2C_OP_READ;
+	}
+	return PDG_I2C_OP_PROBE;
+}
+
 /* helper to map a Zephyr I2C speed (see the zephyr I2C_SPEED_... macros) into a
  * pico de gallo speed code (see gallo_i2c_set_config() in pico_de_gallo.h)
  * 
@@ -311,14 +368,15 @@ static int validate_group_(const struct i2c_msg *msgs, uint8_t first, uint8_t co
  * group->write_len already denotes the exact payload, so the ordinary
  * single-write and write-then-read paths stay allocation-free.
  *
- * The empty case is excluded from the merge path because an empty payload has
- * nothing to merge, and allocating for it would introduce an -ENOMEM failure
- * mode on a call that can otherwise not fail locally. (k_malloc(0) does
- * succeed -- z_alloc_helper() adds a heap reference before allocating -- so
- * this is a deliberate choice, not a workaround for a NULL return.) The
- * resulting behaviour is identical to a lone empty write: the payload reaches
- * the firmware and is refused there with I2cError::ZeroLengthWrite, mapped to
- * -EINVAL (issue #101).
+ * The all-empty case is now unreachable from pdg_i2c_transfer(): a group whose
+ * writes total zero bytes classifies as PDG_I2C_OP_READ or PDG_I2C_OP_PROBE
+ * (issue #137), neither of which calls this function. The guard is kept so
+ * this helper remains correct on its own terms rather than only in the context
+ * of its one caller -- an empty payload has nothing to merge, and allocating
+ * for it would introduce an -ENOMEM failure mode on a call that can otherwise
+ * not fail locally. (k_malloc(0) does succeed -- z_alloc_helper() adds a heap
+ * reference before allocating -- so this is a deliberate choice, not a
+ * workaround for a NULL return.)
  */
 static int gather_writes_(const struct i2c_msg *msgs, const struct pdg_i2c_group *group,
 			  const uint8_t **payload, uint8_t **scratch)
@@ -345,11 +403,11 @@ static int gather_writes_(const struct i2c_msg *msgs, const struct pdg_i2c_group
 		const struct i2c_msg *msg = &msgs[group->first + i];
 
 		/*
-		 * The NULL guard is deliberate even though pdg_i2c_transfer()
-		 * currently rejects a NULL buffer on every message: issue #101
-		 * asks for that rejection to be relaxed when len is 0, and
-		 * memcpy(dst, NULL, 0) is undefined behaviour in C even at
-		 * n == 0. Guarding here means the two changes cannot collide.
+		 * The NULL guard is load-bearing since issue #137 relaxed the
+		 * NULL-buffer rejection to fire only when len is non-zero: a
+		 * group may now legitimately mix an empty message carrying a
+		 * NULL buf with non-empty ones, and memcpy(dst, NULL, 0) is
+		 * undefined behaviour in C even at n == 0.
 		 */
 		if (msg->buf != NULL) {
 			memcpy(flat + offset, msg->buf, msg->len);
@@ -456,7 +514,21 @@ static int pdg_i2c_transfer(const struct device *dev, struct i2c_msg *msgs, uint
 
 	// validate the provided messages
 	for (uint8_t i = 0U; i < num_msgs; i++) {
-		if ((msgs[i].buf == NULL)) {
+		/*
+		 * A NULL buffer is only an error when the message claims to
+		 * carry bytes. Zephyr explicitly permits buf == NULL when
+		 * len == 0, which is what i2c_write(dev, NULL, 0, addr) and
+		 * the write half of i2c_write_read(dev, addr, NULL, 0, ...)
+		 * produce (issue #137). A message carrying no bytes is never
+		 * forwarded: classify_group_() reduces the group to the
+		 * operation that does carry data, and gather_writes_() skips
+		 * an empty message rather than memcpy()ing from it. So the
+		 * NULL pointer never reaches the FFI -- which rejects NULL
+		 * unconditionally, ahead of any length check, because
+		 * slice::from_raw_parts(NULL, 0) is undefined behaviour in
+		 * Rust.
+		 */
+		if ((msgs[i].buf == NULL) && (msgs[i].len != 0U)) {
 			LOG_ERR("NULL buffer provided for I2C message %u (len=%" PRIu32 "). "
 					"Returning -EINVAL.", i, msgs[i].len);
 			return -EINVAL;
@@ -479,6 +551,24 @@ static int pdg_i2c_transfer(const struct device *dev, struct i2c_msg *msgs, uint
 			ret = validate_group_(msgs, group_start, i - group_start + 1U, &group);
 			if (ret < 0) {
 				return ret;
+			}
+
+			/*
+			 * Refuse a degenerate group here rather than in the
+			 * execution loop, so that a multi-group transfer
+			 * containing one is rejected before the mutex is taken
+			 * and before any earlier group has reached the bus.
+			 * That keeps validation a complete pre-pass, which the
+			 * rest of this function already relies on.
+			 */
+			if ((classify_group_(msgs, &group) == PDG_I2C_OP_PROBE) &&
+			    !IS_ENABLED(CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ)) {
+				LOG_ERR("The I2C group starting at message %u carries no data "
+					"bytes in either direction. The RP2040/RP2350 I2C block "
+					"cannot emit an address-only transaction; enable "
+					"CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ to substitute a "
+					"1-byte read. Returning -ENOTSUP.", group_start);
+				return -ENOTSUP;
 			}
 
 			group_start = i + 1U;
@@ -513,6 +603,7 @@ static int pdg_i2c_transfer(const struct device *dev, struct i2c_msg *msgs, uint
 	 */
 	for (uint8_t i = 0U; i < num_msgs; i++) {
 		struct pdg_i2c_group group;
+		enum pdg_i2c_op op;
 
 		// if this message isn't a STOP it isn't the end to a message group, so we can skip
 		if ((msgs[i].flags & I2C_MSG_STOP) == 0U) {
@@ -535,52 +626,100 @@ static int pdg_i2c_transfer(const struct device *dev, struct i2c_msg *msgs, uint
 			break;
 		}
 
-		if (group.write_count == 0U) {
-			// group is just a single READ message
-			const struct i2c_msg *read = &msgs[group.first];
+		op = classify_group_(msgs, &group);
+
+		switch (op) {
+		case PDG_I2C_OP_READ: {
+			/*
+			 * A lone read, or a group whose writes are all empty
+			 * and so put nothing on the bus. Either way the read is
+			 * the last message of the group.
+			 */
+			const struct i2c_msg *read = &msgs[group.first + group.count - 1U];
 
 			ret = pdg_i2c_bottom_read(data->ctx, addr, read->buf, read->len);
 			if (ret < 0) {
 				LOG_ERR("I2C read message %u from address 0x%02x failed (%" PRIu32
 						" bytes): errno=%d.",
-						group.first, addr, read->len, ret);
+						group.first + group.count - 1U, addr, read->len, ret);
 			}
-		} else {
+			break;
+		}
+		case PDG_I2C_OP_WRITE:
+		case PDG_I2C_OP_WRITE_READ: {
 			// one or more WRITE messages, merged into a single payload
 			const uint8_t *payload;
 			uint8_t *scratch;
 
+			/*
+			 * On failure gather_writes_() has allocated nothing and
+			 * left *scratch NULL, so there is nothing to free; the
+			 * shared check below then breaks the loop.
+			 */
 			ret = gather_writes_(msgs, &group, &payload, &scratch);
-			if (ret < 0) {
-				break;
+			if (ret == 0) {
+				if (op == PDG_I2C_OP_WRITE_READ) {
+					// group is a WRITE-then-READ operation
+					const struct i2c_msg *read =
+						&msgs[group.first + group.write_count];
+
+					ret = pdg_i2c_bottom_write_read(data->ctx, addr, payload,
+							group.write_len, read->buf, read->len);
+					if (ret < 0) {
+						LOG_ERR("I2C write-read messages %u-%u at address "
+								"0x%02x failed (TX=%zu bytes, RX=%" PRIu32
+								" bytes): errno=%d.",
+								group.first,
+								group.first + group.count - 1U,
+								addr, group.write_len, read->len, ret);
+					}
+				} else {
+					/*
+					 * Only writes put bytes on the bus. A
+					 * terminating read of zero bytes, if the
+					 * group had one, adds nothing and is
+					 * dropped rather than turned into an
+					 * empty read phase.
+					 */
+					ret = pdg_i2c_bottom_write(data->ctx, addr, payload,
+							group.write_len);
+					if (ret < 0) {
+						LOG_ERR("I2C write messages %u-%u to address 0x%02x "
+								"failed (%zu bytes): errno=%d.",
+								group.first,
+								group.first + group.count - 1U,
+								addr, group.write_len, ret);
+					}
+				}
+
+				/* NULL whenever no copy was made; k_free() ignores it. */
+				k_free(scratch);
 			}
+			break;
+		}
+		case PDG_I2C_OP_PROBE: {
+			/*
+			 * The pre-pass already returned -ENOTSUP for this shape
+			 * unless the substitution was opted into, so reaching
+			 * here means it was. The probe byte is a loop local,
+			 * not a file static: one driver instance per device,
+			 * each under its own mutex.
+			 */
+			uint8_t probe = 0U;
 
-			if (group.has_read) {
-				// group is a WRITE-then-READ operation
-				const struct i2c_msg *read = &msgs[group.first + group.write_count];
-
-				ret = pdg_i2c_bottom_write_read(data->ctx, addr, payload,
-						group.write_len, read->buf, read->len);
+			if (IS_ENABLED(CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ)) {
+				ret = pdg_i2c_bottom_read(data->ctx, addr, &probe, 1U);
 				if (ret < 0) {
-					LOG_ERR("I2C write-read messages %u-%u at address 0x%02x "
-							"failed (TX=%zu bytes, RX=%" PRIu32
-							" bytes): errno=%d.",
-							group.first, group.first + group.count - 1U,
-							addr, group.write_len, read->len, ret);
+					LOG_ERR("I2C probe of address 0x%02x for the group starting "
+							"at message %u failed (1-byte read substituted "
+							"for an address-only transaction): errno=%d.",
+							addr, group.first, ret);
 				}
 			} else {
-				// group is only WRITE messages
-				ret = pdg_i2c_bottom_write(data->ctx, addr, payload, group.write_len);
-				if (ret < 0) {
-					LOG_ERR("I2C write messages %u-%u to address 0x%02x failed "
-							"(%zu bytes): errno=%d.",
-							group.first, group.first + group.count - 1U,
-							addr, group.write_len, ret);
-				}
+				ret = -ENOTSUP;
 			}
-
-			/* NULL whenever no copy was made; k_free() ignores it. */
-			k_free(scratch);
+			break;
+		}
 		}
 
 		if (ret < 0) {
