@@ -74,6 +74,7 @@ PDG_TARGETS=(
 "m5_jumper|pass|zephyr/tests/pdg_mfd_m5/jumper_preflight|zephyr/tests/pdg_mfd_m5/jumper_preflight/jumper.overlay|pdg_mfd.c,pdg_gpio.c|gallo_registry,pdg_gpio_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO"
 "m5_acceptance|pass|zephyr/tests/pdg_mfd_m5/acceptance|zephyr/tests/pdg_mfd_m5/acceptance/acceptance.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
 "m5_teardown|pass|zephyr/tests/pdg_mfd_m5/recovery_teardown|zephyr/tests/pdg_mfd_m5/recovery_teardown/recovery.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
+"i2c_burst|pass|zephyr/tests/pdg_i2c_burst|zephyr/tests/pdg_i2c_burst/burst.overlay|pdg_mfd.c,pdg_i2c.c|gallo_registry,pdg_i2c_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_I2C_PICO_DE_GALLO"
 )
 
 # All four driver translation units. Assertion 3 is two-sided over exactly this
@@ -212,7 +213,7 @@ st_check() {
 self_test() {
 	printf 'ci-build self-test\n'
 
-	st_check "table has 8 targets" "${#PDG_TARGETS[@]}" "8"
+	st_check "table has 9 targets" "${#PDG_TARGETS[@]}" "9"
 	st_check "field 1 is the name" \
 		"$(target_field "${PDG_TARGETS[0]}" 1)" "i2c_bridge"
 	st_check "field 2 is the kind" \
@@ -254,9 +255,9 @@ self_test() {
 		"$(unknown_targets "i2c_bridge,typo")" "typo"
 	st_check "unknown_targets accepts an all-valid list" \
 		"$(unknown_targets "i2c_bridge,m5_jumper")" ""
-	st_check "select_targets with an empty selection means all eight" \
+	st_check "select_targets with an empty selection means all nine" \
 		"$(select_targets "")" \
-		"i2c_bridge spi_nor_id spi_bridge combined_i2c_spi_bridge m5_reset m5_jumper m5_acceptance m5_teardown"
+		"i2c_bridge spi_nor_id spi_bridge combined_i2c_spi_bridge m5_reset m5_jumper m5_acceptance m5_teardown i2c_burst"
 	st_check "select_targets picks exactly the named subset, in table order" \
 		"$(select_targets "m5_jumper,i2c_bridge")" "i2c_bridge m5_jumper"
 

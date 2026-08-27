@@ -95,9 +95,9 @@ Zephyr is used if you have stale entries in `~/.cmake/packages/Zephyr`.
 touches `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/`,
 either root Cargo file, or its own `.github/workflows/zephyr.yml` definition.
 It pins Zephyr to the commit recorded above and drives
-`zephyr/scripts/ci-build.sh`, which builds eight targets: the two viable samples,
-the two IS31 samples (asserted to fail exactly as they do at baseline), and the
-four M5 test applications.
+`zephyr/scripts/ci-build.sh`, which builds nine targets: the two viable samples,
+the two IS31 samples (asserted to fail exactly as they do at baseline), the
+four M5 test applications, and the I2C gather-write regression image.
 
 To reproduce a CI failure locally, with a Zephyr workspace already set up:
 
@@ -112,9 +112,11 @@ no Zephyr workspace at all.
 
 **This gate is build-only.** It never runs a produced binary, because doing so
 reaches `gallo_init_strict()` and needs an attached board. A green run means the
-module still compiles and links — it says nothing about whether it still works
-against hardware. That remains `tests/pdg_mfd_m5/run-m5.sh`, run by hand with a
-board and the physical jumpers in place.
+module still compiles and links - it says nothing about whether it still works
+against hardware. That remains `tests/pdg_mfd_m5/run-m5.sh` and
+`tests/pdg_i2c_burst`, run by hand with a board and, for the M5 images, the
+physical jumpers in place.
+
 
 ---
 
@@ -186,6 +188,36 @@ IS31FL3743B LED matrix, and that driver is **not** in Zephyr `main` — only
 `is31fl319x`, `is31fl3216a` and `is31fl3733` are upstream. Until it lands,
 those two samples cannot be built against an upstream checkout. Use
 `samples/spi_nor_id` for SPI instead.
+
+### The I2C gather-write regression image
+
+`tests/pdg_i2c_burst` is a board-attached regression test for
+[#102](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/102), where
+`i2c_burst_write()` was rejected with `-ENOTSUP`. It needs the same TMP117 or
+TMP102 at `0x48` as `samples/i2c_bridge`, and it writes to a limit register
+rather than reading temperature, restoring the entry value before it exits.
+
+```bash
+west build -p always -b native_sim/native/64 zephyr/tests/pdg_i2c_burst \
+    -- -DSHIELD=pico_de_gallo -DEXTRA_ZEPHYR_MODULES=$PWD \
+       -DDTC_OVERLAY_FILE=$PWD/zephyr/tests/pdg_i2c_burst/burst.overlay
+west build -t run
+```
+
+Success is `PDG_I2C_BURST_PASS` and exit status 0. Any failure prints
+`PDG_I2C_BURST_FAIL` naming the step, the expected value and the observed one.
+
+Every assertion compares against a reference read-back rather than against the
+bytes written, because a peripheral need not return what you wrote — a TMP102 in
+12-bit mode zeroes the low nibble of its limit registers while a TMP117 keeps
+all sixteen bits. Each case first writes its pattern through a single-message
+`i2c_write()`, a shape that has always been accepted, and then requires the
+gather path to reproduce exactly that result. The register is also set to the
+*other* pattern immediately beforehand, so a driver that reported success
+without issuing any bus traffic still fails.
+
+CI builds and links this image but never runs it, so a green CI run is not
+evidence that it passes.
 
 ---
 
@@ -626,7 +658,37 @@ These are enforced in the drivers and reported as errors, not silently ignored.
 | Target/peripheral mode | `-ENOTSUP`; only `I2C_MODE_CONTROLLER` |
 | Addresses above 7 bits | `-EINVAL` |
 | `I2C_SPEED_HIGH` / `I2C_SPEED_ULTRA` | `-EINVAL`; use standard, fast, or fast-plus |
-| Transfers over 4096 bytes | `-EMSGSIZE` |
+| A read that is not the last message of its `I2C_MSG_STOP`-delimited group | `-ENOTSUP` |
+| More than one read in a group | `-ENOTSUP` |
+| A write-then-read group whose read omits `I2C_MSG_RESTART` | `-ENOTSUP` |
+| A final group with no `I2C_MSG_STOP` | `-ENOTSUP` |
+| A `NULL` message buffer | `-EINVAL` |
+| A group whose writes total over 4096 bytes, or whose read exceeds 4096 | `-EMSGSIZE` |
+| Merge buffer allocation failure on a gather write | `-ENOMEM` |
+
+A group is every message since the previous `I2C_MSG_STOP`, and each group
+becomes exactly one bridge transaction. Three shapes are supported:
+
+- **N writes** concatenate into a single write. This is what `i2c_burst_write()`
+  and hand-rolled gather writes emit, and it reaches the bus as one START, one
+  address phase, all the bytes, one STOP.
+- **A single read**, which becomes a plain read.
+- **N writes followed by one read**, which becomes a write-then-read with a
+  repeated start.
+
+Only a group holding two or more non-empty writes allocates a merge buffer; see
+`CONFIG_HEAP_MEM_POOL_ADD_SIZE_PDG_I2C`. Every other shape is sent straight from
+the caller's buffers with no copy.
+
+Validation is a complete pre-pass. A rejected transfer returns before the
+controller lock is taken and before any USB call, so no partial bus traffic is
+ever emitted.
+
+The 4096-byte figure is the firmware's declared argument bound
+(`pico_de_gallo_internal::MAX_TRANSFER_SIZE`), **not** a measured end-to-end
+ceiling. The SPI driver's equivalent constant had to be lowered to 1013 after
+measurement; the same measurement for I2C has never been taken. See
+[#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146).
 
 ### SPI
 

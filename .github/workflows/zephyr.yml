@@ -79,7 +79,7 @@ jobs:
     env:
       ZEPHYR_TOOLCHAIN_VARIANT: host
       ZEPHYR_BASE: ${{ github.workspace }}/zephyrproject/zephyr
-      # Shared so the eight builds do not each pay a full release build of
+      # Shared so the nine builds do not each pay a full release build of
       # pico-de-gallo-ffi. If Corrosion overrides it, the only cost is time.
       CARGO_TARGET_DIR: /tmp/pdg-cargo-target
 

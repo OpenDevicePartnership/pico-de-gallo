@@ -8,6 +8,91 @@ The format is based on
 
 ## [Unreleased]
 
+### Fixed
+
+- **`i2c_burst_write()` no longer returns `-ENOTSUP`.** The I2C controller
+  accepted a `I2C_MSG_STOP`-delimited message group only when it held one
+  message, or a write followed by a repeated-start read. Zephyr's
+  `i2c_burst_write()` emits two *writes* — `I2C_MSG_WRITE`, then
+  `I2C_MSG_WRITE | I2C_MSG_STOP` — which matched neither and was rejected. So
+  was every hand-rolled gather write, which is where most affected in-tree
+  sensor, EEPROM and display drivers actually are; `i2c_burst_write()` and
+  `i2c_burst_write_dt()` were the only `i2c.h` helpers that produced the
+  rejected shape.
+  ([#102](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/102))
+
+  A group's write messages now concatenate into a single payload and reach the
+  bus as one transaction: one START, one address phase, all the bytes, one
+  STOP. That is what a real controller emits for this message sequence. Three
+  shapes are supported — N writes, a single read, and N writes followed by one
+  read. Rejections are narrower but still explicit: a read that is not the last
+  message of its group, and more than one read in a group, remain `-ENOTSUP`,
+  because the FFI has no shape for reading and then continuing within one
+  transaction and splitting the group would insert a STOP the caller never
+  asked for.
+
+  Requiring `I2C_MSG_RESTART` on the terminating read of a multi-message group
+  is **unchanged**: a group that was rejected for lacking it before is still
+  rejected for lacking it now.
+
+  This was deliberately **not** fixed by routing through the `i2c/batch`
+  firmware endpoint. Zephyr's SPI driver moved *away* from `spi/batch` for
+  unrelated reasons, and more importantly `i2c/batch` only became atomic
+  recently (#128) inside unreleased schema 0.7, where `validate()` cannot tell
+  the two firmware behaviours apart. Depending on it would have converted a
+  loud `-ENOTSUP` into silent register corruption against a firmware built
+  before that fix. `gallo_i2c_write()` has no such ambiguity.
+
+- **The transfer size limit is now checked per group, not per message.** Two
+  4096-byte writes each passed the old per-message check and would have
+  concatenated to 8192. The check is now an overflow-safe running total over a
+  group's writes, with the group's terminating read bounded separately, both
+  against the same 4096-byte figure and both returning `-EMSGSIZE`.
+
+  This does not narrow what was previously accepted: the reachable payload
+  range was already `[0, 4096]` through a single `i2c_msg`, and it still is.
+
+  **4096 remains unmeasured.** It is `pico_de_gallo_internal::MAX_TRANSFER_SIZE`,
+  the firmware's declared argument bound, and not a demonstrated end-to-end
+  ceiling for this transport. `PDG_SPI_MAX_BUFFER` started from the same figure
+  and had to be lowered to 1013 after 4096 was measured to fail `-ECOMM` and
+  1015 to wedge the firmware dispatcher device-wide. `i2c/write` carries its
+  payload in the request frame exactly as `spi/transfer` does. It was left at
+  4096 rather than lowered by analogy, because a bound measured on a
+  differently framed endpoint is a guess and lowering it would reject
+  single-message writes that work today.
+  ([#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146))
+
+### Added
+
+- `CONFIG_HEAP_MEM_POOL_ADD_SIZE_PDG_I2C` (default 8192). The I2C driver now
+  `k_malloc()`s a merge buffer for a group holding two or more non-empty
+  writes, at most `PDG_I2C_MAX_BUFFER` (4096) bytes and at most one live at a
+  time. Declaring the contribution is mandatory, not optional: `k_malloc()`
+  lives in `kernel/mempool.c`, which Zephyr compiles only when the system heap
+  is non-empty, and `CONFIG_HEAP_MEM_POOL_SIZE` defaults to 0 — omitting it
+  reproduces #111 exactly, as an undefined reference to `k_malloc` at link
+  time.
+
+  Nothing allocates on the common paths. A single message, a single write
+  followed by a read, and a group whose writes are all empty are each sent
+  straight from the caller's buffers with no copy. Excluding the all-empty case
+  from the merge path is deliberate: an empty payload has nothing to merge, and
+  allocating for it would introduce an `-ENOMEM` failure mode on a call that
+  can otherwise not fail locally. The behaviour then matches a lone empty
+  write, which the firmware refuses as `I2cError::ZeroLengthWrite` → `-EINVAL`
+  (#101).
+
+- `tests/pdg_i2c_burst`, a board-attached regression image for #102. Covers
+  `i2c_burst_write()`, a three-message hand-rolled gather, a gathered
+  write-then-read, the three rejection shapes, and the per-group running total
+  — including that the oversize rejection emits no bus traffic at all. Every
+  assertion compares against a reference read-back through a single-message
+  `i2c_write()` rather than against the bytes written, so it holds on parts
+  that mask register bits. Registered in `zephyr/scripts/ci-build.sh`, which
+  brings the CI target count to nine; that gate builds and links it but, like
+  every other target, never runs it.
+
 ### Verification
 
 - **Upstream `tests/drivers/spi/spi_loopback` on `native_sim/native/64`:

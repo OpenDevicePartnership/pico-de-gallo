@@ -11,3 +11,37 @@ config I2C_PICO_DE_GALLO
 	  Enable the Pico de Gallo I2C controller driver. This driver forwards
 	  Zephyr I2C API calls to a Pico de Gallo USB bridge attached to the host
 	  running native_sim via the Pico de Gallo C FFI.
+
+config HEAP_MEM_POOL_ADD_SIZE_PDG_I2C
+	int "Heap memory pool size for the Pico de Gallo I2C driver"
+	default 8192
+	depends on I2C_PICO_DE_GALLO
+	help
+	  pdg_i2c_transfer() merges the write messages of a STOP-delimited group
+	  into one contiguous payload with k_malloc() so that the group reaches
+	  the bus as a single transaction, which is what i2c_burst_write() and
+	  every hand-rolled gather write require. At most one such buffer is live
+	  at a time, of at most PDG_I2C_MAX_BUFFER (4096) bytes, so 8192 leaves a
+	  large margin over the allocation plus sys_heap per-chunk metadata, the
+	  heap header and alignment padding.
+
+	  Nothing is allocated on the common paths. A group holding a single
+	  message, a single write followed by a read, or only empty writes is sent
+	  straight from the caller's buffer with no copy. Only a group with two or
+	  more non-empty writes allocates.
+
+	  4096 is the firmware's declared argument bound
+	  (pico_de_gallo_internal::MAX_TRANSFER_SIZE), not a measured end-to-end
+	  ceiling for this transport. The sibling SPI driver settled on 1013 after
+	  measuring that 4096 fails and 1015 wedges the firmware dispatcher; the
+	  equivalent measurement for I2C has never been taken. See issue #146.
+
+	  This has to be declared rather than assumed: k_malloc() lives in
+	  kernel/mempool.c, which Zephyr only compiles when the system heap is
+	  non-empty, and CONFIG_HEAP_MEM_POOL_SIZE defaults to 0. Without a
+	  contribution here the driver fails to link with an undefined reference
+	  to k_malloc. The kernel sums every HEAP_MEM_POOL_ADD_SIZE_* symbol and
+	  raises the pool to fit, so applications do not have to set
+	  CONFIG_HEAP_MEM_POOL_SIZE by hand.
+
+	  Lower this if you know your gather writes are small.
