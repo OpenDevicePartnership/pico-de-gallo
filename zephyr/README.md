@@ -662,7 +662,9 @@ These are enforced in the drivers and reported as errors, not silently ignored.
 | More than one read in a group | `-ENOTSUP` |
 | A write-then-read group whose read omits `I2C_MSG_RESTART` | `-ENOTSUP` |
 | A final group with no `I2C_MSG_STOP` | `-ENOTSUP` |
-| A `NULL` message buffer | `-EINVAL` |
+| A `NULL` message buffer with a non-zero length | `-EINVAL` |
+| A group carrying no data bytes in either direction (an address-only probe) | `-ENOTSUP`, unless `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ` |
+| A probe whose substituted read is NACKed, with that option set | `-ENXIO` |
 | A group whose writes total over 4096 bytes, or whose read exceeds 4096 | `-EMSGSIZE` |
 | Merge buffer allocation failure on a gather write | `-ENOMEM` |
 
@@ -675,6 +677,13 @@ becomes exactly one bridge transaction. Three shapes are supported:
 - **A single read**, which becomes a plain read.
 - **N writes followed by one read**, which becomes a write-then-read with a
   repeated start.
+
+A validated group is then reduced to the operation its data bytes actually
+require, so a message carrying no bytes never reaches the bus. Empty writes are
+dropped, and a terminating read of zero bytes is dropped rather than sent as an
+empty read phase: `W(0) + R(2)` is a plain read, `W(2) + R(0)` is a plain write,
+and `W(0) + W(3)` is a 3-byte write. An empty write consumes none of the
+per-group size budget.
 
 Only a group holding two or more non-empty writes allocates a merge buffer; see
 `CONFIG_HEAP_MEM_POOL_ADD_SIZE_PDG_I2C`. Every other shape is sent straight from
@@ -689,6 +698,50 @@ The 4096-byte figure is the firmware's declared argument bound
 ceiling. The SPI driver's equivalent constant had to be lowered to 1013 after
 measurement; the same measurement for I2C has never been taken. See
 [#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146).
+
+#### Zero-length transfers and the address-only probe
+
+Zephyr permits `msg.buf == NULL` whenever `msg.len == 0`, and both
+`i2c_write(dev, NULL, 0, addr)` and `i2c_write_read(dev, addr, NULL, 0, rx, n)`
+produce exactly that. A `NULL` buffer is therefore refused only when the message
+claims to carry bytes. Relaxing that alone would accomplish nothing: the FFI
+rejects a `NULL` pointer unconditionally, ahead of any length check, because
+`slice::from_raw_parts(NULL, 0)` is undefined behaviour in Rust. It is the
+reduction described above that keeps the pointer away from it.
+
+What is left when a group carries no data bytes in either direction is an
+address-only `START + ADDR + STOP` probe. The RP2040/RP2350 `DW_apb_i2c` block
+drives the address phase only as a side effect of pushing bytes into
+`IC_DATA_CMD`, so that transaction is physically unreachable — see
+[rp-rs/rp-hal#678](https://github.com/rp-rs/rp-hal/issues/678) and
+[embassy-rs/embassy#4474](https://github.com/embassy-rs/embassy/issues/4474).
+It is a hardware limitation, not a policy choice. The driver refuses it with
+`-ENOTSUP`, in the validation pre-pass, so a multi-group transfer containing one
+is rejected before the controller lock is taken and before any earlier group has
+reached the bus.
+
+`CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ` (default `n`) substitutes a 1-byte
+read to the same address instead: an ACK means the device is present, a NACK
+surfaces as `-ENXIO`.
+
+This matters for Zephyr's shell `i2c scan`, which probes each address with a
+single zero-length write message. At the default it reports every address
+absent — `i2c scan` prints `0 devices found` on a populated bus. With the option
+set it produces a correct per-address answer, at one blocking USB round trip per
+address, roughly 116 for the `0x04..0x77` range the shell scans.
+
+Two caveats, which are why the option is off by default. A read probe is not
+semantically identical to a write probe: a write-only device may acknowledge its
+write address while NACKing its read address, so a scan performed this way can
+under-report. That is the same known limitation the firmware's own `i2c/scan`
+carries. And the substituted read consumes a byte, which can pop a FIFO or step
+an EEPROM address pointer; Zephyr's own `i2c_shell.c` carries the same warning,
+that scanning "can confuse your I2C bus, cause data loss, and is known to
+corrupt the Atmel AT24RF08 EEPROM". A bus scan is a deliberate act, whereas a
+driver silently turning every zero-length write into a read is not.
+
+The supported way to scan through this bridge remains `gallo i2c scan`, or the
+firmware's `i2c/scan` endpoint, which probes the whole bus in one round trip.
 
 ### SPI
 
@@ -750,6 +803,14 @@ report which attached board it selected.
 **`gpio_pin_toggle()` returns `-ENOTSUP`, or blinky does not work**
 Expected. Toggle is unavailable on this controller; use `gpio_pin_set()` with
 the level you want. Interrupt-driven GPIO consumers get `-ENOSYS`.
+
+**`i2c scan` prints `--` for every address, or `0 devices found`**
+Expected at the default configuration. The shell probes each address with a
+zero-length write, which is an address-only transaction the RP2040/RP2350 I2C
+block cannot emit, so the driver returns `-ENOTSUP` for every address. Set
+`CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ=y` to substitute a 1-byte read per
+address — read the caveats in *I2C* above first — or use `gallo i2c scan` on the
+host, which scans the whole bus in one round trip.
 
 **Devicetree errors about `pdg_i2c0` / `pdg_spi0`**
 `-DSHIELD=pico_de_gallo` was not passed, so the nodes do not exist. It is

@@ -63,7 +63,82 @@ The format is based on
   single-message writes that work today.
   ([#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146))
 
+- **A `NULL` message buffer is now refused only when the message claims to
+  carry bytes.** Zephyr's I2C API permits `msg.buf == NULL` whenever
+  `msg.len == 0`, and both `i2c_write(dev, NULL, 0, addr)` and
+  `i2c_write_read(dev, addr, NULL, 0, rx, n)` produce exactly that. The driver
+  rejected every `NULL` buffer with `-EINVAL` regardless of length.
+  ([#137](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/137))
+
+  Relaxing that check alone would have accomplished nothing. The FFI rejects a
+  `NULL` pointer unconditionally, *before* any length check, because
+  `slice::from_raw_parts(NULL, 0)` is undefined behaviour in Rust. So the
+  pointer had to be kept away from it rather than merely allowed past the
+  driver's own guard.
+
+- **A validated group is now reduced to the operation its data bytes actually
+  require.** A new `classify_group_()` judges a group by #147's `write_len` —
+  already the concatenated total of its writes — and the length of its
+  terminating read, and no message carrying zero bytes is forwarded:
+
+  | group | operation |
+  |---|---|
+  | writes total > 0, read > 0 | write-then-read (unchanged) |
+  | writes total > 0, no read or read == 0 | plain write; the empty read phase is dropped |
+  | writes total == 0, read > 0 | plain read; the empty writes are dropped |
+  | writes total == 0, no read or read == 0 | address-only probe |
+
+  This composes with #147's gather rather than replacing it: `W(0 NULL) + W(3)`
+  still gathers to a 3-byte write, and an empty write consumes none of the
+  per-group size budget. No `NULL` pointer and no zero length reaches the FFI.
+
+- **An address-only probe is refused with `-ENOTSUP`,** in the validation
+  pre-pass — before the controller mutex and before any group reaches the bus,
+  preserving the "validation is a complete pre-pass, no partial bus traffic"
+  property #147 relies on.
+
+  The refusal is a hardware limitation, not a policy choice. The RP2040/RP2350
+  `DW_apb_i2c` block drives the address phase only as a side effect of pushing
+  bytes into `IC_DATA_CMD`, so `START + ADDR + STOP` is physically unreachable
+  ([rp-rs/rp-hal#678](https://github.com/rp-rs/rp-hal/issues/678),
+  [embassy-rs/embassy#4474](https://github.com/embassy-rs/embassy/issues/4474)).
+
+  This also corrects a **live wrong answer** that was independent of the `NULL`
+  question. Zephyr's shell `i2c scan` (`drivers/i2c/i2c_shell.c`) probes each
+  address with a single `{ buf = &dst, len = 0, flags = I2C_MSG_WRITE |
+  I2C_MSG_STOP }` message. `buf` is non-`NULL` there, so the old check never
+  blocked it: it reached `gallo_i2c_write(..., 0)` and, since the host-surface
+  guard in #136, returned `InvalidArgument` for every address. **`i2c scan`
+  prints `0 devices found` on a populated bus today.** At the new default it
+  still reports every address absent, but for a stated reason rather than
+  silently; with the new Kconfig below it produces a correct answer.
+
 ### Added
+
+- `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ` (default `n`). Substitutes a
+  1-byte read to the same address for an address-only probe: an ACK means the
+  device is present, a NACK surfaces as `-ENXIO`. That makes Zephyr's shell
+  `i2c scan` work, at one blocking USB round trip per address — about 116 for
+  the `0x04..0x77` range the shell scans.
+  ([#137](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/137))
+
+  Selected with `IS_ENABLED()` inside an ordinary `if`, never `#ifdef`, so both
+  arms compile in every configuration.
+
+  It is off by default for two reasons that must be documented rather than
+  discovered. A read probe is **not** semantically identical to a write probe:
+  a write-only device may acknowledge its write address while NACKing its read
+  address, so a scan performed this way can under-report — the same known
+  limitation the firmware's own `i2c/scan` carries. And the substituted read
+  consumes a byte, which can pop a FIFO or step an EEPROM address pointer;
+  Zephyr's own `i2c_shell.c` carries the same warning, that scanning "can
+  confuse your I2C bus, cause data loss, and is known to corrupt the Atmel
+  AT24RF08 EEPROM". A bus scan is a deliberate act, whereas a driver silently
+  turning every zero-length write into a read is not.
+
+  The supported way to scan through this bridge remains `gallo i2c scan`, or
+  the firmware's `i2c/scan` endpoint, which probes the whole bus in one round
+  trip.
 
 - `CONFIG_HEAP_MEM_POOL_ADD_SIZE_PDG_I2C` (default 8192). The I2C driver now
   `k_malloc()`s a merge buffer for a group holding two or more non-empty
@@ -79,9 +154,9 @@ The format is based on
   straight from the caller's buffers with no copy. Excluding the all-empty case
   from the merge path is deliberate: an empty payload has nothing to merge, and
   allocating for it would introduce an `-ENOMEM` failure mode on a call that
-  can otherwise not fail locally. The behaviour then matches a lone empty
-  write, which the firmware refuses as `I2cError::ZeroLengthWrite` → `-EINVAL`
-  (#101).
+  can otherwise not fail locally. An all-empty group no longer reaches the
+  firmware at all: #137 reduces it to an address-only probe and refuses it
+  locally, described under *Fixed* above.
 
 - `tests/pdg_i2c_burst`, a board-attached regression image for #102. Covers
   `i2c_burst_write()`, a three-message hand-rolled gather, a gathered
@@ -94,6 +169,31 @@ The format is based on
   every other target, never runs it.
 
 ### Verification
+
+- **#137 is built-only, not behaviourally verified.** No Zephyr environment on
+  the authoring machine, no host-side unit-test harness in the module, and no
+  board. `.github/workflows/zephyr.yml` gates the PR (path-filtered,
+  `zephyr/**` touched) but is **build-only** — it never executes a produced
+  binary — and it builds only the default configuration, so the
+  `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ=y` arm compiles by construction
+  (`IS_ENABLED`, not `#ifdef`) and is never exercised.
+
+  One thing *was* executed. `struct pdg_i2c_group`, `enum pdg_i2c_op`,
+  `validate_group_()` and `classify_group_()` were extracted **verbatim** from
+  `pdg_i2c.c` into a throwaway host harness and driven through **18 group
+  shapes**: the pre-existing shapes; #147's gather shapes crossed with zero
+  lengths (`W(1)+W(0 NULL)`, `W(0 NULL)+W(3)`, `W(0)+W(0)`, `W(0)+W(0)+R(2)`,
+  `W(2)+W(1)+R(0 NULL)`); the Zephyr shell scan probe; both `NULL`-buffer
+  forms; #147's three rejection shapes, which still reject; and the per-group
+  running total at and over the 4096-byte limit. All 18 matched, clean under
+  `-Wall -Wextra -Werror -Wswitch-enum -Wformat=2` at `-O0`, `-Os`, `-O2` and
+  `-O3`.
+
+  The harness is **not committed and is not a test suite**. It covers four
+  items and says nothing about `pdg_i2c_transfer()`, `gather_writes_()`, the
+  Kconfig wiring, or any transport behaviour, and it cannot fail in CI. Note
+  that `tests/pdg_i2c_burst` (added for #102) is board-attached and is not run
+  by CI either.
 
 - **Upstream `tests/drivers/spi/spi_loopback` on `native_sim/native/64`:
   41 PASS / 12 SKIP / 1 FAIL / 2 NOT BUILT.** This is **not** a clean upstream
@@ -146,6 +246,16 @@ The format is based on
   that no other hang window exists below 1013.
 
 ### Breaking Changes
+
+- **A zero-length I2C write now returns `-ENOTSUP` rather than `-EINVAL`.**
+  Callers that passed a non-`NULL` buffer with `len == 0` previously reached
+  `gallo_i2c_write(..., 0)` and got `InvalidArgument` → `-EINVAL` back from the
+  host-surface guard (#136), or `I2cError::ZeroLengthWrite` from the firmware
+  before it (#101). The group is now classified as an address-only probe and
+  refused locally, with an errno that names the reason. Callers that were
+  probing this way should either enable
+  `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ` or use a 1-byte read.
+  ([#137](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/137))
 
 - **The Zephyr SPI driver now rejects transfers over 1013 bytes.** Transfers
   above it return `-EMSGSIZE`

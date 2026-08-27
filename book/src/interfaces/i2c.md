@@ -239,7 +239,9 @@ during validation, so no earlier operation in it reaches the bus.
 
 Every host surface also refuses it locally, before the request is
 transmitted, so the call fails immediately instead of spending a USB
-round-trip to be told no:
+round-trip to be told no. The Zephyr module is not a host surface — it is
+an FFI consumer — but it refuses the same shape locally, and is listed
+here alongside them:
 
 | Surface | Refusal |
 |---|---|
@@ -249,9 +251,11 @@ round-trip to be told no:
 | `pyco-de-gallo` | `RuntimeError` carrying the same message |
 | `gallo-mcp` | An invalid-argument error naming the offending operation |
 | `gallo` CLI | Unreachable: the byte arguments require at least one value |
+| Zephyr module | `-ENOTSUP`; set `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ` to substitute a 1-byte read instead. See [`zephyr/README.md`](https://github.com/OpenDevicePartnership/pico-de-gallo/blob/main/zephyr/README.md) |
 
-The local refusal returns the identical error the firmware would have
-returned, so callers need not distinguish the two.
+Except for the Zephyr opt-in, which substitutes a read rather than
+refusing, the local refusal returns the identical error the firmware
+would have returned, so callers need not distinguish the two.
 
 Note that `i2c/write-read` is **not** affected: an empty write phase
 there is legal, because that transfer does not terminate with a STOP.
