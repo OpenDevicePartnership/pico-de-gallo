@@ -179,9 +179,16 @@ component. Adjust the crate set for a non-wire, single-crate release.
   the tagged commit**, not tip-of-`main`. If you rewrite a release
   commit, delete and re-create the tag, and verify with
   `git show <tag>:.github/workflows/release-crates.yml`.
-- **`CARGO_REGISTRY_TOKEN`** must have `publish-update` scope for the
-  six published crate names (internal, lib, hal, ffi, gallo,
-  gallo-mcp). The crates already exist; `publish-new` is not needed.
+- **crates.io publishing uses Trusted Publishing (OIDC)** — there is no
+  stored `CARGO_REGISTRY_TOKEN` secret. `release-crates.yml` requests
+  `id-token: write` and `rust-lang/crates-io-auth-action` exchanges the
+  GitHub JWT for a short-lived token that is revoked when the job ends.
+  The publisher is registered **per crate** on crates.io (Settings ->
+  Trusted Publishing) for all six published names — internal, lib, hal,
+  ffi, gallo, gallo-mcp — with owner `OpenDevicePartnership`, repository
+  `pico-de-gallo`, workflow filename `release-crates.yml`, and a blank
+  environment. Publishing a **new** crate name means registering it there
+  first, or its first tag push fails to authenticate.
 - **Don't forget the firmware.** It is a separate workspace with its
   own `Cargo.lock`; its `pico-de-gallo-internal` dep spec and lock
   entry must be bumped in the same release or CI's `lockfile` job

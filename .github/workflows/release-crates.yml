@@ -17,12 +17,22 @@ name: Publish to crates.io
 #   Push internal-v* first and wait for it to index, or re-run the
 #   failed job once the upstream publish has indexed.
 #
-# Token scope:
-#   CARGO_REGISTRY_TOKEN must have `publish-update` scope, restricted to
-#   the six crate names below. Do not grant `publish-new`; the crates
-#   already exist. Exception: gallo-mcp is a NEW crate, so its FIRST
-#   publish (the initial mcp-v* tag) needs `publish-new` scope once;
-#   after it exists on crates.io, `publish-update` is sufficient.
+# Authentication:
+#   Publishing uses crates.io Trusted Publishing (OIDC) — no API token is
+#   stored in this repository. The job requests the `id-token: write`
+#   permission, `rust-lang/crates-io-auth-action` exchanges the resulting
+#   GitHub JWT for a short-lived crates.io token, and that action's `post`
+#   step revokes the token when the job ends.
+#
+#   The matching publisher must be registered on crates.io for EACH of the
+#   six crate names below (Trusted Publishing is configured per crate),
+#   under Settings -> Trusted Publishing:
+#     Repository owner:   OpenDevicePartnership
+#     Repository name:    pico-de-gallo
+#     Workflow filename:  release-crates.yml
+#     Environment:        (blank)
+#   The environment field is deliberately left blank; if you ever set it,
+#   this job must declare a matching `environment:` block or auth fails.
 
 on:
   push:
@@ -41,6 +51,14 @@ jobs:
   publish:
     name: cargo publish
     runs-on: ubuntu-latest
+
+    # Job-level permissions REPLACE the workflow-level block above rather
+    # than merging with it, so `contents: read` is restated here.
+    permissions:
+      contents: read
+      # Required to mint the OIDC JWT that crates.io exchanges for a
+      # short-lived publish token.
+      id-token: write
 
     steps:
       - uses: actions/checkout@v7
@@ -65,5 +83,11 @@ jobs:
           echo "name=${name}" >> "$GITHUB_OUTPUT"
           echo "Publishing crate: ${name}"
 
+      - name: Authenticate with crates.io
+        id: auth
+        uses: rust-lang/crates-io-auth-action@v1
+
       - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
         run: cargo publish -p ${{ steps.crate.outputs.name }} --locked
