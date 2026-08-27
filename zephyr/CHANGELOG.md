@@ -8,6 +8,14 @@ The format is based on
 
 ## [Unreleased]
 
+### Removed
+
+- **`snippet_root: zephyr` from `zephyr/module.yml`.** It pointed at a
+  `zephyr/snippets/` directory that has never existed. `tests: - zephyr/tests`
+  was reported as dangling by the same issue but is now backed by a real
+  directory.
+  ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
+
 ### Fixed
 
 - **`i2c_burst_write()` no longer returns `-ENOTSUP`.** The I2C controller
