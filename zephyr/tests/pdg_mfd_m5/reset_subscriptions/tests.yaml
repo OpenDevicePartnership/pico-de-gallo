@@ -1,0 +1,20 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# Phase of the manual M5 procedure driven by zephyr/tests/pdg_mfd_m5/run-m5.sh.
+# See zephyr/tests/pdg_i2c_burst/tests.yaml for why build_only is mandatory, why
+# a fixture gate was rejected, and why the overlay must be named explicitly.
+common:
+  build_only: true
+  tags:
+    - drivers
+    - mfd
+    - pico_de_gallo
+tests:
+  drivers.pico_de_gallo.mfd.m5.reset_subscriptions:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    extra_dtc_overlay_files:
+      - reset.overlay

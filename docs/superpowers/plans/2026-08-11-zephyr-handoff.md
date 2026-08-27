@@ -140,15 +140,32 @@ that had no exported source of truth.
 
 ### 4.2 #109 — what is settled and what is not
 
+> **SUPERSEDED 2026-08-27.** The constraint below was lifted after research
+> showed it conflicts with the stated goal of upstreaming (#98). Including the
+> `.c` under test is upstream Zephyr's *standard* technique for reaching a
+> static function: `tests/unit/rbtree/main.c` carries
+> `#include "../../../lib/utils/rb.c"`, and `base64`, `hex`, `winstream`,
+> `crc`, `net_timeout` and `cbprintf` all do the same — 7 of the 14 suites in
+> `tests/unit/`. It has a dedicated pseudo-board
+> (`subsys/testsuite/boards/unit_testing`), a dedicated CMake component
+> (`find_package(Zephyr COMPONENTS unittest)`), a dedicated twister key
+> (`type: unit`), and its own section in `doc/develop/test/ztest.rst`. The
+> constraint could have stood as a stricter house rule, but not on the grounds
+> that upstream would reject it. See the #109 design spec for the chosen route.
+
 **Hard constraint from the maintainer: no `#include` of a `.c` file.** That
 rules out the whitebox approach, which is otherwise the cheapest way in.
 
 The obstacle is unchanged: all six functions #109 wants tested are `static`,
 so a test binary cannot reach them —
 
-    speed_to_code_   pdg_i2c.c:47      bufset_len_     pdg_spi.c:71
-    freq_to_speed_   pdg_i2c.c:88      flatten_tx_     pdg_spi.c:95
-    validate_group_  pdg_i2c.c:110     unflatten_rx_   pdg_spi.c:116
+    speed_to_code_    freq_to_speed_    validate_group_    (drivers/i2c/pdg_i2c.c)
+    bufset_len_       flatten_tx_       unflatten_rx_      (drivers/spi/pdg_spi.c)
+
+Deliberately no line numbers. This table carried them twice and was wrong both
+times: written against `f92dd10` as `pdg_i2c.c:47/88/110` and
+`pdg_spi.c:71/95/116`, the i2c three had moved to 140/169/231 by `7ca10fc` and
+to 197/226/288 by `3aa9c36`. Grep for the symbol.
 
 Remaining options are to extract them into a real `.c`/`.h` pair with
 external linkage, or to test only through the driver's public API.

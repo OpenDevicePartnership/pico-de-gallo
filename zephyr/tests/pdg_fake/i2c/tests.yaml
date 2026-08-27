@@ -1,0 +1,23 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# NOT build_only, unlike every other tests.yaml in this module. This suite is
+# meant to run: the bottom layer is replaced by a recording fake, so nothing
+# reaches gallo_init_strict() and no board is needed.
+#
+# No depends_on. native_sim/native/64 does not declare i2c in its supported:
+# list -- only the 32-bit native_sim does -- so claiming it would filter this
+# scenario to nothing, silently. See zephyr/samples/i2c_bridge/tests.yaml.
+common:
+  tags:
+    - drivers
+    - i2c
+    - pico_de_gallo
+tests:
+  drivers.pico_de_gallo.i2c.fake:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    extra_dtc_overlay_files:
+      - fake.overlay

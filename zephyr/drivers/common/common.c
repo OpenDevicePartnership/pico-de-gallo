@@ -2,12 +2,17 @@
 #include "common.h"
 #include "gallo_registry.h"
 
-void *pdg_common_bottom_open(const char *serial)
+/* __attribute__((weak)), not Zephyr's __weak: this file is compiled in the
+ * host context and must not include zephyr/toolchain.h. A test may link a
+ * strong definition to keep gallo_init_strict() from opening a USB device.
+ * See docs/superpowers/specs/2026-08-27-zephyr-helper-coverage-design.md 4.3.
+ */
+__attribute__((weak)) void *pdg_common_bottom_open(const char *serial)
 {
     return (void *)pdg_registry_open(serial);
 }
 
-void pdg_common_bottom_close(void *ctx)
+__attribute__((weak)) void pdg_common_bottom_close(void *ctx)
 {
     pdg_registry_close((const struct PicoDeGallo *)ctx);
 }

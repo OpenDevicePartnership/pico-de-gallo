@@ -8,6 +8,48 @@ The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- **Twister metadata for the seven buildable applications**, and a `twister` job
+  in `.github/workflows/zephyr.yml` that runs them.
+  ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
+
+  The file is `tests.yaml`, not `sample.yaml` or `testcase.yaml`. Upstream has
+  retired both older names: against `zephyrproject-rtos/zephyr`,
+  `filename:sample.yaml` and `filename:testcase.yaml path:tests/drivers` each
+  return zero results, while `tests/drivers` alone holds 268 `tests.yaml`.
+  Samples keep their `sample:` key inside `tests.yaml`.
+
+  Every scenario is `build_only: true`. Twister classifies `native_sim` as
+  `type: native` and would otherwise execute the binary, which reaches
+  `gallo_init_strict()` and needs an attached board. None declares
+  `depends_on`, because that key matches the board's `supported:` list and
+  `native_sim/native/64` names neither `i2c` nor `spi` — only the 32-bit
+  `native_sim` does — so claiming it would silently filter the scenario to
+  nothing on the sole platform this module targets.
+
+  This is mostly redundant with `zephyr/scripts/ci-build.sh`, and weaker: there
+  is no twister equivalent of that script's two-sided translation-unit and
+  Kconfig assertions. It is worth having for two things `ci-build.sh` cannot do.
+  Twister forces `CONFIG_COMPILER_WARNINGS_AS_ERRORS=y` **and**
+  `--edtlib-Werror`, turning devicetree *binding* warnings into build failures
+  — this module ships four custom bindings and a plain `west build` never
+  checks them that way. And `type: unit` scenarios run only under twister.
+
+  `samples/spi_bridge` and `samples/combined_i2c_spi_bridge` deliberately get no
+  `tests.yaml`. They cannot build (the IS31FL3743B driver is not upstream), and
+  `ci-build.sh`'s `assert_basefail()` already pins their failure far more
+  precisely than a twister scenario could — it requires exactly one undefined
+  `__device_dts_ord_N` resolving to an `is31fl3743b` node.
+
+### Removed
+
+- **`snippet_root: zephyr` from `zephyr/module.yml`.** It pointed at a
+  `zephyr/snippets/` directory that has never existed. `tests: - zephyr/tests`
+  was reported as dangling by the same issue but is now backed by a real
+  directory.
+  ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
+
 ### Fixed
 
 - **`i2c_burst_write()` no longer returns `-ENOTSUP`.** The I2C controller

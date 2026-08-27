@@ -117,6 +117,38 @@ against hardware. That remains `tests/pdg_mfd_m5/run-m5.sh` and
 `tests/pdg_i2c_burst`, run by hand with a board and, for the M5 images, the
 physical jumpers in place.
 
+### Twister metadata
+
+Seven applications carry a `tests.yaml` — the two viable samples and the five
+board-attached test images. A second CI job runs twister over
+`zephyr/samples` and `zephyr/tests`.
+
+Three things about that file are easy to get wrong:
+
+- **It is `tests.yaml`, not `sample.yaml` or `testcase.yaml`.** Upstream has
+  retired both older names: `filename:sample.yaml` and
+  `filename:testcase.yaml path:tests/drivers` each return zero results against
+  `zephyrproject-rtos/zephyr`, while `tests/drivers` alone holds 268
+  `tests.yaml` files. Samples keep a `sample:` key *inside* `tests.yaml`.
+- **Every scenario is `build_only: true`.** twister classifies `native_sim` as
+  `type: native` and would otherwise execute the binary, which reaches
+  `gallo_init_strict()` on a runner with no board.
+- **None declares `depends_on`.** That key is matched against the board's
+  `supported:` list, and `native_sim/native/64` does not name `i2c` or `spi` —
+  only the 32-bit `native_sim` does. A `depends_on: i2c` would filter the
+  scenario away to nothing on the only platform this module targets, and would
+  report it as skipped rather than as an error.
+
+twister duplicates most of what `ci-build.sh` already does, and does it with
+weaker assertions — it has no equivalent of the two-sided translation-unit and
+Kconfig checks. It earns its place for two other reasons. It forces
+`CONFIG_COMPILER_WARNINGS_AS_ERRORS=y` **and** `--edtlib-Werror`, so devicetree
+*binding* warnings become build failures; this module ships four custom
+bindings and a plain `west build` never checks them that way. And it is the
+only way to run a `type: unit` suite, which is the route issue
+[#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109) takes
+for hardware-free coverage of the drivers' internal helpers.
+
 
 ---
 
@@ -188,6 +220,19 @@ IS31FL3743B LED matrix, and that driver is **not** in Zephyr `main` — only
 `is31fl319x`, `is31fl3216a` and `is31fl3733` are upstream. Until it lands,
 those two samples cannot be built against an upstream checkout. Use
 `samples/spi_nor_id` for SPI instead.
+
+Neither carries a `tests.yaml`, so twister does not see them. That is
+deliberate, not an omission. `ci-build.sh` already covers them far more
+precisely than twister could: `assert_basefail()` requires the build to fail,
+requires `zephyr.elf` to have linked anyway, requires *exactly one* undefined
+`__device_dts_ord_N`, and requires that ordinal to resolve to an
+`is31fl3743b` node. A twister scenario could only say "this failed", which any
+unrelated breakage would also satisfy. Giving them one would add a second,
+weaker signal that could go green for the wrong reason.
+
+When the driver lands upstream, `assert_basefail()` starts failing on purpose —
+its comment says a *success* is what to act on — and both samples should get a
+`tests.yaml` at that point.
 
 ### The I2C gather-write regression image
 

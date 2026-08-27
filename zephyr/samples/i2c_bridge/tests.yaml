@@ -1,0 +1,38 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# The file is tests.yaml, not sample.yaml. Upstream Zephyr retired sample.yaml:
+# `filename:sample.yaml repo:zephyrproject-rtos/zephyr` returns zero results,
+# and samples/hello_world/ carries a tests.yaml with a `sample:` key. Issue #109
+# predates that migration and suggests the old name.
+#
+# BUILD ONLY, and not negotiable. Booting this image initialises the MFD parent,
+# which reaches gallo_init_strict() in zephyr/drivers/common/gallo_registry.c
+# and opens a USB device. GitHub runners have no board attached. twister treats
+# native_sim as `type: native` and would otherwise *run* the binary.
+#
+# There is deliberately no `depends_on: i2c`. depends_on is matched against the
+# board's `supported:` list, and boards/native/native_sim/native_sim_native_64.yaml
+# does not name i2c or spi -- only the 32-bit native_sim does. Claiming it would
+# filter this scenario down to nothing on the sole platform we target, and would
+# do so silently: a filtered scenario is reported as skipped, not as an error.
+#
+# No extra_args either. CMakeLists.txt already sets BOARD and SHIELD as cache
+# defaults and appends the module root to EXTRA_ZEPHYR_MODULES, so the app is
+# self-contained however it is invoked. That is what lets `west build <dir>`,
+# zephyr/scripts/ci-build.sh, and twister all drive it the same way.
+sample:
+  name: Pico de Gallo I2C bridge
+  description: Read a TMP117 over the I2C bus of a USB-attached Pico de Gallo
+common:
+  build_only: true
+  tags:
+    - i2c
+    - shield
+    - pico_de_gallo
+tests:
+  sample.pico_de_gallo.i2c_bridge:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
