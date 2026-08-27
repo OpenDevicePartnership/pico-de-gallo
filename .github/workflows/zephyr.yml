@@ -192,10 +192,19 @@ jobs:
           submodules: true
 
       - name: Install build dependencies
+        # gcc-multilib is required by the `type: unit` scenarios and by nothing
+        # else here. cmake/modules/unittest.cmake compiles the unit_testing board
+        # with -m32 unless M64_MODE is set, and ubuntu-latest ships no 32-bit
+        # glibc headers, so <inttypes.h> -> <features.h> -> <bits/wordsize.h>
+        # fails before any test source is reached -- Zephyr's own
+        # ztest_defaults.c is the first casualty. Installing the multilib headers
+        # is preferred over forcing -DM64_MODE=y, because -m32 is what upstream
+        # runs tests/unit/ under and a 64-bit-only build would diverge from it.
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            ninja-build gperf device-tree-compiler python3-venv libmagic1
+            ninja-build gperf device-tree-compiler python3-venv libmagic1 \
+            gcc-multilib
 
       - name: Install west
         run: |
@@ -243,6 +252,19 @@ jobs:
         # Both platforms are named. `type: unit` scenarios are matched to
         # unit_testing, so a run limited to native_sim/native/64 would filter
         # them out silently.
+        #
+        # --jobs 1 is load-bearing, not caution. Corrosion runs `cargo install
+        # cbindgen` per build, and the builds share CARGO_TARGET_DIR above, so
+        # concurrent installs race to copy /tmp/pdg-cargo-target/release/cbindgen
+        # into their own prefix and one loses:
+        #
+        #   error: failed to copy `/tmp/pdg-cargo-target/release/cbindgen`
+        #          to `.../corrosion/cbindgen/bin/cargo-install<rand>/cbindgen`
+        #
+        # Serialising is cheaper than the alternative. Dropping the shared
+        # CARGO_TARGET_DIR would let the builds run in parallel, but each would
+        # then compile pico-de-gallo-ffi and cbindgen from scratch; sharing the
+        # directory means only the first build pays that cost.
         run: |
           west twister \
             --testsuite-root "$GITHUB_WORKSPACE/zephyr/samples" \
@@ -250,6 +272,7 @@ jobs:
             --platform native_sim/native/64 \
             --platform unit_testing \
             --outdir /tmp/pdg-twister \
+            --jobs 1 \
             --inline-logs \
             --verbose
 
