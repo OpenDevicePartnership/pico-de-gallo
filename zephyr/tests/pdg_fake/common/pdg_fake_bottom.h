@@ -20,10 +20,19 @@
 extern "C" {
 #endif
 
-/* Discard all recorded calls. Call from each test's setup. */
+/* Discard all recorded calls. Call from each test's setup.
+ *
+ * INVARIANT: this never clears the open counter. The MFD parent opens during
+ * POST_KERNEL device init, long before any ztest setup hook runs, so a reset
+ * that cleared it would destroy the only evidence that the weak override took
+ * effect -- and would make that assertion depend on test order. Only the
+ * per-call recorders are cleared.
+ */
 void pdg_fake_reset(void);
 
-/* How many times pdg_common_bottom_open() was called. */
+/* How many times pdg_common_bottom_open() was called. Latched: never cleared
+ * by pdg_fake_reset(). See the invariant above.
+ */
 int pdg_fake_open_count(void);
 
 /* How many times pdg_i2c_bottom_write() was called. */

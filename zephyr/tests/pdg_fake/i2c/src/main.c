@@ -19,9 +19,11 @@ ZTEST_SUITE(pdg_fake_i2c, NULL, NULL, NULL, NULL, NULL);
  * finds no board, and the parent is not ready -- so this fails at the
  * device_is_ready() assertion rather than at the count.
  *
- * pdg_fake_reset() is deliberately NOT called here. The open happens during
- * POST_KERNEL device init, long before any ztest setup hook runs, so resetting
- * the counter would discard the very event under test.
+ * The open happens during POST_KERNEL device init, before any ztest setup
+ * hook runs, so the count it produces cannot be re-established by a test.
+ * pdg_fake_open_count() is latched against pdg_fake_reset() for exactly that
+ * reason, which is what keeps this assertion independent of test order once
+ * later suites start calling reset.
  */
 ZTEST(pdg_fake_i2c, test_weak_override_replaces_the_bottom_layer)
 {

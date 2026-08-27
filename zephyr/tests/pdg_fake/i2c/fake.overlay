@@ -6,9 +6,19 @@
  * Topology for the recording-fake suite: parent and I2C okay, nothing else.
  *
  * Mirrors zephyr/tests/pdg_i2c_burst/burst.overlay, minus the commentary about
- * physical boards, because this image never reaches one. The bottom layer is
- * replaced by a strong override in tests/pdg_fake/common/pdg_fake_bottom.c, so
- * gallo_init_strict() is never entered and no USB device is opened.
+ * physical boards, because this image never reaches one.
+ *
+ * No FFI call occurs, and the reason is specific rather than general: every
+ * bottom entry point the init path for this topology touches has a strong
+ * override in tests/pdg_fake/common/pdg_fake_bottom.c. That is
+ * pdg_common_bottom_open()/_close(), which keeps pdg_mfd_init() out of
+ * gallo_init_strict(), plus pdg_i2c_bottom_set_config(), which pdg_i2c_init()
+ * calls unconditionally and which would otherwise hand the fake's opaque
+ * token to the real gallo_i2c_set_config().
+ *
+ * That guarantee is scoped to this overlay. Enabling the GPIO or SPI child
+ * would add bottom entry points that are NOT overridden, and the fake's token
+ * would reach the FFI.
  *
  * GPIO and SPI stay disabled. An enabled SPI controller would additionally
  * park every cs-gpios pin as an inactive output at init, which this suite has
