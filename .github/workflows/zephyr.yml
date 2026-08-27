@@ -192,19 +192,10 @@ jobs:
           submodules: true
 
       - name: Install build dependencies
-        # gcc-multilib is required by the `type: unit` scenarios and by nothing
-        # else here. cmake/modules/unittest.cmake compiles the unit_testing board
-        # with -m32 unless M64_MODE is set, and ubuntu-latest ships no 32-bit
-        # glibc headers, so <inttypes.h> -> <features.h> -> <bits/wordsize.h>
-        # fails before any test source is reached -- Zephyr's own
-        # ztest_defaults.c is the first casualty. Installing the multilib headers
-        # is preferred over forcing -DM64_MODE=y, because -m32 is what upstream
-        # runs tests/unit/ under and a 64-bit-only build would diverge from it.
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
-            ninja-build gperf device-tree-compiler python3-venv libmagic1 \
-            gcc-multilib
+            ninja-build gperf device-tree-compiler python3-venv libmagic1
 
       - name: Install west
         run: |
@@ -249,9 +240,16 @@ jobs:
         # which is what makes the shield and the drivers resolve. That is the
         # same mechanism a bare `west build <dir>` relies on.
         #
-        # Both platforms are named. `type: unit` scenarios are matched to
-        # unit_testing, so a run limited to native_sim/native/64 would filter
-        # them out silently.
+        # Only native_sim/native/64 is named. `-p unit_testing` was tried and
+        # removed: the unit_testing board cannot compile a driver translation
+        # unit at all. cmake/modules/unittest.cmake supplies the generated
+        # headers as file(TOUCH)ed EMPTY files, so syscall_macros.h is empty,
+        # __syscall expands to nothing, and devicetree.h, ffs.h, bitarray.h and
+        # mem_blocks.h all fail together the moment <zephyr/device.h> is pulled
+        # in. syscalls/device.h is not even on that TOUCH list. That is why all
+        # 14 suites under upstream tests/unit/ come from lib/, subsys/crc and
+        # subsys/net/ip, and not one is a driver. Add it back only alongside a
+        # `type: unit` suite that has been shown to build.
         #
         # --jobs 1 is load-bearing, not caution. Corrosion runs `cargo install
         # cbindgen` per build, and the builds share CARGO_TARGET_DIR above, so
@@ -270,7 +268,6 @@ jobs:
             --testsuite-root "$GITHUB_WORKSPACE/zephyr/samples" \
             --testsuite-root "$GITHUB_WORKSPACE/zephyr/tests" \
             --platform native_sim/native/64 \
-            --platform unit_testing \
             --outdir /tmp/pdg-twister \
             --jobs 1 \
             --inline-logs \
