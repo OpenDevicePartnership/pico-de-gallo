@@ -56,15 +56,24 @@ die() {
 # Derived from each target's overlay; see spec section 4.1. The M5 command forms
 # follow docs/superpowers/specs/2026-08-19-zephyr-mfd-m5-acceptance.md:562-566.
 #
+# drivers/common/common.c is DELIBERATELY ABSENT from every native_objs field.
+# Do not add it back. Its object would be matched by name alone, and "common" is
+# generic enough that an unrelated object anywhere in a Zephyr build tree could
+# satisfy the search — a vacuous pass, which is the one outcome this gate exists
+# to prevent. It costs no coverage: zephyr/drivers/CMakeLists.txt adds common.c
+# and gallo_registry.c to native_simulator in a single target_sources() call
+# under one conditional, so finding the uniquely named gallo_registry object
+# proves common.c was compiled too. Every remaining entry is likewise unique.
+#
 PDG_TARGETS=(
-"i2c_bridge|pass|zephyr/samples/i2c_bridge||pdg_mfd.c,pdg_i2c.c|common,gallo_registry,pdg_i2c_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_I2C_PICO_DE_GALLO"
-"spi_nor_id|pass|zephyr/samples/spi_nor_id||pdg_mfd.c,pdg_gpio.c,pdg_spi.c|common,gallo_registry,pdg_gpio_bottom,pdg_spi_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
+"i2c_bridge|pass|zephyr/samples/i2c_bridge||pdg_mfd.c,pdg_i2c.c|gallo_registry,pdg_i2c_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_I2C_PICO_DE_GALLO"
+"spi_nor_id|pass|zephyr/samples/spi_nor_id||pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
 "spi_bridge|basefail|zephyr/samples/spi_bridge||||"
 "combined_i2c_spi_bridge|basefail|zephyr/samples/combined_i2c_spi_bridge||||"
-"m5_reset|pass|zephyr/tests/pdg_mfd_m5/reset_subscriptions|zephyr/tests/pdg_mfd_m5/reset_subscriptions/reset.overlay|pdg_mfd.c|common,gallo_registry,m5_bottom|CONFIG_MFD_PICO_DE_GALLO"
-"m5_jumper|pass|zephyr/tests/pdg_mfd_m5/jumper_preflight|zephyr/tests/pdg_mfd_m5/jumper_preflight/jumper.overlay|pdg_mfd.c,pdg_gpio.c|common,gallo_registry,pdg_gpio_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO"
-"m5_acceptance|pass|zephyr/tests/pdg_mfd_m5/acceptance|zephyr/tests/pdg_mfd_m5/acceptance/acceptance.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|common,gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
-"m5_teardown|pass|zephyr/tests/pdg_mfd_m5/recovery_teardown|zephyr/tests/pdg_mfd_m5/recovery_teardown/recovery.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|common,gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
+"m5_reset|pass|zephyr/tests/pdg_mfd_m5/reset_subscriptions|zephyr/tests/pdg_mfd_m5/reset_subscriptions/reset.overlay|pdg_mfd.c|gallo_registry,m5_bottom|CONFIG_MFD_PICO_DE_GALLO"
+"m5_jumper|pass|zephyr/tests/pdg_mfd_m5/jumper_preflight|zephyr/tests/pdg_mfd_m5/jumper_preflight/jumper.overlay|pdg_mfd.c,pdg_gpio.c|gallo_registry,pdg_gpio_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO"
+"m5_acceptance|pass|zephyr/tests/pdg_mfd_m5/acceptance|zephyr/tests/pdg_mfd_m5/acceptance/acceptance.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
+"m5_teardown|pass|zephyr/tests/pdg_mfd_m5/recovery_teardown|zephyr/tests/pdg_mfd_m5/recovery_teardown/recovery.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
 )
 
 # All four driver translation units. Assertion 3 is two-sided over exactly this
@@ -362,24 +371,45 @@ assert_pass() {
 		esac
 	done
 
-	# 4. native_simulator-side objects, tolerant of .o and .obj. Same
-	# -print -quit shape and same output-wins-over-status rule as
-	# assertion 2.
-	local obj objhit objst
+	# 4. native_simulator-side objects. Same -print -quit shape and same
+	# output-wins-over-status rule as assertion 2.
+	#
+	# Three name shapes are accepted. The native_simulator runner is built by
+	# a plain Makefile whose rule is %.c -> %.o, so the real artefact is
+	# <name>.o, not CMake's <name>.c.o; the '<name>*.o' form is the one
+	# A-08 of 2026-08-19-zephyr-mfd-m4-acceptance.md used to locate these
+	# very objects, and its '*' absorbs any suffix decoration. The two CMake
+	# shapes are kept because they cost nothing and would cover a future
+	# build-system change.
+	#
+	# On a miss, list what IS there under that base name (capped): the first
+	# run of this gate cost a full CI round precisely because "not found"
+	# reported the absence without reporting the truth beside it.
+	local obj objhit objst cands
 	for obj in $(printf '%s' "$expected_objs" | tr ',' ' '); do
 		objhit=$(find "$builddir" \
-			\( -name "${obj}.c.o" -o -name "${obj}.c.obj" \) -print -quit)
+			\( -name "${obj}*.o" -o -name "${obj}.c.o" \
+			   -o -name "${obj}.c.obj" \) -print -quit)
 		objst=$?
 		if [ -n "$objhit" ]; then
 			continue
-		elif [ "$objst" -ne 0 ]; then
-			printf '  %s: search for %s.c.o[bj] under %s failed (find exited %d); the build tree was not fully inspected\n' \
-				"$name" "$obj" "$builddir" "$objst"
-			rc=1
-		else
-			printf '  %s: native_simulator object %s.c.o[bj] not found\n' "$name" "$obj"
-			rc=1
 		fi
+		cands=$(find "$builddir" -name "*${obj}*" -type f 2>/dev/null \
+			| sed -n '1,5p')
+		if [ "$objst" -ne 0 ]; then
+			printf '  %s: search for %s object under %s failed (find exited %d); the build tree was not fully inspected\n' \
+				"$name" "$obj" "$builddir" "$objst"
+		else
+			printf '  %s: native_simulator object %s.o/.c.o[bj] not found\n' "$name" "$obj"
+		fi
+		if [ -n "$cands" ]; then
+			printf '  %s: candidates matching *%s* (first 5):\n' "$name" "$obj"
+			printf '%s\n' "$cands" | sed 's/^/    /'
+		else
+			printf '  %s: no file under %s has %s in its name\n' \
+				"$name" "$builddir" "$obj"
+		fi
+		rc=1
 	done
 
 	# 5. Two-sided Kconfig check: every expected symbol is =y, and every
