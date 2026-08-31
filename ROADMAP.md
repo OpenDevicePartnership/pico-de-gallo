@@ -253,24 +253,75 @@ is weaker than it looks.
 
 ---
 
-## Phase 4 — Hardware Rev 2
+### B. Zephyr Module
 
-*Complexity: high. Requires PCB re-spin, component sourcing, and
-potentially case redesign.*
+`zephyr/` is an out-of-tree Zephyr module that presents a Pico de Gallo
+board as an ordinary Zephyr device tree node, so a driver written
+against Zephyr's I2C, SPI or GPIO API runs unmodified on a host PC.
 
-This is the section that addresses the board re-spin directly. Changes are
-ordered by impact-to-cost ratio.
+The module is documented in `zephyr/README.md`, which is deliberately
+authoritative — there is no book chapter for it, and AGENTS.md §15.1
+records that ruling.
 
-|    | Item                                                             | Tracking                                                                                  |
-|----|------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
-| ☐  | [4.1 Voltage Level Translators](#41-voltage-level-translators)   | [#20](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/20)                   |
-| ☐  | [4.2 Target Power Output](#42-target-power-output)               | [#21](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/21)                   |
-| ✅ | [4.3 Dedicated Connector Layout](#43-dedicated-connector-layout) | [#22](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/22) — shipped in v1.1 |
-| ☐  | [4.4 ESD Protection](#44-esd-protection)                         | [#23](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/23)                   |
-| ☐  | [4.5 Activity LEDs](#45-activity-leds)                           | [#24](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/24)                   |
-| ☐  | [4.6 Board Size and Mounting](#46-board-size-and-mounting)       | [#25](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/25)                   |
+Shipped so far: an MFD parent (`odp,pico-de-gallo`) with GPIO, I2C and
+SPI children, four device tree bindings, four samples, three test
+suites, and a path-filtered CI job.
 
-### 4.1 Voltage Level Translators
+Two limits are worth stating plainly. CI is **build-only for
+everything that touches a board**: every sample and every M5 app sets
+`build_only`, because booting them reaches `gallo_init_strict()` and
+needs hardware. The sole exception is the `pdg_fake` I2C suite, which
+twister does execute — its bottom layer is a recording fake, so no
+board is involved. A green run therefore proves the module compiles
+and links, and that one hardware-free suite passes. It does not prove
+the module works against a real board.
+
+Nothing here has been released either: `zephyr/CHANGELOG.md` is
+entirely `[Unreleased]`.
+
+#### Open work
+
+| Item                               | Issue                                                                     |
+|------------------------------------|---------------------------------------------------------------------------|
+| UART driver                        | [#152](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/152) |
+| ADC driver                         | [#153](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/153) |
+| 1-Wire (w1) driver                 | [#154](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/154) |
+| PWM driver                         | [#155](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/155) |
+| `PDG_I2C_MAX_BUFFER` is unmeasured | [#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146) |
+| Upstream the module                | [#98](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/98)   |
+
+[#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146)
+is the I2C analogue of the SPI ceiling in
+[Workstream A](#a-reliability--correctness). 4096 was assumed for SPI
+and turned out to be far lower; the I2C limit has never been measured
+at all.
+
+---
+
+### C. Hardware Rev 2
+
+*Requires a PCB re-spin, component sourcing, and potentially a case
+redesign.*
+
+v1.1 shipped the connector rework
+([#22](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/22),
+tag `hardware-v1.1.1`). The remaining items are ordered by
+impact-to-cost ratio, and the re-spin should be done **once** with all
+of them. Level translators and ESD protection are the non-negotiable
+additions; target power is high-value and low-cost; activity LEDs are
+worth including if board space permits.
+
+#### Open work
+
+| Item                      | Issue                                                                   |
+|---------------------------|-------------------------------------------------------------------------|
+| Voltage level translators | [#20](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/20) |
+| Target power output       | [#21](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/21) |
+| ESD protection            | [#23](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/23) |
+| Activity LEDs             | [#24](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/24) |
+| Board size and mounting   | [#25](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/25) |
+
+#### Voltage Level Translators (#20)
 
 **Priority: CRITICAL — the single most impactful hardware change.**
 
@@ -309,7 +360,7 @@ This excludes a huge portion of the embedded ecosystem, especially:
 - If VREF is not supplied, the translators can be powered from the
   on-board 3.3 V rail (passthrough mode, no translation).
 
-### 4.2 Target Power Output
+#### Target Power Output (#21)
 
 **What:** Provide switchable 3.3 V and 5 V power outputs to power small
 target boards directly from USB.
@@ -331,7 +382,13 @@ provides target power and it's one of its most-loved features.
 **Budget:** USB 2.0 provides 500 mA total. The Pico 2 itself draws
 ~30–50 mA. Safely offer 200–300 mA to targets.
 
-### 4.3 Dedicated Connector Layout
+#### Connector Layout — original proposal, superseded (#22)
+
+> **Superseded.** v1.1 shipped a single keyed 2×12 shrouded header
+> carrying all 20 signals, not the per-bus connector scheme below.
+> The Qwiic/STEMMA QT connector was never built. This subsection is
+> kept for provenance; see `book/src/hardware/revisions.md` for what
+> v1.1 actually carries.
 
 **What:** Redesign the connector layout with labeled, purpose-specific
 headers:
@@ -352,7 +409,7 @@ SparkFun (Qwiic) and Adafruit (STEMMA QT) both use it. Adding one means
 users can plug in any Qwiic/STEMMA sensor board with a single cable — no
 wiring, no breadboard.
 
-### 4.4 ESD Protection
+#### ESD Protection (#23)
 
 **What:** Add ESD protection diodes (e.g., TPD4E05U06 for 4-channel, or
 PRTR5V0U2X for USB/I2C) on all external-facing signal lines.
@@ -363,7 +420,7 @@ table stakes for any tool that's meant to be handled daily.
 
 **Cost:** Negligible — TVS diode arrays are $0.10–0.30 each.
 
-### 4.5 Activity LEDs
+#### Activity LEDs (#24)
 
 **What:** Add per-bus activity LEDs:
 
@@ -384,7 +441,7 @@ glance at blinking LEDs answers it immediately.
 toggles them in the endpoint handlers. Total current draw: ~12 mA for
 6 LEDs at 2 mA each.
 
-### 4.6 Board Size and Mounting
+#### Board Size and Mounting (#25)
 
 **What:** Consider whether the case design needs updating for the new
 connectors. The current design uses M3 mounting holes; keep those but
@@ -394,6 +451,35 @@ additional connectors.
 **Tradeoff:** A larger board costs more to fabricate and doesn't fit the
 current 3D-printed case, but a cramped board with too-small connectors is
 worse.
+
+---
+
+### D. Documentation & Tooling
+
+| Item                                                                    | Issue                                                                     |
+|-------------------------------------------------------------------------|---------------------------------------------------------------------------|
+| A book on driver development with Rust, device-driver and Pico de Gallo | [#79](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/79)   |
+| Hardware-in-the-loop CI runners for board-attached tests                | [#162](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/162) |
+
+[#162](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/162)
+gates more than it looks. Every *board-dependent* behavioural claim in
+this project rests on a manual procedure: the Zephyr M5 script, the
+hardware verifications behind the AGENTS.md §13.17 entries, and the
+ignored tests in the host workspace. Hardware-free logic does get
+automated coverage — the `pdg_fake` suite is the model — but nothing
+that needs a real bridge does. Until CI can run board-attached tests,
+[Workstream A](#a-reliability--correctness) cannot have regression
+coverage, and every fix there stays one refactor away from silently
+coming undone.
+
+---
+
+### E. Blocked and Deferred
+
+| Item                      | Issue                                                                   | State                                                                                                                                                                       |
+|---------------------------|-------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 10-bit I2C addressing     | [#12](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/12) | **Blocked upstream.** Needs [embassy-rs/embassy#5927](https://github.com/embassy-rs/embassy/pull/5927) to land plus an embassy-rp release, and a postcard-rpc dependency PR |
+| Configuration persistence | [#17](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/17) | Deferred to post-1.0                                                                                                                                                        |
 
 ---
 
