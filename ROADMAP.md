@@ -483,48 +483,73 @@ coming undone.
 
 ---
 
-## Phase 5 — 1.0 Release Criteria
+## 1.0 Release Criteria
 
-The 1.0 release should be declared when the items below are complete.
-Each references the phase item where the work is tracked — check progress
-there, not here.
+### Must have
 
-### Must Have (1.0 blockers)
+| Requirement                                                                                                                                                                      | State                                                                                                      |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
+| `I2c`, `SpiBus`, `SpiDevice`, `InputPin`, `OutputPin`, `StatefulOutputPin`, `Wait`, `DelayNs` and `SetDutyCycle` implemented, blocking and async wherever the trait defines both | ✅ Done — see [Appendix A](#appendix-a--embedded-hal-trait-coverage-matrix)                                 |
+| `embedded-io` `Read` and `Write` for UART                                                                                                                                        | ✅ Done, for both the 0.6 and 0.7 majors                                                                    |
+| Rich error types mapping firmware errors to `ErrorKind`                                                                                                                          | ✅ Done                                                                                                     |
+| I2C bus scan                                                                                                                                                                     | ✅ Done                                                                                                     |
+| GPIO direction and pull configuration                                                                                                                                            | ✅ Done                                                                                                     |
+| UART support                                                                                                                                                                     | ✅ Done (hw-rev2)                                                                                           |
+| Configuration query endpoints                                                                                                                                                    | ✅ Done                                                                                                     |
+| All public API types documented with rustdoc                                                                                                                                     | Ongoing                                                                                                    |
+| Book covers every interface, with examples                                                                                                                                       | Ongoing                                                                                                    |
+| Stable wire protocol — no breaking serialization changes after 1.0                                                                                                               | ❌ **Not met.** The schema is still moving; wire behaviour changed as recently as the unreleased schema 0.7 |
+| No known device-wide wedge reachable from a supported host surface                                                                                                               | ❌ **Not met** — [Workstream A](#a-reliability--correctness)                                                |
 
-| Requirement                                                        | Phase Item |
-|--------------------------------------------------------------------|------------|
-| All `embedded-hal` 1.0 sync + async traits implemented             | 1.2, 2.2   |
-| `embedded-io` Read/Write for UART                                  | 2.1        |
-| Rich error types mapping firmware errors to `ErrorKind`            | 1.1        |
-| I2C bus scan                                                       | 1.3        |
-| GPIO direction + pull configuration                                | 1.4        |
-| UART support (at least one UART)                                   | 2.1        |
-| Configuration query endpoints                                      | 1.5        |
-| All public API types documented with rustdoc                       | — (ongoing)|
-| Book updated with all interfaces and examples                      | — (ongoing)|
-| Stable wire protocol (no breaking serialization changes after 1.0) | — (policy) |
+The trait list is deliberately explicit rather than "all `embedded-hal`
+traits". Read literally, that older wording was never met. Three traits
+are excluded, each for a stated reason:
 
-### Should Have (target for 1.0, can slip)
+- **`I2c<TenBitAddress>`** — blocked upstream, see
+  [Workstream E](#e-blocked-and-deferred).
+- **`embedded_io::ReadReady`** and **`WriteReady`** — not implemented.
+  Nothing in the wire protocol currently reports UART buffer
+  readiness, so the HAL has nothing to answer from. How to close that
+  is an open design question, not a settled one. Not a 1.0 blocker.
 
-| Requirement                                            | Phase Item   |
-|--------------------------------------------------------|--------------|
-| PWM support                                            | 2.2          |
-| ADC support (at least single-shot reads)               | 2.3          |
-| GPIO event topics                                      | 3.1          |
-| I2C transaction batching                               | 3.2          |
-| 10-bit I2C addressing                                  | 2.4          |
-| CLI app with bus scan, UART terminal, interactive GPIO | — (app work) |
+### Should have
 
-### Nice to Have (post-1.0)
+| Requirement                    | State                                                                                                                              |
+|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
+| PWM support                    | ✅ Done                                                                                                                             |
+| ADC support                    | ✅ Done (hw-rev2)                                                                                                                   |
+| GPIO event topics              | ✅ Done                                                                                                                             |
+| I2C transaction batching       | ✅ Done, and atomic since [#128](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/128)                                 |
+| 10-bit I2C addressing          | ❌ Blocked upstream — [Workstream E](#e-blocked-and-deferred)                                                                       |
+| CLI: I2C bus scan              | ✅ Done — `gallo i2c scan`                                                                                                          |
+| CLI: interactive UART terminal | ❌ Not implemented. The CLI has `uart read`, `uart write`, `uart flush`, `uart set-config` and `uart get-config` — no terminal mode |
+| CLI: interactive GPIO          | ❌ Not implemented. The CLI has `gpio get`, `gpio put`, `gpio set-config` and `gpio monitor`, but no interactive mode               |
 
-| Requirement               | Phase Item |
-|---------------------------|------------|
-| 1-Wire via PIO            | 3.3        |
-| Protocol sniffing         | 3.4        |
-| Configuration persistence | 3.5        |
-| Multi-device host support | 3.6        |
-| SPI target mode           | — (future) |
-| Hardware Rev 2 features   | Phase 4    |
+### Post-1.0
+
+| Requirement                | State                                              |
+|----------------------------|----------------------------------------------------|
+| 1-Wire via PIO             | ✅ **Already shipped**, ahead of 1.0                |
+| Configuration persistence  | Deferred — [Workstream E](#e-blocked-and-deferred) |
+| SPI target mode            | Not started, untracked                             |
+| Hardware Rev 2             | [Workstream C](#c-hardware-rev-2)                  |
+| Zephyr peripheral coverage | [Workstream B](#b-zephyr-module)                   |
+
+### Where 1.0 actually stands
+
+No must-have is waiting on a feature that is both unimplemented and
+unblocked. What remains is not feature work:
+
+1. **Wire-protocol stability.** 1.0 is a commitment to the
+   serialization format, and that format is still moving.
+2. **Reliability.** Shipping 1.0 with a known, reachable device-wide
+   wedge would misrepresent what the version number means.
+3. **Documentation.** Ongoing, and gated in part on
+   [#79](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/79).
+
+Protocol sniffing and multi-device host support previously appeared
+here as post-1.0 deliverables. Both were [dropped](#delivered) and are
+no longer planned in any timeframe.
 
 ---
 
