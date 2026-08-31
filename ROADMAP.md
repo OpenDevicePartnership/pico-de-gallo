@@ -625,26 +625,32 @@ but that's a separate product, not a replacement.
 
 ## Appendix A — embedded-hal Trait Coverage Matrix
 
-| Trait                  | Crate                | Blocking | Async | Status    |
-|------------------------|----------------------|----------|-------|-----------|
-| `I2c<SevenBitAddress>` | `embedded-hal`       | ✅       | ✅    | Done      |
-| `I2c<TenBitAddress>`   | `embedded-hal`       | ❌       | ❌    | Phase 2.4 |
-| `SpiBus`               | `embedded-hal`       | ✅       | ✅    | Done      |
-| `SpiDevice`            | `embedded-hal`       | ✅       | ✅    | Done      |
-| `InputPin`             | `embedded-hal`       | ✅       | —     | Done      |
-| `OutputPin`            | `embedded-hal`       | ✅       | —     | Done      |
-| `StatefulOutputPin`    | `embedded-hal`       | ✅       | —     | Done      |
-| `Wait`                 | `embedded-hal-async` | —        | ✅    | Done      |
-| `DelayNs`              | `embedded-hal`       | ✅       | ✅    | Done      |
-| `SetDutyCycle`         | `embedded-hal`       | ✅       | —     | Done      |
-| `Read`                 | `embedded-io`        | ✅       | ✅    | Done      |
-| `Write`                | `embedded-io`        | ✅       | ✅    | Done      |
-| `ReadReady`            | `embedded-io`        | ❌       | —     | Future    |
-| `WriteReady`           | `embedded-io`        | ❌       | —     | Future    |
+| Trait                  | Crate                | Blocking | Async | Status                                               |
+|------------------------|----------------------|----------|-------|------------------------------------------------------|
+| `I2c<SevenBitAddress>` | `embedded-hal`       | ✅       | ✅    | Done                                                 |
+| `I2c<TenBitAddress>`   | `embedded-hal`       | ❌       | ❌    | Blocked, see [Workstream E](#e-blocked-and-deferred) |
+| `SpiBus`               | `embedded-hal`       | ✅       | ✅    | Done                                                 |
+| `SpiDevice`            | `embedded-hal`       | ✅       | ✅    | Done                                                 |
+| `InputPin`             | `embedded-hal`       | ✅       | —     | Done                                                 |
+| `OutputPin`            | `embedded-hal`       | ✅       | —     | Done                                                 |
+| `StatefulOutputPin`    | `embedded-hal`       | ✅       | —     | Done                                                 |
+| `Wait`                 | `embedded-hal-async` | —        | ✅    | Done                                                 |
+| `DelayNs`              | `embedded-hal`       | ✅       | ✅    | Done                                                 |
+| `SetDutyCycle`         | `embedded-hal`       | ✅       | —     | Done                                                 |
+| `Read`                 | `embedded-io`        | ✅       | ✅    | Done                                                 |
+| `Write`                | `embedded-io`        | ✅       | ✅    | Done                                                 |
+| `ReadReady`            | `embedded-io`        | ❌       | —     | Excluded                                             |
+| `WriteReady`           | `embedded-io`        | ❌       | —     | Excluded                                             |
 
-The `embedded-io` rows cover both majors: `pico-de-gallo-hal`'s
-`embedded-io-06` feature remains enabled by default, and
-`embedded-io-07` can be enabled additively for drivers targeting 0.7.
+`Read` and `Write` are implemented **eight** times over: blocking and
+async, for each of the 0.6 and 0.7 majors. `pico-de-gallo-hal` carries
+both majors side by side behind additive features — `embedded-io-06` is
+on by default, `embedded-io-07` is opt-in — so a driver written against
+either can be developed against a board. AGENTS.md §7.3 records why
+this is multi-major by design rather than a migration.
+
+`ReadReady` and `WriteReady` are excluded from 1.0 rather than pending;
+see [1.0 Release Criteria](#10-release-criteria) for the reason.
 
 **At 1.0:** every cell should be ✅ or have a documented reason for
 exclusion.
@@ -658,10 +664,10 @@ exclusion.
 | **I2C**          | ✅ (+ scan, batch)      | ✅ (+ 10-bit)              | ✅ (+ slave)                | ✅ (MPSSE)          | ✅                | ✅             |
 | **SPI**          | ✅ (+ SpiDevice)        | ✅                         | ✅ (+ slave)                | ✅ (MPSSE)          | ✅                | ❌             |
 | **UART**         | ✅                      | ✅                         | ❌                          | ✅ (dual)           | ✅                | ✅             |
-| **GPIO**         | ✅ (8 pins)             | ✅                         | ✅ (6 pins)                 | ✅ (limited)        | ✅                | ✅ (4 pins)    |
+| **GPIO**         | ✅ (4 pins)             | ✅                         | ✅ (6 pins)                 | ✅ (limited)        | ✅                | ✅ (4 pins)    |
 | **PWM**          | ✅                      | ✅                         | ✅                          | ✅                  | ✅                | ✅             |
 | **ADC**          | ✅ (4-ch, 12-bit)       | ✅                         | ❌                          | ❌                  | ✅                | ✅ (3-ch)      |
-| **1-Wire**       | ✅ (PIO)                | ✅                         | ❌                          | ❌                  | ✅                | ❌             |
+| **1-Wire**       | ✅ (PIO)                | ✅ (PIO)                   | ❌                          | ❌                  | ✅                | ❌             |
 | **Level shift**  | ❌                      | Rev 2                      | ❌ (accessory)              | ❌ (5V tolerant)    | ✅                | ❌             |
 | **Target power** | ❌                      | Rev 2                      | ✅                          | ❌                  | ✅                | ❌             |
 | **embedded-hal** | ✅                      | ✅ (complete)              | ❌                          | ❌                  | ❌                | ❌             |
@@ -675,7 +681,8 @@ exclusion.
 2. Only bridge that's both open-source hardware AND Rust-native
 3. Price/feature ratio competitive with Bus Pirate, with far better
    Rust integration
-4. PIO enables custom protocols no other bridge at this price can match
+4. PIO enables protocols no other bridge at this price can match —
+   1-Wire today, with two state machines still free
 
 ---
 
@@ -684,19 +691,19 @@ exclusion.
 The RP2350 (as used on Pico 2) has the following peripherals. This table
 shows current usage and planned allocation:
 
-| Peripheral | Total Available   | Currently Used                        | Planned (1.0)    | Notes                                     |
-|------------|-------------------|---------------------------------------|------------------|-------------------------------------------|
-| **I2C**    | 2 (I2C0, I2C1)    | 1 (I2C1)                              | 1                | Second bus dropped                        |
-| **SPI**    | 2 (SPI0, SPI1)    | 1 (SPI0)                              | 1                | Second bus dropped                        |
-| **UART**   | 2 (UART0, UART1)  | 1 (UART0)                             | 1 (UART0)        | GPIO0/1                                   |
-| **PWM**    | 12 slices (24 ch) | 4 slices                              | 4 slices         | GPIO8–15, PWM slices 4–7                  |
-| **ADC**    | 4 GPIO            | 4 (GPIO26–29)                         | 4 GPIO           | GPIO26–29                                 |
-| **PIO**    | 3 (PIO0–2)        | 1 (1-Wire)                            | 1–2              | 1-Wire, sniffing                          |
-| **DMA**    | 16 channels       | 2 (SPI)                               | 4–6              | ADC continuous, UART, SPI                 |
-| **GPIO**   | 30 (on Pico 2)    | 10 (I2C: 2, SPI: 3, user: 8, USB: ~0) | ~24              | Plenty of headroom                        |
-| **USB**    | 1 (FS)            | 1                                     | 1                | Fully committed                           |
-| **Flash**  | 4 MB (on Pico 2)  | ~256 KB firmware                      | ~256 KB + config | Config persistence in reserved sector     |
-| **SRAM**   | 520 KB            | ~64 KB (estimated)                    | ~128 KB          | Buffer growth for batching/ADC            |
+| Peripheral | Total Available   | Currently Used                                     | Planned (1.0) | Notes                                     |
+|------------|-------------------|----------------------------------------------------|---------------|-------------------------------------------|
+| **I2C**    | 2 (I2C0, I2C1)    | 1 (I2C1)                                           | 1             | Second bus dropped                        |
+| **SPI**    | 2 (SPI0, SPI1)    | 1 (SPI0)                                           | 1             | Second bus dropped                        |
+| **UART**   | 2 (UART0, UART1)  | 1 (UART0)                                          | 1 (UART0)     | GPIO0/1                                   |
+| **PWM**    | 12 slices (24 ch) | 2 slices (4 channels)                              | 2 slices      | GPIO12–15                                 |
+| **ADC**    | 4 GPIO            | 4 (GPIO26–29)                                      | 4 GPIO        | GPIO26–29                                 |
+| **PIO**    | 3 (PIO0–2)        | 1 (1-Wire)                                         | 1             | Sniffing dropped; two state machines free |
+| **DMA**    | 16 channels       | 2 (SPI)                                            | 4–6           | ADC continuous, UART, SPI                 |
+| **GPIO**   | 30 (on Pico 2)    | 16 (I2C 2, SPI 3, UART 2, user 4, PWM 4, 1-Wire 1) | ~16           | Ample headroom                            |
+| **USB**    | 1 (FS)            | 1                                                  | 1             | Fully committed                           |
+| **Flash**  | 4 MB (on Pico 2)  | ~256 KB firmware                                   | ~256 KB       | Config persistence deferred post-1.0      |
+| **SRAM**   | 520 KB            | ~64 KB (estimated)                                 | ~128 KB       | Buffer growth for batching/ADC            |
 
 **Conclusion:** The RP2350 has substantial unused peripheral capacity.
 We can implement every feature in this roadmap without running out of
