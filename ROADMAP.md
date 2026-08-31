@@ -161,6 +161,98 @@ Work that shipped without ever having a roadmap row.
 
 ---
 
+## Active Workstreams
+
+Live work, grouped by the kind of effort it needs. Rows list issue
+numbers rather than status markers — GitHub renders issue state, so
+these cannot go stale.
+
+### A. Reliability & Correctness
+
+**This is the highest-priority workstream.** Pico de Gallo has a
+recurring, device-wide failure mode that has now appeared three times
+from three unrelated triggers.
+
+#### The dispatcher-wedge defect class
+
+postcard-rpc dispatches handlers serially on a single `&mut Context`.
+A handler that never returns therefore blocks **every** endpoint, not
+just its own protocol family. The symptom is not "I2C stopped working"
+but "the board stopped answering anything".
+
+Recovery needs USB re-enumeration or a power cycle. Which of the two
+suffices is established per instance, not for the class:
+re-enumeration was observed to recover the SPI-framing and
+zero-length-I2C cases, and was never tested against the GPIO-wait
+case.
+
+The 2 s watchdog does not catch it. `watchdog_feeder_task` is an
+independent embassy task, so it keeps feeding while the dispatcher is
+parked — the watchdog proves executor liveness, not dispatcher
+progress. Closing that gap is
+[#157](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/157).
+
+Three instances so far. Each is documented in full in the regression
+log at **AGENTS.md §13.17**; they are listed here only to establish
+that this is a class rather than three unrelated bugs.
+
+| Date       | Trigger                                       |
+|------------|-----------------------------------------------|
+| 2026-06-03 | `gpio/wait-*` on a pin that never transitions |
+| 2026-08-19 | `spi/transfer` at the packet-framing boundary |
+| 2026-08-26 | Zero-length I2C write                         |
+
+Each was fixed or contained individually — a `timeout_ms` field on the
+GPIO wait request, a byte cap in the Zephyr SPI driver, a firmware
+guard rejecting empty writes. None of those addresses the shared root
+cause, which is that a handler which never returns can still take the
+whole device down.
+
+#### The transfer-size ceiling
+
+`MAX_TRANSFER_SIZE` is a **packet-buffer budget, not usable payload**.
+The buffer must also hold the postcard-rpc header, the length varint
+and COBS framing, and the budget covers the request frame *and* the
+response frame.
+
+Measured on hardware, the largest TX-only `spi/transfer` payload
+observed to work is **1013 bytes**, and 1015 wedges the dispatcher.
+1014 was never tested, so the exact boundary sits in an untested gap.
+
+Not every oversized transfer wedges the device, which is part of what
+makes this hard to reason about: 4096 TX-only and 3072 full duplex
+both fail cleanly with `-ECOMM` at the transport instead. Full duplex
+is documented safe only at 512 bytes or fewer.
+
+The Zephyr driver caps itself at 1013. **Every other host surface — the
+CLI, `pico-de-gallo-lib`, the HAL, the FFI, Python and MCP — can still
+reach the wedge**, which is
+[#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158).
+
+This finding previously sat inside a phase describing completed work,
+which buried it. It belongs here until the ceiling is enforced.
+
+#### Open work
+
+| Item                                                       | Issue                                                                     |
+|------------------------------------------------------------|---------------------------------------------------------------------------|
+| Watchdog proves executor liveness, not dispatcher progress | [#157](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/157) |
+| Real payload ceiling unenforced on every host surface      | [#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158) |
+| Firmware build identity observable in `device/info`        | [#159](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/159) |
+| Verify `i2c/batch` repeated START framing on an analyser   | [#160](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/160) |
+| `SPI_CS` pin cannot be used as a chip select               | [#99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99)   |
+
+[#159](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/159)
+belongs in this workstream rather than in tooling, because every fix
+above is confirmed by a board-attached hardware test. `validate()`
+cannot currently distinguish two firmware builds that report the same
+version but behave differently, so a test can be run against the wrong
+image without anyone noticing — which has already happened once. Until
+build identity is observable, the evidence for closing any item here
+is weaker than it looks.
+
+---
+
 ## Phase 4 — Hardware Rev 2
 
 *Complexity: high. Requires PCB re-spin, component sourcing, and
