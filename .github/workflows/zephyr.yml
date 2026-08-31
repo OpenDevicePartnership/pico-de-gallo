@@ -116,7 +116,7 @@ jobs:
 
       - name: Restore the west workspace
         id: west-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: zephyrproject
           key: zephyr-ws-${{ env.ZEPHYR_REVISION }}-v1
@@ -208,7 +208,7 @@ jobs:
 
       - name: Restore the west workspace
         id: west-cache
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: zephyrproject
           key: zephyr-ws-${{ env.ZEPHYR_REVISION }}-v1
