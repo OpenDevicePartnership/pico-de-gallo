@@ -132,13 +132,23 @@ already has an authoritative home that something else keeps honest.
 
 ```powershell
 rg -c '2026-08-31' ROADMAP.md                      # expect: 1
-rg -c 'Progress Overview' ROADMAP.md               # expect: 0
+rg -c 'Progress Overview' ROADMAP.md               # expect: 2 — see below
 rg -c '298 unit' ROADMAP.md                        # expect: 0
 rg -c 'gallo-mcp' ROADMAP.md                       # expect: >= 1
 rg -c 'book/src/appendix/endpoints.md' ROADMAP.md  # expect: >= 1
 ```
 
-`rg -c` exits non-zero and prints nothing when the count is zero. That is the expected outcome for the two "expect: 0" checks.
+`Progress Overview` does **not** drop to zero here. Two references
+survive in the `Conventions` section, which Task 7 rewrites:
+
+- `Then update the [Progress Overview](#progress-overview) table` — this
+  becomes a dangling anchor the moment Task 1 lands, and stays dangling
+  until Task 7. That is expected.
+- `3. Update the item count in the Progress Overview`
+
+Do not fix them here; they are out of Task 1's scope.
+
+`rg -c` exits non-zero and prints nothing when the count is zero. That is the expected outcome for the `298 unit` check.
 
 - [ ] **Step 4: Normalise and commit**
 
@@ -712,9 +722,13 @@ The existing conventions describe checkbox tables and a Progress Overview that n
 - [ ] **Step 1: Confirm the pre-state**
 
 ```powershell
-rg -c 'Progress Overview' ROADMAP.md   # expect: 0 already; the conventions reference it by prose
+rg -n 'Progress Overview' ROADMAP.md   # before: 2 lines, both in this section
 rg -c 'Checking off items' ROADMAP.md  # before: 1
 ```
+
+Those two `Progress Overview` references are the last ones in the file,
+and one of them (`[Progress Overview](#progress-overview)`) has been a
+dangling anchor since Task 1. This task removes both.
 
 - [ ] **Step 2: Replace the Summary section**
 
@@ -798,6 +812,7 @@ file.
 
 ```powershell
 rg -c 'Checking off items' ROADMAP.md    # expect: 0
+rg -c 'Progress Overview' ROADMAP.md     # expect: 0 — the last two references are gone
 rg -c 'Do not add counts' ROADMAP.md     # expect: 1
 rg -c 'Derived figures' ROADMAP.md       # expect: >= 2
 ```
