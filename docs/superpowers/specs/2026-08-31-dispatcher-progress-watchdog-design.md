@@ -306,18 +306,35 @@ the device within a bounded time rather than wedging until USB re-enumeration.
 
 ### 6.1 Test hatch
 
+Corrected during planning. The hatch cannot live in `ping_handler`:
+`main.rs:321` registers `PingEndpoint` as `blocking`, and a blocking handler
+cannot `.await`, so `core::future::pending()` there does not compile.
+
+Instead, `wedge-test` disables the zero-length I2C write guard (#101,
+`handlers/i2c.rs`):
+
 ```rust
-#[cfg(feature = "wedge-test")]
-if req.id == 0xDEAD_BEEF {
-    core::future::pending::<()>().await;
+#[cfg(not(feature = "wedge-test"))]
+if req.contents.is_empty() {
+    warn!("i2c write: empty payload refused (addr={=u8:#x})", req.address);
+    return Err(I2cError::ZeroLengthWrite);
 }
 ```
 
-in `ping_handler`. Reachable as `gallo ping 3735928559`, absent from every
-release build, and it exercises the dispatch slot end to end.
+This reproduces the actual 2026-08-26 trigger and corrupts nothing: the whole
+defect is that `write_async_internal` queues no command and starts no
+transaction, then awaits a `STOP_DET`/`TX_ABRT` interrupt that only a started
+transaction can raise. No I2C target is required.
 
-Removing the real #135 or #128 guards instead was rejected: it means shipping a
-build that can corrupt an I2C device, for no extra signal.
+Reachable from `gallo-mcp`'s `i2c_write` with `data: ""` and from
+`pico-de-gallo-lib`'s `#[ignore]`d #135 regression tests. **Not** reachable
+from the `gallo` CLI, whose clap `num_args(1..)` requires at least one byte.
+
+The `i2c/batch` guard stays enabled: one trigger is enough, and that guard is
+the one preventing partial bus writes.
+
+Removing the #128 batch-atomicity behaviour instead was rejected: it means
+shipping a build that can corrupt an I2C device, for no extra signal.
 
 ### 6.2 Expected result
 
