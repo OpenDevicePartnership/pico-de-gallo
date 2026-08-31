@@ -161,6 +161,39 @@ postcard-rpc needs a dependency PR.
 so listing it in the roadmap would ship a document referencing its own
 completed authorship.
 
+### 2.7 Pin and resource counts — two further inaccuracies
+
+Found while drafting the plan, beyond anything #161 reported. The
+current `ROADMAP.md` contradicts itself on both.
+
+Constants (`crates/pico-de-gallo-internal/src/lib.rs`): `NUM_GPIOS = 4`
+(:516), `NUM_PWM_CHANNELS = 4` (:930), `MAX_TRANSFER_SIZE = 4096`
+(:74), `MAX_BATCH_OPS = 64` (:1250).
+
+Pin map (`crates/pico-de-gallo-firmware/src/main.rs`):
+
+| Function | Pins | Line |
+|---|---|---|
+| I2C1 | SDA `PIN_3`, SCL `PIN_2` | :402 |
+| SPI0 | `PIN_6`, `PIN_7`, `PIN_4` | :405–407 |
+| User GPIO | `PIN_8`–`PIN_11` (**4 pins**) | :415–418 |
+| PWM | `PIN_12`–`PIN_15` via `PWM_SLICE6` and `PWM_SLICE7` (**2 slices, 4 channels**) | :424–425 |
+| UART0 | `PIN_0`, `PIN_1` | :438–439 |
+| ADC | `PIN_26`–`PIN_29` | :452–455 |
+| 1-Wire | `PIN_16` | :464 |
+
+Two contradictions to fix:
+
+1. **GPIO pin count.** "Where We Are Today" says 4 pins (correct);
+   Appendix B's competitive table says `✅ (8 pins)` and Appendix C's
+   GPIO row says `user: 8`. Both are wrong.
+2. **PWM allocation.** Appendix C says `4 slices`; the actual is
+   **2 slices carrying 4 channels**. The deleted Phase 2.2 prose also
+   claimed PWM lives on "GPIO8–15, PWM slices 4–7", which is wrong on
+   both pins and slices — it would collide with the user GPIOs. That
+   prose is deleted anyway (§4.1), but Appendix C's row must be
+   corrected rather than carried forward.
+
 ## 3. Decisions
 
 Four forks were settled before writing this spec.
@@ -361,9 +394,11 @@ Required corrections:
   impls across both majors, blocking and async (§2.5). All other rows
   are verified correct and stay.
 - **Appendix B:** 1-Wire moves from a 1.0 target to shipped. Remove any
-  implication that sniffing is planned.
+  implication that sniffing is planned. Correct the GPIO row from
+  `✅ (8 pins)` to 4 pins (§2.7).
 - **Appendix C:** the PIO row reads "1–2 (1-Wire, sniffing)"; sniffing is
-  dropped, so planned becomes 1.
+  dropped, so planned becomes 1. Correct the PWM row from `4 slices` to
+  2 slices / 4 channels, and the GPIO row's `user: 8` to 4 (§2.7).
 - **Conventions:** rewritten for the workstream structure, and gains an
   explicit rule that hand-maintained counts must not be reintroduced,
   with a pointer to the §4.2 sources instead.
@@ -399,14 +434,16 @@ one board, one needing a TMP102-like target).
 5. The relocated `MAX_TRANSFER_SIZE` note appears in Workstream A and
    no longer inside a section describing completed work.
 6. Every issue in §2.6 appears in exactly one workstream.
-7. Appendices A, B and C carry the corrections in §4.6.
-8. The `All embedded-hal 1.0 sync + async traits implemented` must-have
+7. Appendices A, B and C carry the corrections in §4.6, including the
+   GPIO pin count and PWM slice/channel corrections from §2.7.
+8. No surviving section claims 8 user GPIOs or 4 PWM slices.
+9. The `All embedded-hal 1.0 sync + async traits implemented` must-have
    is reworded to name specific traits, and the exclusions
    (`TenBitAddress`, `ReadReady`, `WriteReady`) each carry a reason.
-9. AGENTS.md §5.5 matches §2.2.
-10. `> Last updated:` reads `2026-08-31`.
-11. Both files are LF-terminated (AGENTS.md §3); run `dos2unix` on each.
-12. No `ROADMAP.md` internal cross-reference points at a deleted anchor.
+10. AGENTS.md §5.5 matches §2.2.
+11. `> Last updated:` reads `2026-08-31`.
+12. Both files are LF-terminated (AGENTS.md §3); run `dos2unix` on each.
+13. No `ROADMAP.md` internal cross-reference points at a deleted anchor.
 
 ## 7. Commit plan
 
