@@ -559,16 +559,16 @@ no longer planned in any timeframe.
 
 ### The Case For RP2350
 
-| Factor              | Assessment                                                                                                               |
-|---------------------|--------------------------------------------------------------------------------------------------------------------------|
-| **Price**           | ~$1 chip, ~$5 Pico 2 board. Unbeatable.                                                                                  |
-| **Embassy support** | First-class. Active upstream development.                                                                                |
-| **Peripheral set**  | 2× I2C, 2× SPI, 2× UART, 12× PWM, 4× ADC, 3× PIO — more than enough.                                                     |
-| **PIO**             | Unique advantage. Enables 1-Wire, protocol sniffing, custom protocols. No competitor at this price has anything similar. |
-| **SRAM**            | 520 KB. Plenty for USB buffers and protocol state.                                                                       |
-| **Dual-core**       | Available if needed for parallel bus monitoring.                                                                         |
-| **Community**       | Huge Raspberry Pi ecosystem. Easy to source globally.                                                                    |
-| **Tooling**         | UF2 flashing, SWD debug, picotool — all mature.                                                                          |
+| Factor              | Assessment                                                                                                                                   |
+|---------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
+| **Price**           | ~$1 chip, ~$5 Pico 2 board. Unbeatable.                                                                                                      |
+| **Embassy support** | First-class. Active upstream development.                                                                                                    |
+| **Peripheral set**  | 2× I2C, 2× SPI, 2× UART, 12× PWM, 4× ADC, 3× PIO — more than enough.                                                                         |
+| **PIO**             | Unique advantage. Enables 1-Wire and custom protocols, with two state machines still free. No competitor at this price has anything similar. |
+| **SRAM**            | 520 KB. Plenty for USB buffers and protocol state.                                                                                           |
+| **Dual-core**       | Available if needed for parallel bus monitoring.                                                                                             |
+| **Community**       | Huge Raspberry Pi ecosystem. Easy to source globally.                                                                                        |
+| **Tooling**         | UF2 flashing, SWD debug, picotool — all mature.                                                                                              |
 
 ### The USB Full Speed Question
 
@@ -590,10 +590,6 @@ USB FS.
 **For ADC:** Depends on sample rate. Single-shot reads are fine.
 Continuous streaming at 500 ksps × 12-bit = 750 KB/s — right at the
 limit. A practical continuous mode would need to decimate or buffer.
-
-**For protocol sniffing:** USB FS is the real constraint. I2C sniffing is
-comfortable; SPI sniffing at high clock rates would need on-device
-buffering and burst transfers.
 
 **The Total Phase Aardvark also uses USB Full Speed** and is the industry
 standard at $375. If it's good enough for professional engineers paying
@@ -713,63 +709,84 @@ resources. The main constraint is USB bandwidth, not peripheral count.
 
 ## Summary
 
-The path to 1.0 is primarily a **software effort**. The RP2350 hardware
-is capable of far more than we currently use. The recommended sequence:
+The path to 1.0 is no longer a feature effort. Every must-have feature
+that is not blocked upstream has shipped.
 
-1. **Phase 1** (polish) — can start immediately, mostly non-breaking
-2. **Phase 2** (new protocols) — the big value add; UART is the priority
-3. **Phase 3** (advanced) — differentiating features; topics and batching
-   have the highest impact
-4. **Phase 4** (hardware) — plan the Rev 2 board in parallel with Phase 2
-   software work; order prototypes during Phase 3
-5. **Phase 5** (release) — 1.0 when all must-have criteria are met
+What remains, in priority order:
 
-The hardware re-spin should be done **once** with all changes in this
-document. Level translators and ESD protection are the non-negotiable
-additions. Target power and the Qwiic connector are high-value, low-cost
-additions that should be included. Activity LEDs are nice to have if board
-space permits.
+1. **Reliability** — close the dispatcher-wedge class rather than
+   containing each instance as it appears.
+   [Workstream A](#a-reliability--correctness).
+2. **Wire-protocol stability** — 1.0 commits to the serialization
+   format, and that format is still moving.
+3. **Zephyr** — peripheral coverage and upstreaming.
+   [Workstream B](#b-zephyr-module).
+4. **Documentation** — rustdoc, the book, and the driver-development
+   guide.
+5. **Hardware Rev 2** — planned as one re-spin, not incrementally.
+   [Workstream C](#c-hardware-rev-2).
 
-The RP2350 is the right MCU. Keep it.
+Level translators and ESD protection are the non-negotiable additions
+to the next board; target power is high value for low cost.
+
+The RP2350 remains the right MCU. See
+[Should the RP2350 Stay?](#should-the-rp2350-stay).
 
 ---
 
 ## Conventions — How to Update This File
 
-### Checking off items
+### Do not add counts
 
-When a phase item is complete, update its row in the phase summary table:
+This file must not carry any figure derivable from the source tree.
+Endpoint counts, test counts, crate versions and schema versions belong
+to their authoritative homes, listed under
+[Derived figures](#derived-figures). Cite the home; do not copy the
+number.
 
-```
-| ☑ | [1.3 I2C Bus Scan](#13-i2c-bus-scan-endpoint) | #42 |
-```
+This rule exists because the figures previously kept here drifted badly
+enough to make the document misleading. Cite, and the problem cannot
+recur.
 
-Then update the [Progress Overview](#progress-overview) table: increment
-the "Done" column and update the status emoji:
+### Moving an item
 
-- 🔴 Not started (0 done)
-- 🟡 In progress (some done)
-- 🟢 Complete (all done)
+When work completes, move its row from the relevant workstream table
+into the matching [Delivered](#delivered) table and set the outcome to
+`Shipped`. When work is abandoned, move it the same way and set the
+outcome to `Dropped`.
 
-### Linking issues and PRs
+Do not delete rows, and do not silently convert an abandoned item into
+a deferred one. Distinguishing the two is the whole point of that
+section: this document previously described two dropped features as
+"deferred to post-1.0", which read as a commitment nobody had made.
 
-Use the **Tracking** column to record the GitHub issue or PR number that
-implements the item. Use `#N` format for issues/PRs in this repo:
+### Adding an item
 
-```
-| ☐ | [2.1 UART Support](#21-uart-support) | #57, #63 |
-```
+Add a row to whichever workstream it belongs to, linking its issue. Do
+not add status markers, checkboxes or done-counts — GitHub renders
+issue state, and a hand-maintained count is the exact failure this
+document is recovering from.
 
-### Adding new items
+If the item blocks 1.0, also add a row to
+[1.0 Release Criteria](#10-release-criteria).
 
-If a new work item is discovered:
+### When a new dispatcher wedge is found
 
-1. Add it to the appropriate phase as a new subsection (e.g., `### 2.7 ...`)
-2. Add a row to that phase's summary table
-3. Update the item count in the Progress Overview
-4. If it's a 1.0 requirement, add a row to Phase 5
+Add the row to AGENTS.md §13.17, which is the authoritative regression
+log, then add one line to the instance table in
+[Workstream A](#a-reliability--correctness) — date and trigger only.
+Do not restate the detail here; it will drift.
+
+### Recording what is measured
+
+Several claims in this document are hardware measurements, and some
+have known gaps — an untested value between a working payload and a
+failing one, a framing behaviour derived from a datasheet but never
+put on an analyser. Say which is which. "Observed to work" and "is the
+limit" are different claims, and conflating them is how a containment
+gets mistaken for a fix.
 
 ### Updating the date
 
-Update the `> Last updated:` line at the top whenever you commit changes
-to this file.
+Update the `> Last updated:` line whenever you commit changes to this
+file.
