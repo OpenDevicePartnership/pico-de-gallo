@@ -199,26 +199,36 @@ cargo deny --manifest-path Cargo.toml check
 
 ### 5.2 Firmware (separate workspace, no_std)
 
-Two mutually exclusive hardware-revision features: **`hw-rev1`**
-(default) and **`hw-rev2`**. `nostd.yml` builds and lints both. If
-you touch firmware, do the same locally:
+Two mutually exclusive hardware-revision features: **`hw-rev2`**
+(default) and **`hw-rev1`** (deprecated — removal no earlier than
+2031-09-01; `build.rs` prints a `cargo:warning` and `main()` logs a
+`defmt::warn!` at boot when it is enabled). `nostd.yml` builds and
+lints both. If you touch firmware, do the same locally:
 
 ```bash
 cd crates/pico-de-gallo-firmware
 
-# hw-rev1 (default)
+# hw-rev2 (default)
 cargo fmt --check
 cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings
 cargo build --release --locked --target thumbv8m.main-none-eabihf
 
-# hw-rev2
+# hw-rev1 (deprecated — must opt in explicitly)
 cargo clippy --target thumbv8m.main-none-eabihf \
-    --no-default-features --features hw-rev2 -- -D warnings
+    --no-default-features --features hw-rev1 -- -D warnings
 cargo build --release --locked --target thumbv8m.main-none-eabihf \
-    --no-default-features --features hw-rev2
+    --no-default-features --features hw-rev1
 ```
 
 The release-mode firmware binary is named `pico-de-gallo-firmware`.
+
+> **Trap:** `nostd.yml` and `release-firmware.yml` each carry a
+> `[rev1, rev2]` matrix in which exactly one entry rides the default
+> features. Swapping those `feature-flags` values makes
+> `firmware-rev1.uf2` silently contain a **rev2** image, which flashes
+> onto a v1.0 board with the wrong pinout and no error. If you change
+> the default feature, change both matrices and verify by inspecting
+> the produced binaries, not by reading the diff.
 
 ### 5.3 Other CI jobs to be aware of
 
@@ -980,14 +990,21 @@ PRs that violate any of the above as a **blocker**, not a nit.
 Every release is cut by hand now (§12, `.github/RELEASE.md`). Before
 you push any `*-v*` tag:
 
-1. From a clean checkout, run the full preflight:
+1. From a clean checkout, run the full preflight. Build **both**
+   firmware revisions — `release-firmware.yml` publishes an artifact for
+   each, so a preflight that exercises only the default (`hw-rev2`)
+   leaves the deprecated-but-still-published `hw-rev1` image untested:
    ```bash
    cargo fmt --check && \
      cargo clippy --all-targets -- -D warnings && \
      cargo test --locked
    cd crates/pico-de-gallo-firmware && cargo fmt --check && \
      cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings && \
-     cargo build --release --locked --target thumbv8m.main-none-eabihf
+     cargo build --release --locked --target thumbv8m.main-none-eabihf && \
+     cargo clippy --target thumbv8m.main-none-eabihf \
+       --no-default-features --features hw-rev1 -- -D warnings && \
+     cargo build --release --locked --target thumbv8m.main-none-eabihf \
+       --no-default-features --features hw-rev1
    ```
 2. Confirm the schema version is honest before tagging. If the branch
    changed any wire shape — a request/response field, an endpoint, or an

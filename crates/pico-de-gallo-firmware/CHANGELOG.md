@@ -5,6 +5,35 @@ All notable changes to `pico-de-gallo-firmware` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **BREAKING (build):** `hw-rev2` is now the default Cargo feature;
+  `hw-rev1` is no longer default. A build with no feature flags produces
+  a **rev2** image. Building for a v1.0 landing board now requires
+  `--no-default-features --features hw-rev1` explicitly. Previously the
+  default produced a rev1 image, so anyone building from source without
+  reading the feature table got a device whose UART, ADC, and 1-Wire
+  endpoints returned `Unsupported` despite the README advertising seven
+  peripherals. The `[rev1, rev2]` matrices in `nostd.yml` and
+  `release-firmware.yml` were swapped to match, so `firmware-rev1.uf2`
+  and `firmware-rev2.uf2` keep targeting the same board revisions they
+  always did. Closes #156.
+
+### Deprecated
+
+- `hw-rev1` is deprecated as of this change. It remains fully supported,
+  built and linted in CI, and published as `firmware-rev1.uf2` on every
+  firmware release. **Removal will not happen before 2031-09-01** — a
+  floor, not a commitment to remove on that date. Cargo features cannot
+  carry `#[deprecated]`, so two signals are emitted instead: `build.rs`
+  prints a `cargo:warning` naming the removal floor, and `main()` logs a
+  `defmt::warn!` over RTT at every boot so a rev1 image is identifiable
+  from the device and not only from the build log. The boot warning is
+  compiled in, so a rev1 image built from this commit differs in content
+  from `firmware-v0.11.0`'s.
+
 ## [0.11.0] — 2026-08-27
 
 ### Fixed

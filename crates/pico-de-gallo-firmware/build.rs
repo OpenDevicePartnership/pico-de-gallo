@@ -40,6 +40,18 @@ pub(crate) const VERSION_PATCH: u32 = {};
 
     println!("cargo:rerun-if-changed=memory.x");
 
+    // Cargo features cannot carry `#[deprecated]`, so a build-script warning is
+    // the only signal available at compile time. Removal is not before
+    // 2031-09-01; see crates/pico-de-gallo-firmware/CHANGELOG.md.
+    if env::var_os("CARGO_FEATURE_HW_REV1").is_some() {
+        println!(
+            "cargo:warning=feature `hw-rev1` is deprecated (v1.0 landing board). \
+             UART, ADC and 1-Wire endpoints return `Unsupported`. It will not be \
+             removed before 2031-09-01; build without `--no-default-features \
+             --features hw-rev1` to get the default `hw-rev2` image."
+        );
+    }
+
     println!("cargo:rustc-link-arg-bins=--nmagic");
     println!("cargo:rustc-link-arg-bins=-Tlink.x");
     println!("cargo:rustc-link-arg-bins=-Tdefmt.x");

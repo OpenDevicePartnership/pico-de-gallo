@@ -7,11 +7,11 @@ planned. The revision determines two things:
    `hw-rev2`).
 2. **Which peripherals** the firmware exposes.
 
-| Revision        | Feature flag        | Connector                                       | Capabilities                           |
-|-----------------|---------------------|-------------------------------------------------|----------------------------------------|
-| **v1.0**        | `hw-rev1` (default) | 7 separate pin headers                          | I²C, SPI, GPIO, PWM                    |
-| **v1.1**        | `hw-rev2`           | one keyed 2×12 shrouded header                  | I²C, SPI, UART, GPIO, PWM, ADC, 1-Wire |
-| **v2** (future) | `hw-rev2`           | 2×12 shrouded header + level translators        | same as v1.1, plus variable VREF rail  |
+| Revision        | Feature flag            | Connector                                       | Capabilities                           |
+|-----------------|-------------------------|-------------------------------------------------|----------------------------------------|
+| **v1.0**        | `hw-rev1` (deprecated)  | 7 separate pin headers                          | I²C, SPI, GPIO, PWM                    |
+| **v1.1**        | `hw-rev2` (default)     | one keyed 2×12 shrouded header                  | I²C, SPI, UART, GPIO, PWM, ADC, 1-Wire |
+| **v2** (future) | `hw-rev2` (default)     | 2×12 shrouded header + level translators        | same as v1.1, plus variable VREF rail  |
 
 > [!IMPORTANT]
 >
@@ -20,10 +20,43 @@ planned. The revision determines two things:
 > gives you only the v1.0 capability set. Match the firmware to
 > the board you actually have.
 
+## `hw-rev1` Is Deprecated
+
+`hw-rev2` is the **default** firmware feature. Building the firmware
+with no feature flags produces a rev2 image:
+
+```console
+$ cargo build --release --target thumbv8m.main-none-eabihf
+```
+
+`hw-rev1` is **deprecated** and must now be requested explicitly:
+
+```console
+$ cargo build --release --target thumbv8m.main-none-eabihf \
+    --no-default-features --features hw-rev1
+```
+
+Deprecated does not mean unsupported:
+
+- rev1 boards keep working. `hw-rev1` is still built and linted in
+  CI on every push, and `firmware-rev1.uf2` is still attached to
+  every firmware release.
+- **Removal will not happen before 2031-09-01.** That is a floor —
+  five years' notice — not a commitment to remove on that date.
+
+Two signals fire when you enable it. The build script prints a
+`cargo:warning` naming the removal floor, and the firmware logs a
+`defmt::warn!` over RTT on every boot, so a rev1 image is
+identifiable from the device as well as from the build log.
+
+If you are fabricating a board today, fabricate v1.1 and use the
+default `hw-rev2` firmware.
+
 ## Which One Should I Pick?
 
-- **You only need I²C, SPI, GPIO, or PWM** → v1.0 is fine and
-  cheaper to fabricate.
+- **You only need I²C, SPI, GPIO, or PWM** → an existing v1.0 board
+  is fine and keeps working, but `hw-rev1` is deprecated (see
+  above); don't fabricate a new one.
 - **You need UART, ADC, or 1-Wire** → you want v1.1 (or later).
   Calling an unsupported endpoint on v1.0 firmware returns
   `Unsupported`.

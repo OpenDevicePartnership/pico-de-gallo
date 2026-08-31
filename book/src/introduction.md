@@ -46,13 +46,15 @@ constellation of host-side crates:
 
 ## Hardware Revisions at a Glance
 
-| Revision | Firmware feature | Connector            | Capabilities                           |
-|----------|------------------|----------------------|----------------------------------------|
-| **v1.0** | `hw-rev1`        | seven pin headers    | I²C, SPI, GPIO, PWM                    |
-| **v1.1** | `hw-rev2`        | one keyed 2×12 box   | I²C, SPI, UART, GPIO, PWM, ADC, 1-Wire |
-| v2 (WIP) | `hw-rev2`        | 2×12 box + level Tx  | same as v1.1, plus variable VREF       |
+| Revision | Firmware feature       | Connector            | Capabilities                           |
+|----------|------------------------|----------------------|----------------------------------------|
+| **v1.0** | `hw-rev1` (deprecated) | seven pin headers    | I²C, SPI, GPIO, PWM                    |
+| **v1.1** | `hw-rev2` (default)    | one keyed 2×12 box   | I²C, SPI, UART, GPIO, PWM, ADC, 1-Wire |
+| v2 (WIP) | `hw-rev2` (default)    | 2×12 box + level Tx  | same as v1.1, plus variable VREF       |
 
-You'll want **v1.1 or later** if you need UART, ADC, or 1-Wire. See
+You'll want **v1.1 or later** if you need UART, ADC, or 1-Wire.
+`hw-rev2` is the default firmware feature; `hw-rev1` is deprecated
+but still supported, with removal no earlier than 2031-09-01. See
 [Revisions: v1.0 vs v1.1](./hardware/revisions.md).
 
 ## How to Read This Book

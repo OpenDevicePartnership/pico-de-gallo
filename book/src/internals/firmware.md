@@ -120,25 +120,34 @@ Two feature flags select the board revision:
 
 | Feature | Default | Board | Capabilities |
 |---------|---------|-------|--------------|
-| `hw-rev1` | yes | v1.0 | I<sup>2</sup>C, SPI, GPIO, PWM |
-| `hw-rev2` | no | v1.1+ | I<sup>2</sup>C, SPI, UART, GPIO, PWM, ADC, 1-Wire |
+| `hw-rev1` | no — **deprecated** | v1.0 | I<sup>2</sup>C, SPI, GPIO, PWM |
+| `hw-rev2` | yes | v1.1+ | I<sup>2</sup>C, SPI, UART, GPIO, PWM, ADC, 1-Wire |
 
 On `hw-rev1`, unsupported peripherals return `Unsupported` instead of touching
 unrouted hardware.
 
-Build the two variants exactly as CI does:
+`hw-rev1` is deprecated: it is no longer the default, `build.rs` emits a
+`cargo:warning` and `main()` logs a `defmt::warn!` at boot when it is enabled,
+and it **will not be removed before 2031-09-01**. It stays fully supported and
+built in CI until then. See
+[Revisions: v1.0 vs v1.1](../hardware/revisions.md) for the user-facing policy.
+
+Build the two variants exactly as CI does — note that the *default*
+(no-flags) build is now `hw-rev2`:
 
 ```bash
 cd crates/pico-de-gallo-firmware
 
+# hw-rev2 (default)
 cargo fmt --check
 cargo clippy --target thumbv8m.main-none-eabihf -- -D warnings
 cargo build --release --locked --target thumbv8m.main-none-eabihf
 
+# hw-rev1 (deprecated — must opt in explicitly)
 cargo clippy --target thumbv8m.main-none-eabihf \
-    --no-default-features --features hw-rev2 -- -D warnings
+    --no-default-features --features hw-rev1 -- -D warnings
 cargo build --release --locked --target thumbv8m.main-none-eabihf \
-    --no-default-features --features hw-rev2
+    --no-default-features --features hw-rev1
 ```
 
 ## Peripheral notes

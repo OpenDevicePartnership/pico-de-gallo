@@ -11,7 +11,12 @@ keywords = ["embassy", "rp2350", "pico-de-gallo", "firmware"]
 repository = "https://github.com/OpenDevicePartnership/pico-de-gallo"
 
 [features]
-default = ["hw-rev1"]
+default = ["hw-rev2"]
+# DEPRECATED. `hw-rev1` targets the v1.0 landing board, whose UART, ADC and
+# 1-Wire signals are not routed; those endpoints return `Unsupported`. It
+# stays fully supported and built in CI, but it is no longer the default and
+# will not be removed before 2031-09-01. build.rs emits a `cargo:warning` and
+# `main()` logs a `defmt::warn!` at boot when it is enabled.
 hw-rev1 = []
 hw-rev2 = []
 

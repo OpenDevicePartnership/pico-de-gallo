@@ -54,6 +54,16 @@ writing an embedded device driver using Pico de Gallo.
 Embassy-rs firmware for the RP2350 that exposes I²C, SPI, UART, and GPIO
 peripherals over USB via postcard-rpc endpoints.
 
+Two mutually exclusive board-revision features select the target. `hw-rev2`
+(v1.1 and later) is the **default**. `hw-rev1` (v1.0) is **deprecated** — it
+stays supported, built in CI, and published as `firmware-rev1.uf2`, with
+removal no earlier than 2031-09-01 — and must now be requested explicitly
+with `--no-default-features --features hw-rev1`. See
+[`crates/pico-de-gallo-firmware/README.md`](crates/pico-de-gallo-firmware/README.md)
+for build commands and
+[Revisions](https://balbi.sh/pico-de-gallo/hardware/revisions.html) for the
+policy.
+
 ### Library
 
 Async host-side library wrapping the postcard-rpc transport. Provides

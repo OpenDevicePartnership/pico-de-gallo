@@ -41,10 +41,14 @@ jobs:
       matrix:
         hw-rev: [rev1, rev2]
         include:
+          # `hw-rev2` is the default feature, so rev2 builds with no flags and
+          # rev1 must opt in explicitly. Swapping these silently ships a rev2
+          # image as firmware-rev1.uf2, which flashes onto a v1.0 board with
+          # the wrong pinout and no error.
           - hw-rev: rev1
-            feature-flags: ""
+            feature-flags: "--no-default-features --features hw-rev1"
           - hw-rev: rev2
-            feature-flags: "--no-default-features --features hw-rev2"
+            feature-flags: ""
 
     steps:
       - name: Download pico-sdk-tools
