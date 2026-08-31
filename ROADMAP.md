@@ -1,10 +1,15 @@
 # Pico de Gallo — Roadmap to 1.0
 
-> Last updated: 2026-04-24
+> Last updated: 2026-08-31
 
-This document lays out the path to a 1.0 release of the pico-de-gallo
-project. Changes are grouped into phases and listed in ascending order of
-complexity. Each entry explains *what*, *why*, and *what it unlocks*.
+This document describes where Pico de Gallo is going and what stands
+between it and a 1.0 release. Work is grouped by active workstream;
+completed work is summarized, not re-explained.
+
+It is **not** a status dashboard. Counts and version numbers drift, so
+they are *cited* here rather than copied — see
+[Derived figures](#derived-figures) for where each one lives. Stable
+facts like pin assignments and bus widths are stated directly.
 
 ---
 
@@ -12,53 +17,69 @@ complexity. Each entry explains *what*, *why*, and *what it unlocks*.
 
 - [Where We Are Today](#where-we-are-today)
 - [Design Philosophy](#design-philosophy)
-- [Phase 1 — Polish What Exists](#phase-1--polish-what-exists)
-- [Phase 2 — New Protocols (Software Only)](#phase-2--new-protocols-software-only)
-- [Phase 3 — Advanced Features](#phase-3--advanced-features)
-- [Phase 4 — Hardware Rev 2](#phase-4--hardware-rev-2)
-- [Phase 5 — 1.0 Release Criteria](#phase-5--10-release-criteria)
+- [Delivered](#delivered)
+- [Active Workstreams](#active-workstreams)
+- [1.0 Release Criteria](#10-release-criteria)
 - [Should the RP2350 Stay?](#should-the-rp2350-stay)
 - [Appendix A — embedded-hal Trait Coverage Matrix](#appendix-a--embedded-hal-trait-coverage-matrix)
 - [Appendix B — Competitive Landscape](#appendix-b--competitive-landscape)
 - [Appendix C — RP2350 Peripheral Budget](#appendix-c--rp2350-peripheral-budget)
+- [Summary](#summary)
 - [Conventions — How to Update This File](#conventions--how-to-update-this-file)
-
----
-
-## Progress Overview
-
-| Phase | Description        | Items | Done | Status                            |
-|-------|--------------------|-------|------|-----------------------------------|
-| **1** | Polish What Exists | 6     | 6    | ✅ Complete                       |
-| **2** | New Protocols      | 4     | 3    | 🟡 In progress (2.6 blocked)      |
-| **3** | Advanced Features  | 6     | 3    | 🟡 In progress (3.4–3.6 deferred) |
-| **4** | Hardware Rev 2     | 6     | 1    | 🟡 In progress                    |
 
 ---
 
 ## Where We Are Today
 
-| Area            | Status                                                                                                                                                                                                                       |
-|-----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **I2C**         | 1 bus (I2C1), 7-bit addressing, read/write/write-read/scan, configurable frequency (Standard/Fast/Fast+)                                                                                                                     |
-| **SPI**         | 1 bus (SPI0), read/write/flush/transfer, configurable polarity/phase, DMA-backed                                                                                                                                             |
-| **UART**        | 1 bus (UART0), read/write/flush, configurable baud rate, interrupt-driven with 1024-byte TX/RX buffers. **hw-rev2 only** (the default).                                                                                      |
-| **GPIO**        | 4 pins (GPIO8–11), input/output/wait-for-edge, push-based edge event monitoring                                                                                                                                              |
-| **USB**         | Full Speed (12 Mbps), postcard-rpc over raw USB bulk                                                                                                                                                                         |
-| **HAL traits**  | `I2c`, `SpiBus`, `InputPin`, `OutputPin`, `StatefulOutputPin`, `Wait`, `DelayNs`, `embedded_io::{Read,Write}` (sync + async)                                                                                                 |
-| **Hardware**    | v1.0 landing board (7 connectors, 13/20 signals); v1.1 landing board (2×12 header, all 20 signals, I²C pull-ups, ADC protection). `hw-rev1`/`hw-rev2` feature flags gate peripheral availability; `hw-rev2` is the default and `hw-rev1` is deprecated (removal no earlier than 2031-09-01). No level shifters, no ESD. |
-| **Host crates** | internal (protocol), lib (high-level API), hal (embedded-hal bridge), ffi (C bindings), app (CLI)                                                                                                                            |
-| **Endpoints**   | 47 total (ping, version, device/info, system×1, I2C×7, SPI×7, UART×5, GPIO×10, PWM×6, ADC×2, 1-Wire×6). UART/ADC/1-Wire return `Unsupported` on the deprecated hw-rev1.                                                      |
-| **Tests**       | 298 unit + 5 doctests, CI on every push (both hardware revisions)                                                                                                                                                            |
+### Capabilities
+
+| Area             | Status                                                                                                                                                                                                               |
+|------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **I2C**          | 1 bus (I2C1, GPIO2/3), 7-bit addressing, read/write/write-read/scan/batch, configurable frequency (Standard/Fast/Fast+). A batch executes as a single `embedded-hal` transaction.                                    |
+| **SPI**          | 1 bus (SPI0, GPIO4/6/7), read/write/flush/transfer/batch, configurable polarity and phase, DMA-backed                                                                                                                |
+| **UART**         | 1 bus (UART0, GPIO0/1), read/write/flush, configurable baud rate, interrupt-driven with 1024-byte TX/RX buffers                                                                                                      |
+| **GPIO**         | 4 user pins (GPIO8–11), input/output with pull configuration, wait-for-edge with timeout, push-based edge event topics                                                                                               |
+| **PWM**          | 4 channels (GPIO12–15) on 2 slices, frequency, duty cycle, phase-correct mode                                                                                                                                        |
+| **ADC**          | 4 channels (GPIO26–29), 12-bit, single-shot reads                                                                                                                                                                    |
+| **1-Wire**       | PIO-driven (GPIO16): reset with presence detect, read, write, strong-pullup write, ROM search                                                                                                                        |
+| **USB**          | Full Speed (12 Mbps), postcard-rpc over raw USB bulk, WebUSB descriptors                                                                                                                                             |
+| **HAL traits**   | See [Appendix A](#appendix-a--embedded-hal-trait-coverage-matrix)                                                                                                                                                    |
+| **Hardware**     | v1.0 landing board (7 connectors, 13/20 signals); v1.1 landing board (2×12 header, all 20 signals, I²C pull-ups, ADC protection). No level shifters, no ESD.                                                         |
+| **Revisions**    | `hw-rev2` is the default. `hw-rev1` is deprecated — removal no earlier than 2031-09-01 — and returns `Unsupported` for all UART, ADC and 1-Wire endpoints.                                                           |
+
+### Components
+
+| Component        | Package                  | Role                                              | Release                 |
+|------------------|--------------------------|---------------------------------------------------|-------------------------|
+| Wire protocol    | `pico-de-gallo-internal` | postcard-rpc types; derives `SCHEMA_VERSION_*`    | crates.io               |
+| Host library     | `pico-de-gallo-lib`      | async API over `nusb` + tokio                     | crates.io               |
+| HAL bridge       | `pico-de-gallo-hal`      | `embedded-hal` / `embedded-io` trait impls        | crates.io               |
+| C bindings       | `pico-de-gallo-ffi`      | cdylib, header generated by cbindgen              | crates.io               |
+| CLI              | `gallo`                  | command-line front end                            | crates.io + binaries    |
+| MCP server       | `gallo-mcp`              | Model Context Protocol server for agents          | crates.io               |
+| Python bindings  | `pyco-de-gallo`          | PyO3 + maturin                                    | PyPI wheels             |
+| Firmware         | `pico-de-gallo-firmware` | RP2350, `no_std`, separate Cargo workspace        | `.uf2` / `.elf`         |
+| Zephyr module    | `zephyr/`                | MFD parent plus GPIO, I2C and SPI drivers         | unreleased              |
+
+### Derived figures
+
+These are deliberately **not** reproduced here. They drift, and each
+already has an authoritative home that something else keeps honest.
+
+| Figure                      | Authoritative source                                                                                                                                                                             |
+|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Endpoints and topics        | [`book/src/appendix/endpoints.md`](book/src/appendix/endpoints.md), which AGENTS.md §15.1 requires to track the `endpoints!` macro                                                               |
+| Test counts                 | AGENTS.md §5.5                                                                                                                                                                                   |
+| Crate versions              | each crate's `Cargo.toml` `[package].version`                                                                                                                                                    |
+| Wire schema version         | derived from `pico-de-gallo-internal`'s version by its `build.rs`                                                                                                                                |
+| Transfer and batch limits   | `MAX_TRANSFER_SIZE` and `MAX_BATCH_OPS` in `crates/pico-de-gallo-internal/src/lib.rs`, but see [Workstream A](#a-reliability--correctness) — the constant is a packet budget, not usable payload |
 
 ### What's Missing
 
-Compared to what embedded developers routinely need, pico-de-gallo is
-still missing:
-
-- **10-bit I2C** — some devices use extended addressing (blocked on upstream embassy-rp)
-- **Voltage flexibility** — hardware is 3.3 V only; no path to 1.8 V or 5 V
+- **10-bit I2C** — blocked upstream; see [Workstream E](#e-blocked-and-deferred)
+- **Voltage flexibility** — hardware is 3.3 V only, no path to 1.8 V or 5 V
 - **Target power** — users must externally power their target
+- **Zephyr peripheral coverage** — no UART, ADC, PWM or 1-Wire driver; see [Workstream B](#b-zephyr-module)
 
 ---
 
@@ -88,308 +109,221 @@ each trait appears in crates.io drivers:
 
 ---
 
-## Phase 1 — Polish What Exists
+## Delivered
 
-*Complexity: low. No new hardware. Mostly non-breaking changes.*
+Completed work, kept for provenance. Where an issue tracked the work,
+its row links it — that issue carries the original rationale. The book
+documents the resulting behaviour in all cases.
 
-These are quality improvements that make the existing feature set more
-reliable and complete before adding new capabilities.
+### Polish
 
-|   | Item                                                            | Tracking                                                              |
-|---|-----------------------------------------------------------------|-----------------------------------------------------------------------|
-| ☑ | [1.1 Rich Error Types](#11-rich-error-types)                    | [#1](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/1) |
-| ☑ | [1.2 SpiDevice Trait](#12-spidevice-trait-implementation)       | [#2](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/2) |
-| ☑ | [1.3 I2C Bus Scan](#13-i2c-bus-scan-endpoint)                   | [#3](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/3) |
-| ☑ | [1.4 GPIO Direction Control](#14-gpio-direction-control)        | [#4](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/4) |
-| ☑ | [1.5 Config Query Endpoints](#15-configuration-query-endpoints) | [#5](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/5) |
-| ☑ | [1.6 MAX_TRANSFER_SIZE Audit](#16-max_transfer_size-audit)      | [#6](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/6) |
+| Item                            | Issue                                                                 | Outcome                                                                                                      |
+|---------------------------------|-----------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------|
+| Rich error types                | [#1](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/1) | Shipped                                                                                                      |
+| `SpiDevice` trait               | [#2](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/2) | Shipped                                                                                                      |
+| I2C bus scan                    | [#3](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/3) | Shipped                                                                                                      |
+| GPIO direction and pull control | [#4](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/4) | Shipped                                                                                                      |
+| Configuration query endpoints   | [#5](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/5) | Shipped                                                                                                      |
+| `MAX_TRANSFER_SIZE` audit       | [#6](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/6) | Shipped, but its conclusion was later measured to be wrong — see [Workstream A](#a-reliability--correctness) |
 
-### 1.1 Rich Error Types
+### Protocols
 
-**What:** Replace unit-struct failures (`I2cReadFail`, `SpiWriteFail`, etc.)
-with enums carrying error detail from the firmware.
+| Item           | Issue                                                                   | Outcome                         |
+|----------------|-------------------------------------------------------------------------|---------------------------------|
+| UART support   | [#7](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/7)   | Shipped (hw-rev2)               |
+| PWM support    | [#8](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/8)   | Shipped                         |
+| ADC support    | [#9](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/9)   | Shipped (hw-rev2)               |
+| Second I2C bus | [#10](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/10) | **Dropped** — judged not needed |
+| Second SPI bus | [#11](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/11) | **Dropped** — judged not needed |
 
-**Why:** When an I2C write fails, the user currently gets `I2cWriteFail` with
-no indication whether it was a NACK, bus timeout, arbitration loss, or
-firmware bug. Real embedded-hal `ErrorKind` variants (`NoAcknowledge`,
-`Bus`, `ArbitrationLoss`, `Overrun`) should propagate from firmware through
-the host crates.
+### Advanced
 
-**Impact:** Breaking change to internal + lib + hal. This is the single most
-impactful quality improvement possible.
+| Item                         | Issue                                                                   | Outcome                                                                |
+|------------------------------|-------------------------------------------------------------------------|------------------------------------------------------------------------|
+| GPIO event topics            | [#13](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/13) | Shipped                                                                |
+| I2C/SPI transaction batching | [#14](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/14) | Shipped; later made genuinely atomic — see `i2c/batch` atomicity below |
+| 1-Wire via PIO               | [#15](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/15) | Shipped (hw-rev2)                                                      |
+| Protocol sniffing            | [#16](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/16) | **Dropped** — no longer planned in any timeframe                       |
+| Multi-device host support    | [#18](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/18) | **Dropped** — no longer planned in any timeframe                       |
 
-```
-Firmware  →  I2cError::Nack  →  postcard  →  lib  →  hal  →  ErrorKind::NoAcknowledge
-```
+### Beyond the original phases
 
-### 1.2 SpiDevice Trait Implementation
+Work that shipped without ever having a roadmap row.
 
-**What:** Implement `embedded_hal::spi::SpiDevice` (and the async variant)
-in the HAL crate, with firmware-managed CS assertion.
-
-**Why:** Most SPI drivers on crates.io use `SpiDevice`, not `SpiBus`.
-`SpiDevice` wraps a full CS-assert → transfer → CS-deassert transaction.
-Without it, users must manually wrap `SpiBus` with `embedded-hal-bus`
-adapters, which adds friction and can be error-prone over USB.
-
-**Design:** Add a firmware endpoint `spi/transaction` that holds CS low
-across a sequence of operations, or use one of the existing GPIO pins as a
-firmware-controlled CS with automatic assertion on each SPI endpoint call.
-
-### 1.3 I2C Bus Scan Endpoint
-
-**What:** Add an `i2c/scan` endpoint that probes all 7-bit addresses
-(0x08–0x77) and returns a list of responding addresses.
-
-**Why:** This is the first thing every embedded developer does when hooking
-up an I2C bus. Every competing tool has it. The CLI app should print a
-nice matrix like `i2cdetect`.
-
-### 1.4 GPIO Direction Control
-
-**What:** Add endpoints to configure individual GPIO pins as input or
-output at runtime, with optional pull-up/pull-down configuration.
-
-**Why:** Currently the firmware decides pin direction. Users should be able
-to reconfigure pins dynamically — this is especially important for
-open-drain protocols and bidirectional signaling.
-
-### 1.5 Configuration Query Endpoints
-
-**What:** Add `i2c/get-config` and `spi/get-config` endpoints that return
-the current bus configuration.
-
-**Why:** When writing multi-step automation scripts or debugging, it's
-useful to confirm what configuration is active without relying on
-local state.
-
-### 1.6 MAX_TRANSFER_SIZE Audit
-
-**What:** `pico-de-gallo-internal` defines `MAX_TRANSFER_SIZE = 4096`, but
-comments in `pico-de-gallo-lib` still reference `512`. Audit and
-synchronize all documentation and buffer sizes.
-
-**Note (M5, measured):** `MAX_TRANSFER_SIZE` is a **packet-buffer budget**,
-not usable payload. The buffer must also hold the postcard-rpc header, the
-length varint and COBS framing, and the budget covers the request frame *and*
-the response frame. On hardware the largest TX-only `spi/transfer` payload
-observed to work is **1013 bytes**, not 4096: 4096 TX-only and 3072 full duplex
-both fail `-ECOMM` at the transport. Full duplex is documented safe only at 512
-bytes or less. Treating 4096 as generally usable payload is therefore wrong,
-and this audit should derive the real ceiling from worst-case framing rather
-than restating the constant.
-
-**Why:** Mismatched expectations between crates could cause silent data
-truncation.
+| Item                                 | Issue                                                                     | Notes                                                                                                                                                                  |
+|--------------------------------------|---------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Python bindings (`pyco-de-gallo`)    | [#30](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/30)   | PyO3 + maturin; wheels published to PyPI                                                                                                                               |
+| MCP server (`gallo-mcp`)             | [#85](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/85)   | Per-call board selection by serial number                                                                                                                              |
+| WebUSB descriptors                   | [#87](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/87)   | Browser-reachable without a driver install                                                                                                                             |
+| `i2c/batch` atomicity                | [#128](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/128) | One `transaction()`; repeated START on direction change. Framing not yet analyser-verified — [#160](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/160) |
+| Zephyr module                        | —                                                                         | See [Workstream B](#b-zephyr-module)                                                                                                                                   |
+| `hw-rev1` / `hw-rev2` feature gating | —                                                                         | `hw-rev2` became the default in `d1167c8`                                                                                                                              |
+| `system/reset-subscriptions`         | —                                                                         | Recovers GPIO subscriptions orphaned by a host crash                                                                                                                   |
 
 ---
 
-## Phase 2 — New Protocols (Software Only)
+## Active Workstreams
 
-*Complexity: medium. No new hardware required (pins are already broken out
-on the Pico 2 module), but requires new firmware drivers and new
-endpoint families.*
+Live work, grouped by the kind of effort it needs. Rows list issue
+numbers rather than status markers — GitHub renders issue state, so
+these cannot go stale.
 
-|   | Item                                                   | Tracking                                                                |
-|---|--------------------------------------------------------|-------------------------------------------------------------------------|
-| ☑ | [2.1 UART Support](#21-uart-support)                   | [#7](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/7)   |
-| ☑ | [2.2 PWM Support](#22-pwm-support)                     | [#8](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/8)   |
-| ☑ | [2.3 ADC Support](#23-adc-support)                     | [#9](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/9)   |
-| ☐ | [2.4 10-Bit I2C Addressing](#24-10-bit-i2c-addressing) | [#12](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/12) |
+### A. Reliability & Correctness
 
-### 2.1 UART Support
+**This is the highest-priority workstream.** Pico de Gallo has a
+recurring, device-wide failure mode that has now appeared three times
+from three unrelated triggers.
 
-**What:** Implement UART bridging using RP2350's UART0 peripheral. Add
-endpoints for read, write, and configuration (baud rate, data bits,
-parity, stop bits). Implement `embedded_io::Read` and `embedded_io::Write`
-(plus async variants) in the HAL crate.
+#### The dispatcher-wedge defect class
 
-**Why:** UART is the most universal embedded interface. It's used for:
-- Serial console access
-- Bootloader communication
-- GPS modules, cellular modems, Bluetooth modules
-- Debug logging
-- Firmware upload/recovery
+postcard-rpc dispatches handlers serially on a single `&mut Context`.
+A handler that never returns therefore blocks **every** endpoint, not
+just its own protocol family. The symptom is not "I2C stopped working"
+but "the board stopped answering anything".
 
-Not having UART is the single biggest functional gap compared to every
-competing tool. Even the $4 CH340 does UART.
+Recovery needs USB re-enumeration or a power cycle. Which of the two
+suffices is established per instance, not for the class:
+re-enumeration was observed to recover the SPI-framing and
+zero-length-I2C cases, and was never tested against the GPIO-wait
+case.
 
-**Pin assignment:** Use GPIO0 (TX) and GPIO1 (RX) — these are the default
-UART0 pins and are directly accessible on the Pico 2 header.
+The 2 s watchdog does not catch it. `watchdog_feeder_task` is an
+independent embassy task, so it keeps feeding while the dispatcher is
+parked — the watchdog proves executor liveness, not dispatcher
+progress. Closing that gap is
+[#157](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/157).
 
-**Hardware note:** UART doesn't need board changes. The Pico 2's GPIO0/1
-are already on the module header. A future board revision could add a
-dedicated UART header/connector, but it's not required.
+Three instances so far. Each is documented in full in the regression
+log at **AGENTS.md §13.17**; they are listed here only to establish
+that this is a class rather than three unrelated bugs.
 
-**Baud rates:** Support standard rates: 9600, 19200, 38400, 57600, 115200,
-230400, 460800, 921600. Expose as a plain `u32` — the RP2350 will silently
-clamp out-of-range values. Data bits, parity, and stop bits are deferred
-to a future version (requires unsafe PAC register writes while interrupts
-are active).
+| Date       | Trigger                                       |
+|------------|-----------------------------------------------|
+| 2026-06-03 | `gpio/wait-*` on a pin that never transitions |
+| 2026-08-19 | `spi/transfer` at the packet-framing boundary |
+| 2026-08-26 | Zero-length I2C write                         |
 
-### 2.2 PWM Support
+Each was fixed or contained individually — a `timeout_ms` field on the
+GPIO wait request, a byte cap in the Zephyr SPI driver, a firmware
+guard rejecting empty writes. None of those addresses the shared root
+cause, which is that a handler which never returns can still take the
+whole device down.
 
-**What:** Expose 2–4 PWM outputs using RP2350's PWM slices. Add endpoints
-for setting frequency, duty cycle, enable/disable. Implement the
-`embedded_hal::pwm::SetDutyCycle` trait in the HAL crate.
+#### The transfer-size ceiling
 
-**Why:** PWM is essential for:
-- Servo control
-- LED brightness (backlight controllers, RGB LEDs)
-- Motor drivers
-- Buzzer/audio tone generation
-- Power supply enable/control
+`MAX_TRANSFER_SIZE` is a **packet-buffer budget, not usable payload**.
+The buffer must also hold the postcard-rpc header, the length varint
+and COBS framing, and the budget covers the request frame *and* the
+response frame.
 
-The `SetDutyCycle` trait is the last "common" embedded-hal trait not
-implemented. Adding it means pico-de-gallo covers every standard trait
-in embedded-hal 1.0.
+Measured on hardware, the largest TX-only `spi/transfer` payload
+observed to work is **1013 bytes**, and 1015 wedges the dispatcher.
+1014 was never tested, so the exact boundary sits in an untested gap.
 
-**Pin assignment:** Repurpose 2–4 of the current GPIO pins (GPIO8–15 map
-to PWM slices 4–7), or use additional Pico 2 header pins. PWM and GPIO
-can coexist — a pin configured for PWM simply stops being a
-general-purpose GPIO until reconfigured.
+Not every oversized transfer wedges the device, which is part of what
+makes this hard to reason about: 4096 TX-only and 3072 full duplex
+both fail cleanly with `-ECOMM` at the transport instead. Full duplex
+is documented safe only at 512 bytes or fewer.
 
-### 2.3 ADC Support
+The Zephyr driver caps itself at 1013. **Every other host surface — the
+CLI, `pico-de-gallo-lib`, the HAL, the FFI, Python and MCP — can still
+reach the wedge**, which is
+[#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158).
 
-**What:** Expose RP2350's ADC channels (GPIO26–29 = ADC0–3).
-Add endpoints for single-shot reads and
-optionally continuous sampling. There is no standard embedded-hal ADC trait
-in 1.0, so expose a project-specific API.
+This finding previously sat inside a phase describing completed work,
+which buried it. It belongs here until the ceiling is enforced.
 
-**Why:** ADC enables:
-- Voltage monitoring (power rails, battery levels)
-- Analog sensor reading (thermistors, potentiometers, light sensors)
-- Signal level debugging
+#### Open work
 
-**Resolution:** RP2350 has a 12-bit ADC with 500 ksps. Single-shot reads
-are simple; continuous streaming would benefit from DMA but pushes against
-USB FS bandwidth limits for high sample rates.
+| Item                                                       | Issue                                                                     |
+|------------------------------------------------------------|---------------------------------------------------------------------------|
+| Watchdog proves executor liveness, not dispatcher progress | [#157](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/157) |
+| Real payload ceiling unenforced on every host surface      | [#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158) |
+| Firmware build identity observable in `device/info`        | [#159](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/159) |
+| Verify `i2c/batch` repeated START framing on an analyser   | [#160](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/160) |
+| `SPI_CS` pin cannot be used as a chip select               | [#99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99)   |
 
-**Hardware note:** GPIO26–29 are on the Pico 2 module header. No board
-change needed, but a future revision should break these out to dedicated
-ADC-labeled headers.
-
-### 2.4 10-Bit I2C Addressing
-
-**What:** Support `TenBitAddress` in addition to `SevenBitAddress` for I2C
-operations.
-
-**Why:** Some devices (particularly EEPROMs with large address spaces) use
-10-bit addressing. The `embedded_hal::i2c::I2c` trait is generic over
-address type, so the HAL should implement both.
+[#159](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/159)
+belongs in this workstream rather than in tooling, because every fix
+above is confirmed by a board-attached hardware test. `validate()`
+cannot currently distinguish two firmware builds that report the same
+version but behave differently, so a test can be run against the wrong
+image without anyone noticing — which has already happened once. Until
+build identity is observable, the evidence for closing any item here
+is weaker than it looks.
 
 ---
 
-## Phase 3 — Advanced Features
+### B. Zephyr Module
 
-*Complexity: high. Software only, but requires deeper firmware
-architecture changes.*
+`zephyr/` is an out-of-tree Zephyr module that presents a Pico de Gallo
+board as an ordinary Zephyr device tree node, so a driver written
+against Zephyr's I2C, SPI or GPIO API runs unmodified on a host PC.
 
-|    | Item                                                              | Tracking                                                                                       |
-|----|-------------------------------------------------------------------|------------------------------------------------------------------------------------------------|
-| ☑  | [3.1 GPIO Event Topics](#31-gpio-event-topics-push-notifications) | [#13](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/13)                        |
-| ☑  | [3.2 Transaction Batching](#32-i2cspi-transaction-batching)       | [#14](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/14)                        |
-| ☑  | [3.3 1-Wire via PIO](#33-1-wire-support-via-pio)                  | [#15](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/15)                        |
-| ⏳ | [3.4 Protocol Sniffing](#34-protocol-sniffing--logic-capture)     | [#16](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/16) — deferred to post-1.0 |
-| ⏳ | [3.5 Config Persistence](#35-configuration-persistence)           | [#17](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/17) — deferred to post-1.0 |
-| ⏳ | [3.6 Multi-Device Host](#36-multi-device-host-support)            | [#18](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/18) — deferred to post-1.0 |
+The module is documented in `zephyr/README.md`, which is deliberately
+authoritative — there is no book chapter for it, and AGENTS.md §15.1
+records that ruling.
 
-### 3.1 GPIO Event Topics (Push Notifications)
+Shipped so far: an MFD parent (`odp,pico-de-gallo`) with GPIO, I2C and
+SPI children, a device tree binding for each, samples, test suites,
+and a path-filtered CI job. `zephyr/README.md` is the authoritative
+inventory.
 
-**What:** Use postcard-rpc's topic mechanism (currently unused —
-`TOPICS_IN_LIST` and `TOPICS_OUT_LIST` are empty) to push GPIO state
-changes from firmware to host without polling.
+Two limits are worth stating plainly. CI is **build-only for
+everything that touches a board**: every sample and every M5 app sets
+`build_only`, because booting them reaches `gallo_init_strict()` and
+needs hardware. The sole exception is the `pdg_fake` I2C suite, which
+twister does execute — its bottom layer is a recording fake, so no
+board is involved. A green run therefore proves the module compiles
+and links, and that one hardware-free suite passes. It does not prove
+the module works against a real board.
 
-**Why:** Polling `gpio/wait-*` endpoints ties up a USB transfer for each
-pin being monitored. With topics, the firmware can notify the host of edge
-events asynchronously. This enables interrupt-driven workflows and is
-closer to how real embedded systems handle GPIO interrupts.
+Nothing here has been released either: `zephyr/CHANGELOG.md` is
+entirely `[Unreleased]`.
 
-**Design:** Define a `GpioEvent` topic containing `{ pin: u8, state:
-GpioState, timestamp_us: u64 }`. The host subscribes and receives events
-as they occur.
+#### Open work
 
-### 3.2 I2C/SPI Transaction Batching
+| Item                               | Issue                                                                     |
+|------------------------------------|---------------------------------------------------------------------------|
+| UART driver                        | [#152](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/152) |
+| ADC driver                         | [#153](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/153) |
+| 1-Wire (w1) driver                 | [#154](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/154) |
+| PWM driver                         | [#155](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/155) |
+| `PDG_I2C_MAX_BUFFER` is unmeasured | [#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146) |
+| Upstream the module                | [#98](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/98)   |
 
-**What:** Allow a sequence of I2C or SPI operations to be sent as a single
-USB transfer and executed atomically on the firmware side.
-
-**Why:** Each USB round-trip adds 1–2 ms of latency. For multi-register
-reads or device initialization sequences that require dozens of
-operations, the cumulative latency dominates. Batching could speed up
-EEPROM programming by 10–50×.
-
-**Design:** A new `i2c/batch` endpoint that accepts a `Vec<I2cOperation>`
-and returns `Vec<I2cResult>`. Similar for SPI.
-
-### 3.3 1-Wire Support via PIO
-
-**What:** Implement 1-Wire protocol using RP2350's PIO (Programmable I/O)
-state machine. Embassy-rp already has a PIO 1-Wire program.
-
-**Why:** 1-Wire is used by DS18B20 temperature sensors (extremely popular),
-iButton devices, and some ID/authentication chips. It's a niche but
-well-loved protocol that few USB bridges support — this would be a genuine
-differentiator.
-
-**Complexity:** PIO programming is non-trivial, but embassy-rp's existing
-`pio_programs/onewire.rs` provides a starting point.
-
-### 3.4 Protocol Sniffing / Logic Capture
-
-**What:** Use a PIO state machine to passively monitor an I2C or SPI bus
-and stream decoded frames to the host.
-
-**Why:** This transforms pico-de-gallo from a pure master/controller into
-a debugging tool. Being able to sniff what's happening on a bus (even one
-driven by a different controller) is invaluable for hardware debugging.
-
-**Limitations:** USB FS bandwidth caps continuous capture at ~700 KB/s
-raw throughput. This is adequate for I2C (max 1 MHz = 125 KB/s) and
-moderate SPI, but not for high-speed SPI or comprehensive logic analysis.
-This is NOT a Saleae replacement — it's a "quick look at what's on the
-bus" tool.
-
-### 3.5 Configuration Persistence
-
-**What:** Store the current bus configurations (I2C frequency, SPI mode,
-GPIO directions, UART baud rate) in RP2350's flash so they survive
-power cycles.
-
-**Why:** Users who always work with the same target shouldn't have to
-reconfigure on every plug-in. Useful for production test fixtures that
-need deterministic startup.
-
-### 3.6 Multi-Device Host Support
-
-**What:** Allow multiple host applications to connect to separate
-interfaces on the same pico-de-gallo simultaneously (e.g., one app uses
-I2C, another uses UART).
-
-**Why:** In complex setups, different tools may need to access different
-buses. This requires firmware-side resource locking and multiple USB
-endpoints or interfaces.
+[#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146)
+is the I2C analogue of the SPI ceiling in
+[Workstream A](#a-reliability--correctness). 4096 was assumed for SPI
+and turned out to be far lower; the I2C limit has never been measured
+at all.
 
 ---
 
-## Phase 4 — Hardware Rev 2
+### C. Hardware v2
 
-*Complexity: high. Requires PCB re-spin, component sourcing, and
-potentially case redesign.*
+*Requires a PCB re-spin, component sourcing, and potentially a case
+redesign.*
 
-This is the section that addresses the board re-spin directly. Changes are
-ordered by impact-to-cost ratio.
+v1.1 shipped the connector rework
+([#22](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/22),
+tag `hardware-v1.1.1`). The remaining items are ordered by
+impact-to-cost ratio, and the re-spin should be done **once** with all
+of them. Level translators and ESD protection are the non-negotiable
+additions; target power is high-value and low-cost; activity LEDs are
+worth including if board space permits.
 
-|    | Item                                                             | Tracking                                                                                  |
-|----|------------------------------------------------------------------|-------------------------------------------------------------------------------------------|
-| ☐  | [4.1 Voltage Level Translators](#41-voltage-level-translators)   | [#20](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/20)                   |
-| ☐  | [4.2 Target Power Output](#42-target-power-output)               | [#21](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/21)                   |
-| ✅ | [4.3 Dedicated Connector Layout](#43-dedicated-connector-layout) | [#22](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/22) — shipped in v1.1 |
-| ☐  | [4.4 ESD Protection](#44-esd-protection)                         | [#23](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/23)                   |
-| ☐  | [4.5 Activity LEDs](#45-activity-leds)                           | [#24](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/24)                   |
-| ☐  | [4.6 Board Size and Mounting](#46-board-size-and-mounting)       | [#25](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/25)                   |
+#### Open work
 
-### 4.1 Voltage Level Translators
+| Item                      | Issue                                                                   |
+|---------------------------|-------------------------------------------------------------------------|
+| Voltage level translators | [#20](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/20) |
+| Target power output       | [#21](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/21) |
+| ESD protection            | [#23](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/23) |
+| Activity LEDs             | [#24](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/24) |
+| Board size and mounting   | [#25](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/25) |
+
+#### Voltage Level Translators (#20)
 
 **Priority: CRITICAL — the single most impactful hardware change.**
 
@@ -428,7 +362,7 @@ This excludes a huge portion of the embedded ecosystem, especially:
 - If VREF is not supplied, the translators can be powered from the
   on-board 3.3 V rail (passthrough mode, no translation).
 
-### 4.2 Target Power Output
+#### Target Power Output (#21)
 
 **What:** Provide switchable 3.3 V and 5 V power outputs to power small
 target boards directly from USB.
@@ -450,7 +384,13 @@ provides target power and it's one of its most-loved features.
 **Budget:** USB 2.0 provides 500 mA total. The Pico 2 itself draws
 ~30–50 mA. Safely offer 200–300 mA to targets.
 
-### 4.3 Dedicated Connector Layout
+#### Connector Layout — original proposal, superseded (#22)
+
+> **Superseded.** v1.1 shipped a single keyed 2×12 shrouded header
+> carrying all 20 signals, not the per-bus connector scheme below.
+> The Qwiic/STEMMA QT connector was never built. This subsection is
+> kept for provenance; see `book/src/hardware/revisions.md` for what
+> v1.1 actually carries.
 
 **What:** Redesign the connector layout with labeled, purpose-specific
 headers:
@@ -471,7 +411,7 @@ SparkFun (Qwiic) and Adafruit (STEMMA QT) both use it. Adding one means
 users can plug in any Qwiic/STEMMA sensor board with a single cable — no
 wiring, no breadboard.
 
-### 4.4 ESD Protection
+#### ESD Protection (#23)
 
 **What:** Add ESD protection diodes (e.g., TPD4E05U06 for 4-channel, or
 PRTR5V0U2X for USB/I2C) on all external-facing signal lines.
@@ -482,7 +422,7 @@ table stakes for any tool that's meant to be handled daily.
 
 **Cost:** Negligible — TVS diode arrays are $0.10–0.30 each.
 
-### 4.5 Activity LEDs
+#### Activity LEDs (#24)
 
 **What:** Add per-bus activity LEDs:
 
@@ -503,7 +443,7 @@ glance at blinking LEDs answers it immediately.
 toggles them in the endpoint handlers. Total current draw: ~12 mA for
 6 LEDs at 2 mA each.
 
-### 4.6 Board Size and Mounting
+#### Board Size and Mounting (#25)
 
 **What:** Consider whether the case design needs updating for the new
 connectors. The current design uses M3 mounting holes; keep those but
@@ -516,48 +456,102 @@ worse.
 
 ---
 
-## Phase 5 — 1.0 Release Criteria
+### D. Documentation & Tooling
 
-The 1.0 release should be declared when the items below are complete.
-Each references the phase item where the work is tracked — check progress
-there, not here.
+| Item                                                                    | Issue                                                                     |
+|-------------------------------------------------------------------------|---------------------------------------------------------------------------|
+| A book on driver development with Rust, device-driver and Pico de Gallo | [#79](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/79)   |
+| Hardware-in-the-loop CI runners for board-attached tests                | [#162](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/162) |
 
-### Must Have (1.0 blockers)
+[#162](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/162)
+gates more than it looks. Every *board-dependent* behavioural claim in
+this project rests on a manual procedure: the Zephyr M5 script, the
+hardware verifications behind the AGENTS.md §13.17 entries, and the
+ignored tests in the host workspace. Hardware-free logic does get
+automated coverage — the `pdg_fake` suite is the model — but nothing
+that needs a real bridge does. Until CI can run board-attached tests,
+[Workstream A](#a-reliability--correctness) cannot have regression
+coverage, and every fix there stays one refactor away from silently
+coming undone.
 
-| Requirement                                                        | Phase Item |
-|--------------------------------------------------------------------|------------|
-| All `embedded-hal` 1.0 sync + async traits implemented             | 1.2, 2.2   |
-| `embedded-io` Read/Write for UART                                  | 2.1        |
-| Rich error types mapping firmware errors to `ErrorKind`            | 1.1        |
-| I2C bus scan                                                       | 1.3        |
-| GPIO direction + pull configuration                                | 1.4        |
-| UART support (at least one UART)                                   | 2.1        |
-| Configuration query endpoints                                      | 1.5        |
-| All public API types documented with rustdoc                       | — (ongoing)|
-| Book updated with all interfaces and examples                      | — (ongoing)|
-| Stable wire protocol (no breaking serialization changes after 1.0) | — (policy) |
+---
 
-### Should Have (target for 1.0, can slip)
+### E. Blocked and Deferred
 
-| Requirement                                            | Phase Item   |
-|--------------------------------------------------------|--------------|
-| PWM support                                            | 2.2          |
-| ADC support (at least single-shot reads)               | 2.3          |
-| GPIO event topics                                      | 3.1          |
-| I2C transaction batching                               | 3.2          |
-| 10-bit I2C addressing                                  | 2.4          |
-| CLI app with bus scan, UART terminal, interactive GPIO | — (app work) |
+| Item                      | Issue                                                                   | State                                                                                                                                                                       |
+|---------------------------|-------------------------------------------------------------------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| 10-bit I2C addressing     | [#12](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/12) | **Blocked upstream.** Needs [embassy-rs/embassy#5927](https://github.com/embassy-rs/embassy/pull/5927) to land plus an embassy-rp release, and a postcard-rpc dependency PR |
+| Configuration persistence | [#17](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/17) | Deferred to post-1.0                                                                                                                                                        |
 
-### Nice to Have (post-1.0)
+---
 
-| Requirement               | Phase Item |
-|---------------------------|------------|
-| 1-Wire via PIO            | 3.3        |
-| Protocol sniffing         | 3.4        |
-| Configuration persistence | 3.5        |
-| Multi-device host support | 3.6        |
-| SPI target mode           | — (future) |
-| Hardware Rev 2 features   | Phase 4    |
+## 1.0 Release Criteria
+
+### Must have
+
+| Requirement                                                                                                                                                                      | State                                                                                                            |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| `I2c`, `SpiBus`, `SpiDevice`, `InputPin`, `OutputPin`, `StatefulOutputPin`, `Wait`, `DelayNs` and `SetDutyCycle` implemented, blocking and async wherever the trait defines both | ✅ Done — see [Appendix A](#appendix-a--embedded-hal-trait-coverage-matrix)                                      |
+| `embedded-io` `Read` and `Write` for UART                                                                                                                                        | ✅ Done, for both the 0.6 and 0.7 majors                                                                         |
+| Rich error types mapping firmware errors to `ErrorKind`                                                                                                                          | ✅ Done                                                                                                          |
+| I2C bus scan                                                                                                                                                                     | ✅ Done                                                                                                          |
+| GPIO direction and pull configuration                                                                                                                                            | ✅ Done                                                                                                          |
+| UART support                                                                                                                                                                     | ✅ Done (hw-rev2)                                                                                                |
+| Configuration query endpoints                                                                                                                                                    | ✅ Done                                                                                                          |
+| All public API types documented with rustdoc                                                                                                                                     | Ongoing                                                                                                          |
+| Book covers every interface, with examples                                                                                                                                       | Ongoing                                                                                                          |
+| Stable wire protocol — no breaking serialization changes after 1.0                                                                                                               | ❌ **Not met.** The schema is still moving; wire behaviour changed within the current unreleased schema revision |
+| No known device-wide wedge reachable from a supported host surface                                                                                                               | ❌ **Not met** — [Workstream A](#a-reliability--correctness)                                                     |
+
+The trait list is deliberately explicit rather than "all `embedded-hal`
+traits". Read literally, that older wording was never met. Three traits
+are excluded, each for a stated reason:
+
+- **`I2c<TenBitAddress>`** — blocked upstream, see
+  [Workstream E](#e-blocked-and-deferred).
+- **`embedded_io::ReadReady`** and **`WriteReady`** — not implemented.
+  Nothing in the wire protocol currently reports UART buffer
+  readiness, so the HAL has nothing to answer from. How to close that
+  is an open design question, not a settled one. Not a 1.0 blocker.
+
+### Should have
+
+| Requirement                    | State                                                                                                                              |
+|--------------------------------|------------------------------------------------------------------------------------------------------------------------------------|
+| PWM support                    | ✅ Done                                                                                                                             |
+| ADC support                    | ✅ Done (hw-rev2)                                                                                                                   |
+| GPIO event topics              | ✅ Done                                                                                                                             |
+| I2C transaction batching       | ✅ Done, and atomic since [#128](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/128)                                 |
+| 10-bit I2C addressing          | ❌ Blocked upstream — [Workstream E](#e-blocked-and-deferred)                                                                       |
+| CLI: I2C bus scan              | ✅ Done — `gallo i2c scan`                                                                                                          |
+| CLI: interactive UART terminal | ❌ Not implemented. The CLI has `uart read`, `uart write`, `uart flush`, `uart set-config` and `uart get-config` — no terminal mode |
+| CLI: interactive GPIO          | ❌ Not implemented. The CLI has `gpio get`, `gpio put`, `gpio set-config` and `gpio monitor`, but no interactive mode               |
+
+### Post-1.0
+
+| Requirement                | State                                              |
+|----------------------------|----------------------------------------------------|
+| 1-Wire via PIO             | ✅ **Already shipped**, ahead of 1.0               |
+| Configuration persistence  | Deferred — [Workstream E](#e-blocked-and-deferred) |
+| SPI target mode            | Not started, untracked                             |
+| Hardware v2                | [Workstream C](#c-hardware-v2)                     |
+| Zephyr peripheral coverage | [Workstream B](#b-zephyr-module)                   |
+
+### Where 1.0 actually stands
+
+No must-have is waiting on a feature that is both unimplemented and
+unblocked. What remains is not feature work:
+
+1. **Wire-protocol stability.** 1.0 is a commitment to the
+   serialization format, and that format is still moving.
+2. **Reliability.** Shipping 1.0 with a known, reachable device-wide
+   wedge would misrepresent what the version number means.
+3. **Documentation.** Ongoing, and gated in part on
+   [#79](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/79).
+
+Protocol sniffing and multi-device host support previously appeared
+here as post-1.0 deliverables. Both were [dropped](#delivered) and are
+no longer planned in any timeframe.
 
 ---
 
@@ -567,16 +561,16 @@ there, not here.
 
 ### The Case For RP2350
 
-| Factor              | Assessment                                                                                                               |
-|---------------------|--------------------------------------------------------------------------------------------------------------------------|
-| **Price**           | ~$1 chip, ~$5 Pico 2 board. Unbeatable.                                                                                  |
-| **Embassy support** | First-class. Active upstream development.                                                                                |
-| **Peripheral set**  | 2× I2C, 2× SPI, 2× UART, 12× PWM, 4× ADC, 3× PIO — more than enough.                                                     |
-| **PIO**             | Unique advantage. Enables 1-Wire, protocol sniffing, custom protocols. No competitor at this price has anything similar. |
-| **SRAM**            | 520 KB. Plenty for USB buffers and protocol state.                                                                       |
-| **Dual-core**       | Available if needed for parallel bus monitoring.                                                                         |
-| **Community**       | Huge Raspberry Pi ecosystem. Easy to source globally.                                                                    |
-| **Tooling**         | UF2 flashing, SWD debug, picotool — all mature.                                                                          |
+| Factor              | Assessment                                                                                                                                                              |
+|---------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Price**           | ~$1 chip, ~$5 Pico 2 board. Unbeatable.                                                                                                                                 |
+| **Embassy support** | First-class. Active upstream development.                                                                                                                               |
+| **Peripheral set**  | 2× I2C, 2× SPI, 2× UART, 12× PWM, 4× ADC, 3× PIO — more than enough.                                                                                                    |
+| **PIO**             | Unique advantage. Enables 1-Wire and custom protocols. Only PIO0/SM0 is used, leaving two whole PIO blocks untouched. No competitor at this price has anything similar. |
+| **SRAM**            | 520 KB. Plenty for USB buffers and protocol state.                                                                                                                      |
+| **Dual-core**       | Available if needed for parallel bus monitoring.                                                                                                                        |
+| **Community**       | Huge Raspberry Pi ecosystem. Easy to source globally.                                                                                                                   |
+| **Tooling**         | UF2 flashing, SWD debug, picotool — all mature.                                                                                                                         |
 
 ### The USB Full Speed Question
 
@@ -598,10 +592,6 @@ USB FS.
 **For ADC:** Depends on sample rate. Single-shot reads are fine.
 Continuous streaming at 500 ksps × 12-bit = 750 KB/s — right at the
 limit. A practical continuous mode would need to decimate or buffer.
-
-**For protocol sniffing:** USB FS is the real constraint. I2C sniffing is
-comfortable; SPI sniffing at high clock rates would need on-device
-buffering and burst transfers.
 
 **The Total Phase Aardvark also uses USB Full Speed** and is the industry
 standard at $375. If it's good enough for professional engineers paying
@@ -633,26 +623,32 @@ but that's a separate product, not a replacement.
 
 ## Appendix A — embedded-hal Trait Coverage Matrix
 
-| Trait                  | Crate                | Blocking | Async | Status    |
-|------------------------|----------------------|----------|-------|-----------|
-| `I2c<SevenBitAddress>` | `embedded-hal`       | ✅       | ✅    | Done      |
-| `I2c<TenBitAddress>`   | `embedded-hal`       | ❌       | ❌    | Phase 2.4 |
-| `SpiBus`               | `embedded-hal`       | ✅       | ✅    | Done      |
-| `SpiDevice`            | `embedded-hal`       | ✅       | ✅    | Done      |
-| `InputPin`             | `embedded-hal`       | ✅       | —     | Done      |
-| `OutputPin`            | `embedded-hal`       | ✅       | —     | Done      |
-| `StatefulOutputPin`    | `embedded-hal`       | ✅       | —     | Done      |
-| `Wait`                 | `embedded-hal-async` | —        | ✅    | Done      |
-| `DelayNs`              | `embedded-hal`       | ✅       | ✅    | Done      |
-| `SetDutyCycle`         | `embedded-hal`       | ✅       | —     | Done      |
-| `Read`                 | `embedded-io`        | ✅       | ✅    | Done      |
-| `Write`                | `embedded-io`        | ✅       | ✅    | Done      |
-| `ReadReady`            | `embedded-io`        | ❌       | —     | Future    |
-| `WriteReady`           | `embedded-io`        | ❌       | —     | Future    |
+| Trait                  | Crate                | Blocking | Async | Status                                               |
+|------------------------|----------------------|----------|-------|------------------------------------------------------|
+| `I2c<SevenBitAddress>` | `embedded-hal`       | ✅       | ✅    | Done                                                 |
+| `I2c<TenBitAddress>`   | `embedded-hal`       | ❌       | ❌    | Blocked, see [Workstream E](#e-blocked-and-deferred) |
+| `SpiBus`               | `embedded-hal`       | ✅       | ✅    | Done                                                 |
+| `SpiDevice`            | `embedded-hal`       | ✅       | ✅    | Done                                                 |
+| `InputPin`             | `embedded-hal`       | ✅       | —     | Done                                                 |
+| `OutputPin`            | `embedded-hal`       | ✅       | —     | Done                                                 |
+| `StatefulOutputPin`    | `embedded-hal`       | ✅       | —     | Done                                                 |
+| `Wait`                 | `embedded-hal-async` | —        | ✅    | Done                                                 |
+| `DelayNs`              | `embedded-hal`       | ✅       | ✅    | Done                                                 |
+| `SetDutyCycle`         | `embedded-hal`       | ✅       | —     | Done                                                 |
+| `Read`                 | `embedded-io`        | ✅       | ✅    | Done                                                 |
+| `Write`                | `embedded-io`        | ✅       | ✅    | Done                                                 |
+| `ReadReady`            | `embedded-io`        | ❌       | —     | Excluded                                             |
+| `WriteReady`           | `embedded-io`        | ❌       | —     | Excluded                                             |
 
-The `embedded-io` rows cover both majors: `pico-de-gallo-hal`'s
-`embedded-io-06` feature remains enabled by default, and
-`embedded-io-07` can be enabled additively for drivers targeting 0.7.
+`Read` and `Write` are implemented **eight** times over: blocking and
+async, for each of the 0.6 and 0.7 majors. `pico-de-gallo-hal` carries
+both majors side by side behind additive features — `embedded-io-06` is
+on by default, `embedded-io-07` is opt-in — so a driver written against
+either can be developed against a board. AGENTS.md §7.3 records why
+this is multi-major by design rather than a migration.
+
+`ReadReady` and `WriteReady` are excluded from 1.0 rather than pending;
+see [1.0 Release Criteria](#10-release-criteria) for the reason.
 
 **At 1.0:** every cell should be ✅ or have a documented reason for
 exclusion.
@@ -666,10 +662,10 @@ exclusion.
 | **I2C**          | ✅ (+ scan, batch)      | ✅ (+ 10-bit)              | ✅ (+ slave)                | ✅ (MPSSE)          | ✅                | ✅             |
 | **SPI**          | ✅ (+ SpiDevice)        | ✅                         | ✅ (+ slave)                | ✅ (MPSSE)          | ✅                | ❌             |
 | **UART**         | ✅                      | ✅                         | ❌                          | ✅ (dual)           | ✅                | ✅             |
-| **GPIO**         | ✅ (8 pins)             | ✅                         | ✅ (6 pins)                 | ✅ (limited)        | ✅                | ✅ (4 pins)    |
+| **GPIO**         | ✅ (4 pins)             | ✅                         | ✅ (6 pins)                 | ✅ (limited)        | ✅                | ✅ (4 pins)    |
 | **PWM**          | ✅                      | ✅                         | ✅                          | ✅                  | ✅                | ✅             |
 | **ADC**          | ✅ (4-ch, 12-bit)       | ✅                         | ❌                          | ❌                  | ✅                | ✅ (3-ch)      |
-| **1-Wire**       | ✅ (PIO)                | ✅                         | ❌                          | ❌                  | ✅                | ❌             |
+| **1-Wire**       | ✅ (PIO)                | ✅ (PIO)                   | ❌                          | ❌                  | ✅                | ❌             |
 | **Level shift**  | ❌                      | Rev 2                      | ❌ (accessory)              | ❌ (5V tolerant)    | ✅                | ❌             |
 | **Target power** | ❌                      | Rev 2                      | ✅                          | ❌                  | ✅                | ❌             |
 | **embedded-hal** | ✅                      | ✅ (complete)              | ❌                          | ❌                  | ❌                | ❌             |
@@ -683,7 +679,8 @@ exclusion.
 2. Only bridge that's both open-source hardware AND Rust-native
 3. Price/feature ratio competitive with Bus Pirate, with far better
    Rust integration
-4. PIO enables custom protocols no other bridge at this price can match
+4. PIO enables protocols no other bridge at this price can match —
+   1-Wire today, using one of twelve state machines
 
 ---
 
@@ -692,19 +689,19 @@ exclusion.
 The RP2350 (as used on Pico 2) has the following peripherals. This table
 shows current usage and planned allocation:
 
-| Peripheral | Total Available   | Currently Used                        | Planned (1.0)    | Notes                                     |
-|------------|-------------------|---------------------------------------|------------------|-------------------------------------------|
-| **I2C**    | 2 (I2C0, I2C1)    | 1 (I2C1)                              | 1                | Second bus dropped                        |
-| **SPI**    | 2 (SPI0, SPI1)    | 1 (SPI0)                              | 1                | Second bus dropped                        |
-| **UART**   | 2 (UART0, UART1)  | 1 (UART0)                             | 1 (UART0)        | GPIO0/1                                   |
-| **PWM**    | 12 slices (24 ch) | 4 slices                              | 4 slices         | GPIO8–15, PWM slices 4–7                  |
-| **ADC**    | 4 GPIO            | 4 (GPIO26–29)                         | 4 GPIO           | GPIO26–29                                 |
-| **PIO**    | 3 (PIO0–2)        | 1 (1-Wire)                            | 1–2              | 1-Wire, sniffing                          |
-| **DMA**    | 16 channels       | 2 (SPI)                               | 4–6              | ADC continuous, UART, SPI                 |
-| **GPIO**   | 30 (on Pico 2)    | 10 (I2C: 2, SPI: 3, user: 8, USB: ~0) | ~24              | Plenty of headroom                        |
-| **USB**    | 1 (FS)            | 1                                     | 1                | Fully committed                           |
-| **Flash**  | 4 MB (on Pico 2)  | ~256 KB firmware                      | ~256 KB + config | Config persistence in reserved sector     |
-| **SRAM**   | 520 KB            | ~64 KB (estimated)                    | ~128 KB          | Buffer growth for batching/ADC            |
+| Peripheral | Total Available   | Currently Used                                     | Planned (1.0) | Notes                                              |
+|------------|-------------------|----------------------------------------------------|---------------|----------------------------------------------------|
+| **I2C**    | 2 (I2C0, I2C1)    | 1 (I2C1)                                           | 1             | Second bus dropped                                 |
+| **SPI**    | 2 (SPI0, SPI1)    | 1 (SPI0)                                           | 1             | Second bus dropped                                 |
+| **UART**   | 2 (UART0, UART1)  | 1 (UART0)                                          | 1 (UART0)     | GPIO0/1                                            |
+| **PWM**    | 12 slices (24 ch) | 2 slices (4 channels)                              | 2 slices      | GPIO12–15                                          |
+| **ADC**    | 4 GPIO            | 4 (GPIO26–29)                                      | 4 GPIO        | GPIO26–29                                          |
+| **PIO**    | 3 (PIO0–2)        | 1 (1-Wire)                                         | 1             | PIO0/SM0 only; 2 blocks and 11 state machines free |
+| **DMA**    | 16 channels       | 2 (SPI)                                            | 4–6           | ADC continuous, UART, SPI                          |
+| **GPIO**   | 30 (on Pico 2)    | 16 (I2C 2, SPI 3, UART 2, user 4, PWM 4, 1-Wire 1) | ~16           | Ample headroom                                     |
+| **USB**    | 1 (FS)            | 1                                                  | 1             | Fully committed                                    |
+| **Flash**  | 4 MB (on Pico 2)  | ~256 KB firmware                                   | ~256 KB       | Config persistence deferred post-1.0               |
+| **SRAM**   | 520 KB            | ~64 KB (estimated)                                 | ~128 KB       | Buffer growth for batching/ADC                     |
 
 **Conclusion:** The RP2350 has substantial unused peripheral capacity.
 We can implement every feature in this roadmap without running out of
@@ -714,63 +711,94 @@ resources. The main constraint is USB bandwidth, not peripheral count.
 
 ## Summary
 
-The path to 1.0 is primarily a **software effort**. The RP2350 hardware
-is capable of far more than we currently use. The recommended sequence:
+The path to 1.0 is no longer a feature effort. Every must-have feature
+that is not blocked upstream has shipped.
 
-1. **Phase 1** (polish) — can start immediately, mostly non-breaking
-2. **Phase 2** (new protocols) — the big value add; UART is the priority
-3. **Phase 3** (advanced) — differentiating features; topics and batching
-   have the highest impact
-4. **Phase 4** (hardware) — plan the Rev 2 board in parallel with Phase 2
-   software work; order prototypes during Phase 3
-5. **Phase 5** (release) — 1.0 when all must-have criteria are met
+What remains, in priority order:
 
-The hardware re-spin should be done **once** with all changes in this
-document. Level translators and ESD protection are the non-negotiable
-additions. Target power and the Qwiic connector are high-value, low-cost
-additions that should be included. Activity LEDs are nice to have if board
-space permits.
+1. **Reliability** — close the dispatcher-wedge class rather than
+   containing each instance as it appears.
+   [Workstream A](#a-reliability--correctness).
+2. **Wire-protocol stability** — 1.0 commits to the serialization
+   format, and that format is still moving.
+3. **Zephyr** — peripheral coverage and upstreaming.
+   [Workstream B](#b-zephyr-module).
+4. **Documentation** — rustdoc, the book, and the driver-development
+   guide.
+5. **Hardware v2** — planned as one re-spin, not incrementally.
+   [Workstream C](#c-hardware-v2).
 
-The RP2350 is the right MCU. Keep it.
+Level translators and ESD protection are the non-negotiable additions
+to the next board; target power is high value for low cost.
+
+The RP2350 remains the right MCU. See
+[Should the RP2350 Stay?](#should-the-rp2350-stay).
 
 ---
 
 ## Conventions — How to Update This File
 
-### Checking off items
+### Do not add counts
 
-When a phase item is complete, update its row in the phase summary table:
+This file must not carry counts or version numbers that change as the
+code changes — endpoint counts, test counts, crate versions, schema
+versions. Those have authoritative homes, listed under
+[Derived figures](#derived-figures). Cite the home; do not copy the
+number.
 
-```
-| ☑ | [1.3 I2C Bus Scan](#13-i2c-bus-scan-endpoint) | #42 |
-```
+Stable facts are different and are stated directly: pin assignments,
+bus widths, how many slices a peripheral drives. Those move only when
+the hardware or the firmware's pin map moves, which is a deliberate
+act that brings you to this file anyway.
 
-Then update the [Progress Overview](#progress-overview) table: increment
-the "Done" column and update the status emoji:
+Upstream API majors are stable facts too. `embedded-io` 0.6 and 0.7
+are named directly because the HAL supports both at once and the
+numbers are part of the feature names. What the rule forbids is
+copying figures that track this project's own artifacts.
 
-- 🔴 Not started (0 done)
-- 🟡 In progress (some done)
-- 🟢 Complete (all done)
+The rule exists because the figures previously kept here drifted badly
+enough to make the document misleading. The test count was the worst
+of them, and it is exactly the kind that should be cited.
 
-### Linking issues and PRs
+### Moving an item
 
-Use the **Tracking** column to record the GitHub issue or PR number that
-implements the item. Use `#N` format for issues/PRs in this repo:
+When work completes, move its row from the relevant workstream table
+into the matching [Delivered](#delivered) table and set the outcome to
+`Shipped`. When work is abandoned, move it the same way and set the
+outcome to `Dropped`.
 
-```
-| ☐ | [2.1 UART Support](#21-uart-support) | #57, #63 |
-```
+Do not delete rows, and do not silently convert an abandoned item into
+a deferred one. Distinguishing the two is the whole point of that
+section: this document previously described two dropped features as
+"deferred to post-1.0", which read as a commitment nobody had made.
 
-### Adding new items
+### Adding an item
 
-If a new work item is discovered:
+Add a row to whichever workstream it belongs to, linking its issue. Do
+not add status markers, checkboxes or done-counts — GitHub renders
+issue state, and a hand-maintained count is the exact failure this
+document is recovering from.
 
-1. Add it to the appropriate phase as a new subsection (e.g., `### 2.7 ...`)
-2. Add a row to that phase's summary table
-3. Update the item count in the Progress Overview
-4. If it's a 1.0 requirement, add a row to Phase 5
+If the item blocks 1.0, also add a row to
+[1.0 Release Criteria](#10-release-criteria).
+
+### When a new dispatcher wedge is found
+
+Add the row to AGENTS.md §13.17, which is the authoritative regression
+log, then add one line to the instance table in
+[Workstream A](#a-reliability--correctness) — date and trigger only.
+Do not restate the detail here; it will drift.
+
+### Recording what is measured
+
+Several claims in this document are hardware measurements, and some
+have known gaps — an untested value between a working payload and a
+failing one, a framing behaviour derived from a datasheet but never
+put on an analyser. Say which is which. "Observed to work" and "is the
+limit" are different claims, and conflating them is how a containment
+gets mistaken for a fix.
 
 ### Updating the date
 
-Update the `> Last updated:` line at the top whenever you commit changes
-to this file.
+Update the `> Last updated:` line whenever you commit changes to this
+file.

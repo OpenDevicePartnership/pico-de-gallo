@@ -232,14 +232,14 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 
 ### 5.3 Other CI jobs to be aware of
 
-| Job                | Purpose                                                                                        |
-|--------------------|------------------------------------------------------------------------------------------------|
-| `lockfile`         | `cargo check --locked` in both workspaces — fails if `Cargo.toml` and `Cargo.lock` disagree.   |
-| `semver`           | `cargo-semver-checks` on `pico-de-gallo-internal` (the published wire crate).                  |
-| `deny`             | `cargo-deny check bans licenses sources advisories` in both workspaces.                        |
-| `actionlint`       | Lints every `.github/workflows/*.yml`. CRLF kills it, so does bad matrix syntax.               |
-| `nostd.yml`        | Builds firmware for both `hw-rev1` and `hw-rev2`.                                              |
-| `zephyr.yml`       | Builds the Zephyr module on `native_sim/native/64` against a pinned Zephyr revision. Build-only.|
+| Job                | Purpose                                                                                                                                        |
+|--------------------|------------------------------------------------------------------------------------------------------------------------------------------------|
+| `lockfile`         | `cargo check --locked` in both workspaces — fails if `Cargo.toml` and `Cargo.lock` disagree.                                                   |
+| `semver`           | `cargo-semver-checks` on `pico-de-gallo-internal` (the published wire crate).                                                                  |
+| `deny`             | `cargo-deny check bans licenses sources advisories` in both workspaces.                                                                        |
+| `actionlint`       | Lints every `.github/workflows/*.yml`. CRLF kills it, so does bad matrix syntax.                                                               |
+| `nostd.yml`        | Builds firmware for both `hw-rev1` and `hw-rev2`.                                                                                              |
+| `zephyr.yml`       | Builds the Zephyr module on `native_sim/native/64` against a pinned Zephyr revision. Build-only except the hardware-free `pdg_fake` suite, which twister runs. |
 
 ### 5.4 Full CI workflow catalog
 
@@ -247,7 +247,7 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 |---------------------------|------------------------------------|-------------------------------------------------------------------------------------------------------------|
 | `check.yml`               | Push to `main`, PRs                | fmt, clippy, doc, hack (feature powerset), test, msrv, **lockfile drift**, **actionlint**, **cargo-deny**, **cargo-semver-checks** |
 | `nostd.yml`               | Push to `main`, PRs                | Firmware compiles + clippy for `thumbv8m.main-none-eabihf`, both `hw-rev1` and `hw-rev2`                    |
-| `zephyr.yml`              | Push to `main`, PRs (path-filtered)| Builds `zephyr/` for `native_sim/native/64` at a pinned Zephyr revision: 2 samples pass, 2 IS31 samples asserted to fail at baseline, 4 M5 apps, 1 I2C gather-write test. **Build-only** |
+| `zephyr.yml`              | Push to `main`, PRs (path-filtered)| Builds `zephyr/` for `native_sim/native/64` at a pinned Zephyr revision: 2 samples pass, 2 IS31 samples asserted to fail at baseline, 4 M5 apps, 1 I2C gather-write test. **Build-only**, except `tests/pdg_fake/i2c`, which omits `build_only` and is executed by twister against a recording fake |
 | `gh-pages.yml`            | Push to `main`                     | Builds and deploys the mdBook docs to GitHub Pages                                                          |
 | `release-application.yml` | `application-v*` tags              | Builds `gallo` for Linux/Windows/macOS                                                                      |
 | `release-ffi.yml`         | `ffi-v*` tags                      | Builds `.so` / `.dll` / `.dylib` + C header                                                                 |
@@ -258,13 +258,35 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 
 ### 5.5 Test baseline
 
-About **561 unit tests + 7 doctests** across the host workspace,
-concentrated in `pico-de-gallo-internal` (159), `pico-de-gallo-ffi`
-(116), and `pico-de-gallo-mcp` (114). Seven of the `pico-de-gallo-mcp`
-tests are `#[ignore]`d because they need two boards attached; run
-them with `cargo test -p gallo-mcp -- --ignored`.
-`pyco-de-gallo` has 8 Rust-side unit tests. If you add code, add tests
-next to it; round-trip serialization tests are the norm for wire types.
+About **589 unit tests + 7 doctests** across the host workspace,
+measured 2026-08-31:
+
+| Crate                    | Passing | `#[ignore]`d |
+|--------------------------|---------|--------------|
+| `pico-de-gallo-internal` | 163     | 0            |
+| `pico-de-gallo-ffi`      | 123     | 0            |
+| `gallo-mcp`              | 111     | 7            |
+| `pico-de-gallo-lib`      | 74      | 4            |
+| `gallo`                  | 67      | 0            |
+| `pico-de-gallo-hal`      | 43      | 0            |
+| `pyco-de-gallo`          | 8       | 0            |
+
+Doctests: `pico-de-gallo-lib` 4, `pico-de-gallo-hal` 2,
+`pico-de-gallo-internal` 1.
+
+All 11 ignored tests are board-attached and therefore never run in CI:
+
+- The 7 in `gallo-mcp` need **two** boards, because they cover
+  per-call serial-number target selection. Run them with
+  `cargo test -p gallo-mcp -- --ignored`.
+- The 4 in `pico-de-gallo-lib` are the #135 zero-length-write
+  regression tests. They need one board, and
+  `empty_batch_write_never_reaches_the_bus` additionally needs a
+  TMP102-like target on the I2C bus. Run them with
+  `cargo test -p pico-de-gallo-lib -- --ignored`.
+
+If you add code, add tests next to it; round-trip serialization tests
+are the norm for wire types.
 
 > **Trap:** `pico-de-gallo-internal` without the `use-std` feature
 > fails on the `vec!` macro. Test it via the workspace or with
@@ -926,11 +948,17 @@ builds the module on every PR touching `zephyr/`, `crates/pico-de-gallo-ffi/`,
 for exactly that reason.
 
 Two limits still bind. The workflow is **path-filtered**, so a change
-outside those paths does not run it. And it is **build-only** — it never
-executes a produced binary, because that reaches `gallo_init_strict()`
-and needs an attached board. So a green run is evidence that `zephyr/`
-still *compiles and links*; it is not evidence that it still *works*.
-Behavioural claims still require the manual, board-attached
+outside those paths does not run it. And it is **build-only for
+everything that touches a board**: every sample and every M5 app sets
+`build_only`, because booting them reaches `gallo_init_strict()` and
+needs hardware. The one exception is `tests/pdg_fake/i2c`, which
+deliberately omits `build_only` and is executed by twister against a
+recording fake.
+
+So a green run is evidence that `zephyr/` still *compiles and links*,
+plus that one hardware-free suite still passes. It is not evidence
+that the module still *works* against a real board. Behavioural claims
+about hardware still require the manual, board-attached
 `zephyr/tests/pdg_mfd_m5/run-m5.sh` procedure.
 
 **Carve-out — `zephyr/` has no book chapter, deliberately.** The
