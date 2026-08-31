@@ -22,10 +22,12 @@ jobs:
         target: [thumbv8m.main-none-eabihf]
         hw-rev: [hw-rev1, hw-rev2]
         include:
+          # `hw-rev2` is the default feature; `hw-rev1` is deprecated and must
+          # opt in explicitly. Keep these aligned with release-firmware.yml.
           - hw-rev: hw-rev1
-            feature-flags: ""
+            feature-flags: "--no-default-features --features hw-rev1"
           - hw-rev: hw-rev2
-            feature-flags: "--no-default-features --features hw-rev2"
+            feature-flags: ""
     steps:
       - uses: actions/checkout@v7
         with:

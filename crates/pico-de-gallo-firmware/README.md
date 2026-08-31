@@ -9,17 +9,24 @@ a USB bridge for I2C, SPI, and GPIO access.
 $ rustup target add thumbv8m.main-none-eabihf
 ```
 
-For rev1 hardware:
+For rev2 hardware (v1.1 and later) — this is the default:
 
 ```console
 $ cargo build --release --manifest-path crates/pico-de-gallo-firmware/Cargo.toml --target thumbv8m.main-none-eabihf
 ```
 
-For rev2 hardware:
+For rev1 hardware (v1.0):
 
 ```console
-$ cargo build --release --manifest-path crates/pico-de-gallo-firmware/Cargo.toml --target thumbv8m.main-none-eabihf --no-default-features --features hw-rev2
+$ cargo build --release --manifest-path crates/pico-de-gallo-firmware/Cargo.toml --target thumbv8m.main-none-eabihf --no-default-features --features hw-rev1
 ```
+
+> **`hw-rev1` is deprecated.** It is no longer the default and must be
+> requested explicitly. It stays fully supported and built in CI, and
+> **will not be removed before 2031-09-01**. Enabling it prints a
+> `cargo:warning` at build time and logs a `defmt::warn!` at every boot.
+> On rev1 the UART, ADC, and 1-Wire endpoints return `Unsupported`,
+> because those signals are not routed on the v1.0 landing board.
 
 ## Flashing
 

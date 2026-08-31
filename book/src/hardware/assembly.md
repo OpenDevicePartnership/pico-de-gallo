@@ -73,8 +73,10 @@ cable.
    [Releases](https://github.com/OpenDevicePartnership/pico-de-gallo/releases)
    page (look for a tag like `firmware-v0.8.0`). Pick the build
    that matches your board revision:
-   - `hw-rev1` for the v1.0 board
-   - `hw-rev2` for the v1.1 board
+   - `firmware-rev2.uf2` for the v1.1 board — this is the default
+   - `firmware-rev1.uf2` for the v1.0 board — `hw-rev1` is
+     [deprecated](./revisions.md#hw-rev1-is-deprecated) but still
+     built and published; removal not before 2031-09-01
 2. With the Pico 2 **unplugged**, press and **hold** the `BOOTSEL`
    button on top of the module.
 3. Plug the USB cable in while still holding `BOOTSEL`, then

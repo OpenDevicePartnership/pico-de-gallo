@@ -385,6 +385,15 @@ async fn main(spawner: Spawner) {
     // Arm the hardware watchdog as defence-in-depth against handler hangs.
     spawner.must_spawn(watchdog_feeder_task(Watchdog::new(p.WATCHDOG)));
 
+    // `hw-rev1` is deprecated. Warn on every boot so a device flashed with it
+    // is identifiable from RTT alone, not only from the build log. Emitted
+    // after the watchdog is armed so nothing runs ahead of it.
+    #[cfg(feature = "hw-rev1")]
+    warn!(
+        "hw-rev1 firmware is DEPRECATED (v1.0 landing board): UART, ADC and 1-Wire return Unsupported. \
+         Removal no earlier than 2031-09-01. Build the default hw-rev2 image for v1.1+ boards."
+    );
+
     // USB/RPC INIT
     let driver = Driver::new(p.USB, Irqs);
     let pbufs = PBUFS.take();
