@@ -129,6 +129,15 @@ DT bindings, four samples, three test suites (`pdg_fake/i2c`,
 it never executes a produced binary, because that would reach
 `gallo_init_strict()` and need an attached board.
 
+> **Corrected 2026-08-31, during implementation.** The claim above is
+> wrong. `.github/workflows/zephyr.yml:267-274` runs `west twister`
+> over both testsuite roots with no build-only filter, and
+> `zephyr/tests/pdg_fake/i2c/tests.yaml` deliberately omits
+> `build_only` so that suite executes against a recording fake. Seven
+> of the module's eight `tests.yaml` set `build_only`; that one does
+> not. AGENTS.md §5.3, §5.4 and §15.1 carried the same error and were
+> corrected in this change.
+
 **No UART, ADC, PWM or 1-Wire driver exists.** Those are issues #152,
 #153, #155 and #154 respectively.
 

@@ -24,6 +24,7 @@ facts like pin assignments and bus widths are stated directly.
 - [Appendix A — embedded-hal Trait Coverage Matrix](#appendix-a--embedded-hal-trait-coverage-matrix)
 - [Appendix B — Competitive Landscape](#appendix-b--competitive-landscape)
 - [Appendix C — RP2350 Peripheral Budget](#appendix-c--rp2350-peripheral-budget)
+- [Summary](#summary)
 - [Conventions — How to Update This File](#conventions--how-to-update-this-file)
 
 ---
@@ -264,8 +265,9 @@ authoritative — there is no book chapter for it, and AGENTS.md §15.1
 records that ruling.
 
 Shipped so far: an MFD parent (`odp,pico-de-gallo`) with GPIO, I2C and
-SPI children, four device tree bindings, four samples, three test
-suites, and a path-filtered CI job.
+SPI children, a device tree binding for each, samples, test suites,
+and a path-filtered CI job. `zephyr/README.md` is the authoritative
+inventory.
 
 Two limits are worth stating plainly. CI is **build-only for
 everything that touches a board**: every sample and every M5 app sets
@@ -298,7 +300,7 @@ at all.
 
 ---
 
-### C. Hardware Rev 2
+### C. Hardware v2
 
 *Requires a PCB re-spin, component sourcing, and potentially a case
 redesign.*
@@ -487,19 +489,19 @@ coming undone.
 
 ### Must have
 
-| Requirement                                                                                                                                                                      | State                                                                                                      |
-|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------|
-| `I2c`, `SpiBus`, `SpiDevice`, `InputPin`, `OutputPin`, `StatefulOutputPin`, `Wait`, `DelayNs` and `SetDutyCycle` implemented, blocking and async wherever the trait defines both | ✅ Done — see [Appendix A](#appendix-a--embedded-hal-trait-coverage-matrix)                                 |
-| `embedded-io` `Read` and `Write` for UART                                                                                                                                        | ✅ Done, for both the 0.6 and 0.7 majors                                                                    |
-| Rich error types mapping firmware errors to `ErrorKind`                                                                                                                          | ✅ Done                                                                                                     |
-| I2C bus scan                                                                                                                                                                     | ✅ Done                                                                                                     |
-| GPIO direction and pull configuration                                                                                                                                            | ✅ Done                                                                                                     |
-| UART support                                                                                                                                                                     | ✅ Done (hw-rev2)                                                                                           |
-| Configuration query endpoints                                                                                                                                                    | ✅ Done                                                                                                     |
-| All public API types documented with rustdoc                                                                                                                                     | Ongoing                                                                                                    |
-| Book covers every interface, with examples                                                                                                                                       | Ongoing                                                                                                    |
-| Stable wire protocol — no breaking serialization changes after 1.0                                                                                                               | ❌ **Not met.** The schema is still moving; wire behaviour changed as recently as the unreleased schema 0.7 |
-| No known device-wide wedge reachable from a supported host surface                                                                                                               | ❌ **Not met** — [Workstream A](#a-reliability--correctness)                                                |
+| Requirement                                                                                                                                                                      | State                                                                                                            |
+|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------|
+| `I2c`, `SpiBus`, `SpiDevice`, `InputPin`, `OutputPin`, `StatefulOutputPin`, `Wait`, `DelayNs` and `SetDutyCycle` implemented, blocking and async wherever the trait defines both | ✅ Done — see [Appendix A](#appendix-a--embedded-hal-trait-coverage-matrix)                                      |
+| `embedded-io` `Read` and `Write` for UART                                                                                                                                        | ✅ Done, for both the 0.6 and 0.7 majors                                                                         |
+| Rich error types mapping firmware errors to `ErrorKind`                                                                                                                          | ✅ Done                                                                                                          |
+| I2C bus scan                                                                                                                                                                     | ✅ Done                                                                                                          |
+| GPIO direction and pull configuration                                                                                                                                            | ✅ Done                                                                                                          |
+| UART support                                                                                                                                                                     | ✅ Done (hw-rev2)                                                                                                |
+| Configuration query endpoints                                                                                                                                                    | ✅ Done                                                                                                          |
+| All public API types documented with rustdoc                                                                                                                                     | Ongoing                                                                                                          |
+| Book covers every interface, with examples                                                                                                                                       | Ongoing                                                                                                          |
+| Stable wire protocol — no breaking serialization changes after 1.0                                                                                                               | ❌ **Not met.** The schema is still moving; wire behaviour changed within the current unreleased schema revision |
+| No known device-wide wedge reachable from a supported host surface                                                                                                               | ❌ **Not met** — [Workstream A](#a-reliability--correctness)                                                     |
 
 The trait list is deliberately explicit rather than "all `embedded-hal`
 traits". Read literally, that older wording was never met. Three traits
@@ -529,10 +531,10 @@ are excluded, each for a stated reason:
 
 | Requirement                | State                                              |
 |----------------------------|----------------------------------------------------|
-| 1-Wire via PIO             | ✅ **Already shipped**, ahead of 1.0                |
+| 1-Wire via PIO             | ✅ **Already shipped**, ahead of 1.0               |
 | Configuration persistence  | Deferred — [Workstream E](#e-blocked-and-deferred) |
 | SPI target mode            | Not started, untracked                             |
-| Hardware Rev 2             | [Workstream C](#c-hardware-rev-2)                  |
+| Hardware v2                | [Workstream C](#c-hardware-v2)                     |
 | Zephyr peripheral coverage | [Workstream B](#b-zephyr-module)                   |
 
 ### Where 1.0 actually stands
@@ -559,16 +561,16 @@ no longer planned in any timeframe.
 
 ### The Case For RP2350
 
-| Factor              | Assessment                                                                                                                                   |
-|---------------------|----------------------------------------------------------------------------------------------------------------------------------------------|
-| **Price**           | ~$1 chip, ~$5 Pico 2 board. Unbeatable.                                                                                                      |
-| **Embassy support** | First-class. Active upstream development.                                                                                                    |
-| **Peripheral set**  | 2× I2C, 2× SPI, 2× UART, 12× PWM, 4× ADC, 3× PIO — more than enough.                                                                         |
-| **PIO**             | Unique advantage. Enables 1-Wire and custom protocols, with two state machines still free. No competitor at this price has anything similar. |
-| **SRAM**            | 520 KB. Plenty for USB buffers and protocol state.                                                                                           |
-| **Dual-core**       | Available if needed for parallel bus monitoring.                                                                                             |
-| **Community**       | Huge Raspberry Pi ecosystem. Easy to source globally.                                                                                        |
-| **Tooling**         | UF2 flashing, SWD debug, picotool — all mature.                                                                                              |
+| Factor              | Assessment                                                                                                                                                              |
+|---------------------|-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **Price**           | ~$1 chip, ~$5 Pico 2 board. Unbeatable.                                                                                                                                 |
+| **Embassy support** | First-class. Active upstream development.                                                                                                                               |
+| **Peripheral set**  | 2× I2C, 2× SPI, 2× UART, 12× PWM, 4× ADC, 3× PIO — more than enough.                                                                                                    |
+| **PIO**             | Unique advantage. Enables 1-Wire and custom protocols. Only PIO0/SM0 is used, leaving two whole PIO blocks untouched. No competitor at this price has anything similar. |
+| **SRAM**            | 520 KB. Plenty for USB buffers and protocol state.                                                                                                                      |
+| **Dual-core**       | Available if needed for parallel bus monitoring.                                                                                                                        |
+| **Community**       | Huge Raspberry Pi ecosystem. Easy to source globally.                                                                                                                   |
+| **Tooling**         | UF2 flashing, SWD debug, picotool — all mature.                                                                                                                         |
 
 ### The USB Full Speed Question
 
@@ -678,7 +680,7 @@ exclusion.
 3. Price/feature ratio competitive with Bus Pirate, with far better
    Rust integration
 4. PIO enables protocols no other bridge at this price can match —
-   1-Wire today, with two state machines still free
+   1-Wire today, using one of twelve state machines
 
 ---
 
@@ -687,19 +689,19 @@ exclusion.
 The RP2350 (as used on Pico 2) has the following peripherals. This table
 shows current usage and planned allocation:
 
-| Peripheral | Total Available   | Currently Used                                     | Planned (1.0) | Notes                                     |
-|------------|-------------------|----------------------------------------------------|---------------|-------------------------------------------|
-| **I2C**    | 2 (I2C0, I2C1)    | 1 (I2C1)                                           | 1             | Second bus dropped                        |
-| **SPI**    | 2 (SPI0, SPI1)    | 1 (SPI0)                                           | 1             | Second bus dropped                        |
-| **UART**   | 2 (UART0, UART1)  | 1 (UART0)                                          | 1 (UART0)     | GPIO0/1                                   |
-| **PWM**    | 12 slices (24 ch) | 2 slices (4 channels)                              | 2 slices      | GPIO12–15                                 |
-| **ADC**    | 4 GPIO            | 4 (GPIO26–29)                                      | 4 GPIO        | GPIO26–29                                 |
-| **PIO**    | 3 (PIO0–2)        | 1 (1-Wire)                                         | 1             | Sniffing dropped; two state machines free |
-| **DMA**    | 16 channels       | 2 (SPI)                                            | 4–6           | ADC continuous, UART, SPI                 |
-| **GPIO**   | 30 (on Pico 2)    | 16 (I2C 2, SPI 3, UART 2, user 4, PWM 4, 1-Wire 1) | ~16           | Ample headroom                            |
-| **USB**    | 1 (FS)            | 1                                                  | 1             | Fully committed                           |
-| **Flash**  | 4 MB (on Pico 2)  | ~256 KB firmware                                   | ~256 KB       | Config persistence deferred post-1.0      |
-| **SRAM**   | 520 KB            | ~64 KB (estimated)                                 | ~128 KB       | Buffer growth for batching/ADC            |
+| Peripheral | Total Available   | Currently Used                                     | Planned (1.0) | Notes                                              |
+|------------|-------------------|----------------------------------------------------|---------------|----------------------------------------------------|
+| **I2C**    | 2 (I2C0, I2C1)    | 1 (I2C1)                                           | 1             | Second bus dropped                                 |
+| **SPI**    | 2 (SPI0, SPI1)    | 1 (SPI0)                                           | 1             | Second bus dropped                                 |
+| **UART**   | 2 (UART0, UART1)  | 1 (UART0)                                          | 1 (UART0)     | GPIO0/1                                            |
+| **PWM**    | 12 slices (24 ch) | 2 slices (4 channels)                              | 2 slices      | GPIO12–15                                          |
+| **ADC**    | 4 GPIO            | 4 (GPIO26–29)                                      | 4 GPIO        | GPIO26–29                                          |
+| **PIO**    | 3 (PIO0–2)        | 1 (1-Wire)                                         | 1             | PIO0/SM0 only; 2 blocks and 11 state machines free |
+| **DMA**    | 16 channels       | 2 (SPI)                                            | 4–6           | ADC continuous, UART, SPI                          |
+| **GPIO**   | 30 (on Pico 2)    | 16 (I2C 2, SPI 3, UART 2, user 4, PWM 4, 1-Wire 1) | ~16           | Ample headroom                                     |
+| **USB**    | 1 (FS)            | 1                                                  | 1             | Fully committed                                    |
+| **Flash**  | 4 MB (on Pico 2)  | ~256 KB firmware                                   | ~256 KB       | Config persistence deferred post-1.0               |
+| **SRAM**   | 520 KB            | ~64 KB (estimated)                                 | ~128 KB       | Buffer growth for batching/ADC                     |
 
 **Conclusion:** The RP2350 has substantial unused peripheral capacity.
 We can implement every feature in this roadmap without running out of
@@ -723,8 +725,8 @@ What remains, in priority order:
    [Workstream B](#b-zephyr-module).
 4. **Documentation** — rustdoc, the book, and the driver-development
    guide.
-5. **Hardware Rev 2** — planned as one re-spin, not incrementally.
-   [Workstream C](#c-hardware-rev-2).
+5. **Hardware v2** — planned as one re-spin, not incrementally.
+   [Workstream C](#c-hardware-v2).
 
 Level translators and ESD protection are the non-negotiable additions
 to the next board; target power is high value for low cost.
@@ -738,15 +740,25 @@ The RP2350 remains the right MCU. See
 
 ### Do not add counts
 
-This file must not carry any figure derivable from the source tree.
-Endpoint counts, test counts, crate versions and schema versions belong
-to their authoritative homes, listed under
+This file must not carry counts or version numbers that change as the
+code changes — endpoint counts, test counts, crate versions, schema
+versions. Those have authoritative homes, listed under
 [Derived figures](#derived-figures). Cite the home; do not copy the
 number.
 
-This rule exists because the figures previously kept here drifted badly
-enough to make the document misleading. Cite, and the problem cannot
-recur.
+Stable facts are different and are stated directly: pin assignments,
+bus widths, how many slices a peripheral drives. Those move only when
+the hardware or the firmware's pin map moves, which is a deliberate
+act that brings you to this file anyway.
+
+Upstream API majors are stable facts too. `embedded-io` 0.6 and 0.7
+are named directly because the HAL supports both at once and the
+numbers are part of the feature names. What the rule forbids is
+copying figures that track this project's own artifacts.
+
+The rule exists because the figures previously kept here drifted badly
+enough to make the document misleading. The test count was the worst
+of them, and it is exactly the kind that should be cited.
 
 ### Moving an item
 

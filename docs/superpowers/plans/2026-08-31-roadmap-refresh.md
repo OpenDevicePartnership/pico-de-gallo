@@ -423,6 +423,9 @@ and needs an attached board, so a green run proves the module compiles
 and links, not that it works. And nothing here has been released;
 `zephyr/CHANGELOG.md` is entirely `[Unreleased]`.
 
+> **Corrected during implementation** — see the correction note in the
+> design spec §2.4. CI is build-only except `tests/pdg_fake/i2c`.
+
 #### Open work
 
 | Item                                        | Issue                                                                     |
