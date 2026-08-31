@@ -1,10 +1,15 @@
 # Pico de Gallo — Roadmap to 1.0
 
-> Last updated: 2026-04-24
+> Last updated: 2026-08-31
 
-This document lays out the path to a 1.0 release of the pico-de-gallo
-project. Changes are grouped into phases and listed in ascending order of
-complexity. Each entry explains *what*, *why*, and *what it unlocks*.
+This document describes where Pico de Gallo is going and what stands
+between it and a 1.0 release. Work is grouped by active workstream;
+completed work is summarized, not re-explained.
+
+It is **not** a status dashboard. Counts and version numbers drift, so
+they are *cited* here rather than copied — see
+[Derived figures](#derived-figures) for where each one lives. Stable
+facts like pin assignments and bus widths are stated directly.
 
 ---
 
@@ -12,11 +17,9 @@ complexity. Each entry explains *what*, *why*, and *what it unlocks*.
 
 - [Where We Are Today](#where-we-are-today)
 - [Design Philosophy](#design-philosophy)
-- [Phase 1 — Polish What Exists](#phase-1--polish-what-exists)
-- [Phase 2 — New Protocols (Software Only)](#phase-2--new-protocols-software-only)
-- [Phase 3 — Advanced Features](#phase-3--advanced-features)
-- [Phase 4 — Hardware Rev 2](#phase-4--hardware-rev-2)
-- [Phase 5 — 1.0 Release Criteria](#phase-5--10-release-criteria)
+- [Delivered](#delivered)
+- [Active Workstreams](#active-workstreams)
+- [1.0 Release Criteria](#10-release-criteria)
 - [Should the RP2350 Stay?](#should-the-rp2350-stay)
 - [Appendix A — embedded-hal Trait Coverage Matrix](#appendix-a--embedded-hal-trait-coverage-matrix)
 - [Appendix B — Competitive Landscape](#appendix-b--competitive-landscape)
@@ -25,40 +28,57 @@ complexity. Each entry explains *what*, *why*, and *what it unlocks*.
 
 ---
 
-## Progress Overview
-
-| Phase | Description        | Items | Done | Status                            |
-|-------|--------------------|-------|------|-----------------------------------|
-| **1** | Polish What Exists | 6     | 6    | ✅ Complete                       |
-| **2** | New Protocols      | 4     | 3    | 🟡 In progress (2.6 blocked)      |
-| **3** | Advanced Features  | 6     | 3    | 🟡 In progress (3.4–3.6 deferred) |
-| **4** | Hardware Rev 2     | 6     | 1    | 🟡 In progress                    |
-
----
-
 ## Where We Are Today
 
-| Area            | Status                                                                                                                                                                                                                       |
-|-----------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| **I2C**         | 1 bus (I2C1), 7-bit addressing, read/write/write-read/scan, configurable frequency (Standard/Fast/Fast+)                                                                                                                     |
-| **SPI**         | 1 bus (SPI0), read/write/flush/transfer, configurable polarity/phase, DMA-backed                                                                                                                                             |
-| **UART**        | 1 bus (UART0), read/write/flush, configurable baud rate, interrupt-driven with 1024-byte TX/RX buffers. **hw-rev2 only** (the default).                                                                                      |
-| **GPIO**        | 4 pins (GPIO8–11), input/output/wait-for-edge, push-based edge event monitoring                                                                                                                                              |
-| **USB**         | Full Speed (12 Mbps), postcard-rpc over raw USB bulk                                                                                                                                                                         |
-| **HAL traits**  | `I2c`, `SpiBus`, `InputPin`, `OutputPin`, `StatefulOutputPin`, `Wait`, `DelayNs`, `embedded_io::{Read,Write}` (sync + async)                                                                                                 |
-| **Hardware**    | v1.0 landing board (7 connectors, 13/20 signals); v1.1 landing board (2×12 header, all 20 signals, I²C pull-ups, ADC protection). `hw-rev1`/`hw-rev2` feature flags gate peripheral availability; `hw-rev2` is the default and `hw-rev1` is deprecated (removal no earlier than 2031-09-01). No level shifters, no ESD. |
-| **Host crates** | internal (protocol), lib (high-level API), hal (embedded-hal bridge), ffi (C bindings), app (CLI)                                                                                                                            |
-| **Endpoints**   | 47 total (ping, version, device/info, system×1, I2C×7, SPI×7, UART×5, GPIO×10, PWM×6, ADC×2, 1-Wire×6). UART/ADC/1-Wire return `Unsupported` on the deprecated hw-rev1.                                                      |
-| **Tests**       | 298 unit + 5 doctests, CI on every push (both hardware revisions)                                                                                                                                                            |
+### Capabilities
+
+| Area             | Status                                                                                                                                                                                                               |
+|------------------|----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| **I2C**          | 1 bus (I2C1, GPIO2/3), 7-bit addressing, read/write/write-read/scan/batch, configurable frequency (Standard/Fast/Fast+). A batch executes as a single `embedded-hal` transaction.                                    |
+| **SPI**          | 1 bus (SPI0, GPIO4/6/7), read/write/flush/transfer/batch, configurable polarity and phase, DMA-backed                                                                                                                |
+| **UART**         | 1 bus (UART0, GPIO0/1), read/write/flush, configurable baud rate, interrupt-driven with 1024-byte TX/RX buffers                                                                                                      |
+| **GPIO**         | 4 user pins (GPIO8–11), input/output with pull configuration, wait-for-edge with timeout, push-based edge event topics                                                                                               |
+| **PWM**          | 4 channels (GPIO12–15) on 2 slices, frequency, duty cycle, phase-correct mode                                                                                                                                        |
+| **ADC**          | 4 channels (GPIO26–29), 12-bit, single-shot reads                                                                                                                                                                    |
+| **1-Wire**       | PIO-driven (GPIO16): reset with presence detect, read, write, strong-pullup write, ROM search                                                                                                                        |
+| **USB**          | Full Speed (12 Mbps), postcard-rpc over raw USB bulk, WebUSB descriptors                                                                                                                                             |
+| **HAL traits**   | See [Appendix A](#appendix-a--embedded-hal-trait-coverage-matrix)                                                                                                                                                    |
+| **Hardware**     | v1.0 landing board (7 connectors, 13/20 signals); v1.1 landing board (2×12 header, all 20 signals, I²C pull-ups, ADC protection). No level shifters, no ESD.                                                         |
+| **Revisions**    | `hw-rev2` is the default. `hw-rev1` is deprecated — removal no earlier than 2031-09-01 — and returns `Unsupported` for all UART, ADC and 1-Wire endpoints.                                                           |
+
+### Components
+
+| Component        | Package                  | Role                                              | Release                 |
+|------------------|--------------------------|---------------------------------------------------|-------------------------|
+| Wire protocol    | `pico-de-gallo-internal` | postcard-rpc types; derives `SCHEMA_VERSION_*`    | crates.io               |
+| Host library     | `pico-de-gallo-lib`      | async API over `nusb` + tokio                     | crates.io               |
+| HAL bridge       | `pico-de-gallo-hal`      | `embedded-hal` / `embedded-io` trait impls        | crates.io               |
+| C bindings       | `pico-de-gallo-ffi`      | cdylib, header generated by cbindgen              | crates.io               |
+| CLI              | `gallo`                  | command-line front end                            | crates.io + binaries    |
+| MCP server       | `gallo-mcp`              | Model Context Protocol server for agents          | crates.io               |
+| Python bindings  | `pyco-de-gallo`          | PyO3 + maturin                                    | PyPI wheels             |
+| Firmware         | `pico-de-gallo-firmware` | RP2350, `no_std`, separate Cargo workspace        | `.uf2` / `.elf`         |
+| Zephyr module    | `zephyr/`                | MFD parent plus GPIO, I2C and SPI drivers         | unreleased              |
+
+### Derived figures
+
+These are deliberately **not** reproduced here. They drift, and each
+already has an authoritative home that something else keeps honest.
+
+| Figure                      | Authoritative source                                                                                                                                                                             |
+|-----------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
+| Endpoints and topics        | [`book/src/appendix/endpoints.md`](book/src/appendix/endpoints.md), which AGENTS.md §15.1 requires to track the `endpoints!` macro                                                               |
+| Test counts                 | AGENTS.md §5.5                                                                                                                                                                                   |
+| Crate versions              | each crate's `Cargo.toml` `[package].version`                                                                                                                                                    |
+| Wire schema version         | derived from `pico-de-gallo-internal`'s version by its `build.rs`                                                                                                                                |
+| Transfer and batch limits   | `MAX_TRANSFER_SIZE` and `MAX_BATCH_OPS` in `crates/pico-de-gallo-internal/src/lib.rs`, but see [Workstream A](#a-reliability--correctness) — the constant is a packet budget, not usable payload |
 
 ### What's Missing
 
-Compared to what embedded developers routinely need, pico-de-gallo is
-still missing:
-
-- **10-bit I2C** — some devices use extended addressing (blocked on upstream embassy-rp)
-- **Voltage flexibility** — hardware is 3.3 V only; no path to 1.8 V or 5 V
+- **10-bit I2C** — blocked upstream; see [Workstream E](#e-blocked-and-deferred)
+- **Voltage flexibility** — hardware is 3.3 V only, no path to 1.8 V or 5 V
 - **Target power** — users must externally power their target
+- **Zephyr peripheral coverage** — no UART, ADC, PWM or 1-Wire driver; see [Workstream B](#b-zephyr-module)
 
 ---
 
