@@ -216,9 +216,11 @@ impl core::fmt::Display for ValidateError {
             Self::Comms(e) => write!(f, "communication error: {e:?}"),
             Self::Timeout => write!(
                 f,
-                "device/info did not respond within 300 seconds — retry, or \
-                 reconnect the board (unplug and replug) if it stays \
-                 unresponsive"
+                "device/info did not respond within 300 seconds — either \
+                 the board is unresponsive, or host and firmware were built \
+                 from different trees, in which case the response is sent \
+                 under a different endpoint key and silently dropped. This \
+                 host cannot tell the two apart"
             ),
             Self::LegacyFirmware => write!(
                 f,
@@ -1132,10 +1134,16 @@ impl PicoDeGallo {
     ///
     /// Wire *shape*: during the current unreleased schema freeze a
     /// matching schema version does not prove shape compatibility.
-    /// `DeviceInfo` gained `build_id` after schema 0.7.0 was released, so
-    /// this host cannot decode `device/info` from a released firmware
-    /// 0.11.0 even though both peers report schema 0.7. Build host and
-    /// firmware from the same tree until the 0.8.0 release.
+    /// postcard-rpc derives each endpoint's key from the response
+    /// type's schema, so appending `build_id` to `DeviceInfo` after
+    /// schema 0.7.0 shipped also changed the `device/info` key. A peer
+    /// built from a different tree replies under the other key, the
+    /// dispatcher drops the unmatched frame, and the call never
+    /// returns. This is *not* a decode error — postcard is never
+    /// reached — so it surfaces here as [`ValidateError::Timeout`]
+    /// after [`DEVICE_INFO_TIMEOUT`], indistinguishable from a board
+    /// that genuinely stopped answering. Build host and firmware from
+    /// the same tree until the 0.8.0 release.
     ///
     /// Wire *behaviour*: the schema version is derived from the wire
     /// crate's package version, so it is intended to track wire-type
@@ -2032,8 +2040,22 @@ mod tests {
         let s = format!("{}", ValidateError::Timeout);
         assert!(s.contains("device/info"), "got: {s}");
         assert!(s.contains("300"), "got: {s}");
+    }
+
+    /// A `device/info` timeout has two indistinguishable causes: a board
+    /// that stopped answering, and a host/firmware pair built from
+    /// different trees, whose differing endpoint keys make the reply be
+    /// dropped as unmatched rather than decoded. The message must name
+    /// both and must not advise a retry, which cannot help with the
+    /// second.
+    #[test]
+    fn validate_error_timeout_display_names_build_mismatch() {
+        let s = format!("{}", ValidateError::Timeout);
+        assert!(s.contains("endpoint key"), "got: {s}");
+        assert!(s.contains("different trees"), "got: {s}");
         let lower = s.to_lowercase();
-        assert!(lower.contains("retry") || lower.contains("reconnect"), "got: {s}");
+        assert!(!lower.contains("retry"), "got: {s}");
+        assert!(!lower.contains("replug"), "got: {s}");
     }
 
     fn all_validate_errors() -> Vec<ValidateError> {

@@ -1588,14 +1588,33 @@ pub const BUILD_ID_CAPACITY: usize = 64;
 /// hardware version, and peripheral capabilities.
 ///
 /// This is returned by a separate endpoint from [`VersionInfo`] so that
-/// the existing `version` endpoint remains wire-stable for older hosts
-/// to parse.
+/// changes here cannot disturb the `version` endpoint. That separation is
+/// what keeps `version` working across the current schema freeze:
+/// [`VersionInfo`]'s schema is unchanged, so the `version` endpoint key is
+/// unchanged, and old and new peers still match each other's frames. It is
+/// not that older hosts parse `DeviceInfo` leniently — they never see it.
 // SCHEMA FREEZE: `build_id` was appended after the schema 0.7.0 release
-// (tags `internal-v0.7.0` / `firmware-v0.11.0`). The addition is append-only,
-// but a host built from this tree cannot decode `device/info` from a released
-// 0.11.0 firmware -- postcard hits end-of-input on the new field -- and
-// `validate()` cannot warn, because both peers still report schema 0.7.
-// Host and firmware must therefore be built from the same tree until release.
+// (tags `internal-v0.7.0` / `firmware-v0.11.0`). The addition is append-only
+// in the *encoding*, but that is not the compatibility axis that matters.
+//
+// postcard-rpc keys every endpoint by `Key::for_path::<T>(path)`, i.e. a
+// hash of the type's `Schema` together with the path string, and the
+// `endpoints!` macro derives `RESP_KEY` from the RESPONSE type's schema.
+// Appending `build_id` changed `DeviceInfo::SCHEMA`, and therefore changed
+// the `device/info` response key. A peer built from a different tree replies
+// under the other key; the receiving dispatcher finds no match, drops the
+// frame, and never wakes the pending call. The call does not return.
+//
+// So this is NOT a decode error -- postcard is never reached -- and
+// `map_validate_error` never sees a `DeserFailed`. `validate()` surfaces it
+// as `ValidateError::Timeout` after `DEVICE_INFO_TIMEOUT`, misattributed to
+// an unresponsive board, and `validate()` cannot warn because both peers
+// still report schema 0.7. Host and firmware must be built from the same
+// tree until release.
+//
+// This mechanism is general: ANY change to a request or response type's
+// shape silently re-keys that endpoint, appends included. See
+// `device_info_response_key_is_pinned` below.
 //
 // Do not release or tag this branch until the maintainer performs the lockstep
 // version bump required by AGENTS.md §6.5. The next `pico-de-gallo-internal`
@@ -1656,6 +1675,47 @@ impl DeviceInfo {
 mod tests {
     use super::*;
     use postcard::{from_bytes, take_from_bytes, to_allocvec};
+    use postcard_rpc::Endpoint;
+
+    // --- Endpoint key pinning ---
+    //
+    // postcard-rpc keys each endpoint by `Key::for_path::<T>(path)`, a hash
+    // of the type's `Schema` and the path string; the `endpoints!` macro
+    // derives `RESP_KEY` from the *response* type. These keys are therefore
+    // derived from the struct's shape: changing a field -- adding, removing,
+    // renaming, or retyping one -- changes the key.
+    //
+    // A re-keyed endpoint does not produce a decode error. A peer built from
+    // a different tree replies under the old key, the receiving dispatcher
+    // finds no match, drops the frame, and the pending call is never woken:
+    // the call hangs until its caller-side timeout, if it has one.
+    //
+    // If one of these tests fails, you have made a wire-incompatible change.
+    // That is allowed, but it requires a lockstep schema-version bump per
+    // AGENTS.md §6.2/§6.5 and a coordinated firmware release -- then update
+    // the pinned bytes here in the same commit.
+
+    /// Pins the `device/info` response key, derived from [`DeviceInfo`].
+    #[test]
+    fn device_info_response_key_is_pinned() {
+        assert_eq!(
+            GetDeviceInfo::RESP_KEY.to_bytes(),
+            [0x63, 0x8a, 0x52, 0xf9, 0xb6, 0xda, 0xea, 0x52],
+        );
+    }
+
+    /// Pins the `version` response key, derived from [`VersionInfo`].
+    ///
+    /// `version` keeping working against a released firmware while
+    /// `device/info` hangs is precisely because this key is unchanged; that
+    /// stability is a documented guarantee, so pin it.
+    #[test]
+    fn version_response_key_is_pinned() {
+        assert_eq!(
+            Version::RESP_KEY.to_bytes(),
+            [0xe7, 0xf8, 0x84, 0x38, 0xd2, 0xc6, 0x29, 0xc6],
+        );
+    }
 
     // --- Schema version vs. Cargo.toml ---
 

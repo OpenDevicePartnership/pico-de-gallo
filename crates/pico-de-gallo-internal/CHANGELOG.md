@@ -16,17 +16,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it. Closes #159.
 
   This is append-only on the wire, but it landed **after** schema 0.7.0
-  shipped, so a host built from this tree cannot decode `device/info`
-  from a released firmware 0.11.0 — postcard hits end-of-input on the new
-  field — and `validate()` cannot warn, because both peers still report
-  schema 0.7. **Host and firmware must be built from the same tree until
-  the next release.** That release must be 0.8.0, not 0.7.1: a new wire
-  field is not a patch.
+  shipped, and the encoding is not the compatibility axis that matters.
+  postcard-rpc derives each endpoint's key from the response type's
+  schema, so changing `DeviceInfo` also changed the `device/info`
+  endpoint key. A peer built from a different tree replies under the
+  other key, the dispatcher drops the unmatched frame, and the call
+  never returns. It is not a decode error — postcard is never reached —
+  so `validate()` reports it as a `Timeout` after `DEVICE_INFO_TIMEOUT`,
+  misattributed to an unresponsive board, and cannot warn because both
+  peers still report schema 0.7. **Host and firmware must be built from
+  the same tree until the next release.** That release must be 0.8.0,
+  not 0.7.1: a new wire field is not a patch.
 
 ### Added
 
 - `BUILD_ID_CAPACITY` (64) and the `DeviceInfo::build_id()` accessor, so
   host crates never need to name `heapless` themselves.
+- `device_info_response_key_is_pinned` and
+  `version_response_key_is_pinned`, which hard-code the postcard-rpc
+  `RESP_KEY` bytes for `device/info` and `version`. Any future change to
+  either response type's shape now fails the test suite instead of
+  silently re-keying the endpoint and producing a hang in the field.
 
 ## [0.7.0] — 2026-08-27
 

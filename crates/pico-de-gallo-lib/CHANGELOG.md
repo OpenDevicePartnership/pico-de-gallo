@@ -14,6 +14,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `validate()` returns it for diagnostics but deliberately never treats it as
   a compatibility gate. Closes #159.
 
+### Changed
+
+- `ValidateError::Timeout`'s `Display` no longer advises a retry or a
+  replug. A `device/info` timeout is at least as likely to be a
+  host/firmware build mismatch: postcard-rpc derives each endpoint key from
+  the response type's schema, so peers built from different trees answer
+  under different keys and the reply is dropped as unmatched rather than
+  decoded. Nothing fails, so nothing is reported — the call simply never
+  completes. The message now names both causes and says plainly that the
+  host cannot tell them apart. Refs #159.
+
 ## [0.8.0] — 2026-08-27
 
 ### Added

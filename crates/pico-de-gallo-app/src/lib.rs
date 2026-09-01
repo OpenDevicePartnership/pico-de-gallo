@@ -40,9 +40,28 @@ use pico_de_gallo_lib::{
 };
 use pico_de_gallo_lib::{GpioDirection, GpioPull, GpioState};
 use std::num::ParseIntError;
+use std::time::Duration;
 use tabled::builder::Builder;
 use tabled::settings::object::Rows;
 use tabled::settings::{Alignment, Style};
+
+/// How long `gallo version` waits for `device/info` before falling back to
+/// the legacy `version` endpoint.
+///
+/// Deliberately far shorter than `pico_de_gallo_lib::DEVICE_INFO_TIMEOUT`
+/// (300 s). That bound is sized for the worst-case *firmware* occupancy:
+/// `spi_batch` accepts up to 64 delay operations of `u32::MAX` nanoseconds
+/// each, and postcard-rpc dispatches handlers serially, so any request can
+/// legitimately queue behind minutes of user-requested delay. `device/info`
+/// itself has no user-controllable work: it is a fixed-size response
+/// assembled from constants.
+///
+/// `version` is a diagnostic command, and a diagnostic that hangs is worse
+/// than useless. Five seconds is generous for USB enumeration plus one
+/// round trip while still failing fast, and the fallback to the legacy
+/// endpoint is strictly better than waiting: it is the path that keeps
+/// working when the two sides were built from different trees.
+const VERSION_DEVICE_INFO_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// I2C bus clock frequency for CLI argument parsing.
 #[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -837,14 +856,31 @@ impl Cli {
         Ok(())
     }
 
+    /// Print device information, falling back to the legacy `version`
+    /// endpoint.
+    ///
+    /// The `device/info` call is bounded by [`VERSION_DEVICE_INFO_TIMEOUT`]
+    /// rather than left unbounded. `PicoDeGallo::device_info` carries no
+    /// timeout of its own — only `validate()` applies
+    /// `DEVICE_INFO_TIMEOUT` — so without a bound here the `Err` arm below
+    /// is unreachable and `gallo version` hangs forever whenever the reply
+    /// never arrives. That happens for a build mismatch: postcard-rpc keys
+    /// endpoints by response-type schema, so a firmware built from a
+    /// different tree answers under a different key and the frame is
+    /// dropped unmatched. The legacy `version` endpoint is unaffected in
+    /// that case (`VersionInfo`'s schema, and therefore its key, has not
+    /// changed), so the fallback genuinely recovers.
     async fn version(&self, pg: &PicoDeGallo) -> Result<()> {
         // Try the new device/info endpoint first; fall back to legacy version.
-        match pg.device_info().await {
-            Ok(info) => {
+        match tokio::time::timeout(VERSION_DEVICE_INFO_TIMEOUT, pg.device_info()).await {
+            Ok(Ok(info)) => {
                 println!("{}", render_device_info(&info));
                 Ok(())
             }
-            Err(_) => {
+            // Elapsed and Err are treated identically: in both cases
+            // device/info gave us nothing usable, and the legacy endpoint is
+            // the better answer.
+            Ok(Err(_)) | Err(_) => {
                 // Fall back to legacy version endpoint
                 match pg.version().await {
                     Ok(version) => {
@@ -1558,13 +1594,34 @@ fn classify_cs(cs: u8, num_gpios: u8) -> Result<()> {
 /// Extracted from [`Cli::validate_firmware`] so the exact text — including
 /// the 300-second [`ValidateError::Timeout`] diagnostic — is testable
 /// without a device.
+///
+/// A [`ValidateError::Timeout`] gets extra text. It is not necessarily an
+/// unresponsive board: postcard-rpc derives each endpoint key from the
+/// response type's schema, so a host and firmware built from different
+/// trees exchange `device/info` under different keys and the reply is
+/// dropped as unmatched rather than decoded. Retrying or replugging cannot
+/// help with that, because the mismatch is fixed at compile time. The host
+/// cannot distinguish the two causes, so the message names both.
 fn validation_failure_message(e: &ValidateError) -> String {
-    format!(
+    let mut msg = format!(
         "firmware validation failed: {e}\n\n\
          Re-flash the firmware to a version matching this `gallo` build, \
          or install a `gallo` build matching the firmware. \
          Run `gallo version` for the current device-reported schema."
-    )
+    );
+    if matches!(e, ValidateError::Timeout) {
+        msg.push_str(
+            "\n\nA timeout here does not prove the board is unresponsive. \
+             If host and firmware were built from different trees, the \
+             `device/info` reply carries a different endpoint key and is \
+             dropped without ever being decoded, which looks identical to \
+             silence. Retrying or replugging will not fix that; rebuild \
+             both sides from the same tree. `gallo version` falls back to \
+             the legacy `version` endpoint after a short timeout, so it \
+             still reports the firmware version in that case.",
+        );
+    }
+    msg
 }
 
 fn parse_spi_batch_ops(ops: &[String]) -> Result<Vec<(SpiBatchKind, Vec<u8>)>> {
@@ -2259,6 +2316,27 @@ mod tests {
         assert!(msg.contains("firmware validation failed"), "got: {msg}");
         assert!(msg.contains("device/info"), "got: {msg}");
         assert!(msg.contains("300"), "got: {msg}");
+    }
+
+    /// A `device/info` timeout is at least as likely to be a host/firmware
+    /// build mismatch (different endpoint key, reply dropped unmatched) as
+    /// an unresponsive board, and no retry can fix the former. The message
+    /// must say so, and must not send the user back to a command that used
+    /// to hang.
+    #[test]
+    fn validation_timeout_message_names_build_mismatch() {
+        let msg = validation_failure_message(&ValidateError::Timeout);
+        assert!(msg.contains("endpoint key"), "got: {msg}");
+        assert!(msg.contains("same tree"), "got: {msg}");
+        assert!(!msg.contains("replugging will fix"), "got: {msg}");
+    }
+
+    /// The build-mismatch paragraph is specific to `Timeout`; a schema
+    /// mismatch is already self-explanatory and must not acquire it.
+    #[test]
+    fn non_timeout_validation_message_omits_build_mismatch_text() {
+        let msg = validation_failure_message(&ValidateError::LegacyFirmware);
+        assert!(!msg.contains("endpoint key"), "got: {msg}");
     }
 
     #[test]
