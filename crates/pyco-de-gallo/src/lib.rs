@@ -1675,6 +1675,7 @@ mod tests {
             hw_version: 1,
             capabilities: pico_de_gallo_lib::Capabilities::NONE,
             num_gpios,
+            build_id: "test-build".try_into().unwrap(),
         }
     }
 

@@ -1883,6 +1883,7 @@ mod tests {
             hw_version: 1,
             capabilities: Capabilities::NONE,
             num_gpios: NUM_GPIOS as u8,
+            build_id: "test-build".try_into().unwrap(),
         }
     }
 

@@ -430,11 +430,6 @@ pub struct I2cScanRequest {
 ///
 /// Variants are serialized by **index**. Do **not** reorder or insert
 /// variants in the middle — only append at the end.
-// SCHEMA FREEZE: SpiError and DeviceInfo change shape on the `zephyr` branch
-// without changing SCHEMA_VERSION_*. Mixed peers are intentionally
-// incompatible despite reporting the same schema version. This branch is not
-// releasable or taggable until the maintainer performs the lockstep version
-// bump required by AGENTS.md §6.5.
 #[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpiError {
     /// Request exceeds the firmware buffer limit ([`MAX_TRANSFER_SIZE`]).
@@ -1574,16 +1569,37 @@ impl core::ops::BitAnd for Capabilities {
     }
 }
 
+/// Maximum length of [`DeviceInfo::build_id()`], in bytes.
+///
+/// The field must always be spelled `heapless::String<BUILD_ID_CAPACITY>`,
+/// leaving `LenT` at its default. `postcard-schema` implements `Schema` only
+/// for `String<N>` at the default `LenT`, so naming a non-default `LenT`
+/// silently breaks the `Schema` derive.
+///
+/// This is a *receive-side* bound. `heapless` deserialization rejects a longer
+/// string rather than truncating it, so the firmware build script is
+/// responsible for truncating; see `crates/pico-de-gallo-firmware/build.rs`.
+/// Raising this value is not a wire-format change (the encoding is a plain
+/// postcard string either way), but it is a `Schema` change and still needs a
+/// lockstep bump per AGENTS.md §6.2.
+pub const BUILD_ID_CAPACITY: usize = 64;
+
 /// Extended device information including firmware version, schema version,
 /// hardware version, and peripheral capabilities.
 ///
 /// This is returned by a separate endpoint from [`VersionInfo`] so that
 /// the existing `version` endpoint remains wire-stable for older hosts
 /// to parse.
-// SCHEMA FREEZE: This field addition is intentionally incompatible with older
-// peers even though both sides still report the same schema version. Do not
-// release or tag this branch until the maintainer performs the lockstep
-// version bump required by AGENTS.md §6.5.
+// SCHEMA FREEZE: `build_id` was appended after the schema 0.7.0 release
+// (tags `internal-v0.7.0` / `firmware-v0.11.0`). The addition is append-only,
+// but a host built from this tree cannot decode `device/info` from a released
+// 0.11.0 firmware -- postcard hits end-of-input on the new field -- and
+// `validate()` cannot warn, because both peers still report schema 0.7.
+// Host and firmware must therefore be built from the same tree until release.
+//
+// Do not release or tag this branch until the maintainer performs the lockstep
+// version bump required by AGENTS.md §6.5. The next `pico-de-gallo-internal`
+// release must be 0.8.0, NOT 0.7.1: a new wire field is not a patch.
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct DeviceInfo {
     /// Firmware version — major.
@@ -1609,6 +1625,31 @@ pub struct DeviceInfo {
     /// default and must never be synthesized or defaulted when `device/info`
     /// decoding fails.
     pub num_gpios: u8,
+    /// Firmware build identity.
+    ///
+    /// The output of `git describe --always --dirty --tags --match
+    /// firmware-v*` captured when the firmware was built, or `"unknown"` when
+    /// git was unavailable at build time.
+    ///
+    /// Informational only. This is **never** a compatibility gate: schema
+    /// version answers "can we talk?", and this field answers "are you the
+    /// build I think you are?". `PicoDeGallo::validate()` deliberately ignores
+    /// it. Use [`DeviceInfo::build_id()`] to read it as a `&str`.
+    pub build_id: heapless::String<BUILD_ID_CAPACITY>,
+}
+
+impl DeviceInfo {
+    /// The firmware build identity as a string slice.
+    ///
+    /// Provided so host crates never need to name `heapless` themselves.
+    ///
+    /// Note for doc authors: this method and the `build_id` field share a
+    /// name, so a bare intra-doc link `[DeviceInfo::build_id]` is ambiguous
+    /// and fails the `RUSTDOCFLAGS` doc job. Always write
+    /// `[DeviceInfo::build_id()]` for this method.
+    pub fn build_id(&self) -> &str {
+        &self.build_id
+    }
 }
 
 #[cfg(test)]
@@ -3603,6 +3644,7 @@ mod tests {
                 | Capabilities::ADC
                 | Capabilities::ONEWIRE,
             num_gpios: NUM_GPIOS as u8,
+            build_id: heapless::String::new(),
         };
         let bytes = to_allocvec(&info).unwrap();
         let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
@@ -3621,10 +3663,85 @@ mod tests {
             hw_version: 2,
             capabilities: Capabilities::NONE,
             num_gpios: NUM_GPIOS as u8,
+            build_id: heapless::String::new(),
         };
         let bytes = to_allocvec(&info).unwrap();
         let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
         assert_eq!(info, decoded);
+    }
+
+    #[test]
+    fn device_info_round_trip_carries_build_id() {
+        // Sweep the three shapes the firmware can actually produce: a full
+        // describe string, the git-unavailable fallback, and empty (which a
+        // buggy build.rs could emit and which must still decode).
+        for id in [
+            "firmware-v0.11.0-27-g8ddb1da5a681-dirty",
+            "unknown",
+            "",
+            // Exactly BUILD_ID_CAPACITY bytes.
+            "0123456789012345678901234567890123456789012345678901234567890123",
+        ] {
+            let info = DeviceInfo {
+                fw_major: 0,
+                fw_minor: 11,
+                fw_patch: 0,
+                schema_major: 0,
+                schema_minor: 7,
+                schema_patch: 0,
+                hw_version: 2,
+                capabilities: Capabilities::I2C,
+                num_gpios: NUM_GPIOS as u8,
+                build_id: heapless::String::try_from(id).unwrap(),
+            };
+            let bytes = to_allocvec(&info).unwrap();
+            let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
+            assert_eq!(info, decoded, "build_id {id:?} must round-trip");
+            assert_eq!(decoded.build_id(), id);
+        }
+    }
+
+    #[test]
+    fn build_id_capacity_is_sixty_four() {
+        // Pinned because the firmware build script hardcodes the same number
+        // for truncation and cannot import this constant.
+        assert_eq!(BUILD_ID_CAPACITY, 64);
+    }
+
+    #[test]
+    fn device_info_rejects_overlong_build_id() {
+        // heapless deserialization errors rather than truncating, so an
+        // over-long id is a decode failure, not silent data loss. This is why
+        // the firmware build script must do the truncating.
+        #[derive(Serialize)]
+        struct OverlongDeviceInfo {
+            fw_major: u16,
+            fw_minor: u16,
+            fw_patch: u32,
+            schema_major: u16,
+            schema_minor: u16,
+            schema_patch: u32,
+            hw_version: u8,
+            capabilities: Capabilities,
+            num_gpios: u8,
+            build_id: &'static str,
+        }
+
+        let overlong = OverlongDeviceInfo {
+            fw_major: 1,
+            fw_minor: 2,
+            fw_patch: 3,
+            schema_major: 4,
+            schema_minor: 5,
+            schema_patch: 6,
+            hw_version: 7,
+            capabilities: Capabilities(8),
+            num_gpios: 9,
+            // 65 bytes: one past BUILD_ID_CAPACITY.
+            build_id: "01234567890123456789012345678901234567890123456789012345678901234",
+        };
+        let bytes = to_allocvec(&overlong).unwrap();
+        assert!(from_bytes::<DeviceInfo>(&bytes).is_err());
     }
 
     /// Mirrors the pre-`num_gpios` eight-field [`DeviceInfo`] shape so the
@@ -3680,6 +3797,7 @@ mod tests {
             hw_version: 7,
             capabilities: Capabilities(8),
             num_gpios: 9,
+            build_id: heapless::String::new(),
         };
         let bytes = to_allocvec(&info).unwrap();
         let (legacy, remaining) = take_from_bytes::<LegacyDeviceInfo>(&bytes).unwrap();
@@ -3691,7 +3809,8 @@ mod tests {
         assert_eq!(legacy.schema_patch, 6);
         assert_eq!(legacy.hw_version, 7);
         assert_eq!(legacy.capabilities, Capabilities(8));
-        assert_eq!(remaining, &[9u8]);
+        // `num_gpios`, then the one-byte length of the empty `build_id`.
+        assert_eq!(remaining, &[9u8, 0]);
     }
 
     #[test]
@@ -3712,10 +3831,14 @@ mod tests {
     #[test]
     fn device_info_encodes_fields_in_declared_order() {
         // A plain round-trip is self-consistent by construction: it would
-        // still pass if `num_gpios` were never serialized at all. This test
-        // pins the actual byte image, which is what proves the field is
-        // genuinely on the wire, in the declared position. Every value is
-        // below 128 so each postcard varint occupies exactly one byte.
+        // still pass if a field were never serialized at all. This test pins
+        // the actual byte image, which is what proves each field is genuinely
+        // on the wire, in the declared position. Every numeric value is below
+        // 128 so each postcard varint occupies exactly one byte.
+        //
+        // `build_id` is last, and postcard encodes a string as a varint length
+        // followed by UTF-8 bytes -- `heapless`'s Serialize impl is
+        // `serialize_str`, so neither N nor LenT appears on the wire.
         let info = DeviceInfo {
             fw_major: 1,
             fw_minor: 2,
@@ -3726,13 +3849,24 @@ mod tests {
             hw_version: 7,
             capabilities: Capabilities(8),
             num_gpios: 9,
+            build_id: heapless::String::try_from("ab").unwrap(),
         };
         let bytes = to_allocvec(&info).unwrap();
-        assert_eq!(bytes.as_slice(), &[1u8, 2, 3, 4, 5, 6, 7, 8, 9][..]);
-        assert_eq!(bytes.len(), 9);
-        assert_eq!(*bytes.last().unwrap(), 9);
+        assert_eq!(
+            bytes.as_slice(),
+            &[1u8, 2, 3, 4, 5, 6, 7, 8, 9, 2, b'a', b'b'][..]
+        );
+        assert_eq!(bytes.len(), 12);
         let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
         assert_eq!(info, decoded);
+
+        // An empty build_id costs exactly one byte (the zero length).
+        let empty = DeviceInfo {
+            build_id: heapless::String::new(),
+            ..info
+        };
+        let bytes = to_allocvec(&empty).unwrap();
+        assert_eq!(bytes.as_slice(), &[1u8, 2, 3, 4, 5, 6, 7, 8, 9, 0][..]);
     }
 
     #[test]
@@ -3751,10 +3885,14 @@ mod tests {
                 hw_version: 7,
                 capabilities: Capabilities(8),
                 num_gpios: n,
+                // Empty, so it contributes exactly one trailing zero byte and
+                // `num_gpios` remains the second-to-last byte on the wire.
+                build_id: heapless::String::new(),
             };
             let bytes = to_allocvec(&info).unwrap();
-            assert_eq!(bytes.len(), 9, "unexpected length for num_gpios {n}");
-            assert_eq!(*bytes.last().unwrap(), n);
+            assert_eq!(bytes.len(), 10, "unexpected length for num_gpios {n}");
+            assert_eq!(*bytes.last().unwrap(), 0);
+            assert_eq!(bytes[bytes.len() - 2], n);
             let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
             assert_eq!(decoded.num_gpios, n);
         }

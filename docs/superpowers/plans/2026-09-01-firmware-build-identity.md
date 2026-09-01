@@ -611,11 +611,15 @@ In `crates/pico-de-gallo-firmware/src/main.rs`, immediately after the
 add:
 
 ```rust
-// `build.rs` truncates BUILD_ID, but it hardcodes the capacity because a build
-// script cannot import from the crate it is building. This assertion is the
-// only thing tying the two numbers together: a mismatch is a build failure
-// rather than a runtime `unwrap_or_default()` silently reporting an empty
-// build identity.
+// Bounds the generated value against the wire capacity: a BUILD_ID that
+// would not fit `DeviceInfo::build_id` is a build failure here rather than
+// a runtime `unwrap_or_default()` silently reporting an empty identity.
+//
+// Note what this does NOT do. `build.rs` duplicates the capacity literal
+// because a build script cannot import from the crate it is building, and
+// this assertion does not compare the two literals -- it only checks the
+// value that was actually produced. A build.rs truncating at 128 would
+// still pass here whenever `git describe` happened to emit under 64 bytes.
 const _: () = assert!(BUILD_ID.len() <= pico_de_gallo_internal::BUILD_ID_CAPACITY);
 ```
 
