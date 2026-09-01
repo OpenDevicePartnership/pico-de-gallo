@@ -121,6 +121,17 @@ pub static PICOTOOL_ENTRIES: [embassy_rp::binary_info::EntryAddr; 4] = [
 // auto-generated version information from Cargo.toml
 include!(concat!(env!("OUT_DIR"), "/version.rs"));
 
+// Bounds the generated value against the wire capacity: a BUILD_ID that
+// would not fit `DeviceInfo::build_id` is a build failure here rather than
+// a runtime `unwrap_or_default()` silently reporting an empty identity.
+//
+// Note what this does NOT do. `build.rs` duplicates the capacity literal
+// because a build script cannot import from the crate it is building, and
+// this assertion does not compare the two literals -- it only checks the
+// value that was actually produced. A build.rs truncating at 128 would
+// still pass here whenever `git describe` happened to emit under 64 bytes.
+const _: () = assert!(BUILD_ID.len() <= pico_de_gallo_internal::BUILD_ID_CAPACITY);
+
 /// Hardware revision. Bump when the physical board layout changes.
 #[cfg(feature = "hw-rev1")]
 pub(crate) const HW_VERSION: u8 = 1;
@@ -384,6 +395,10 @@ async fn main(spawner: Spawner) {
 
     // Arm the hardware watchdog as defence-in-depth against handler hangs.
     spawner.must_spawn(watchdog_feeder_task(Watchdog::new(p.WATCHDOG)));
+
+    // Logged unconditionally at boot so an RTT capture records exactly which
+    // image is running, independent of any host-side query.
+    defmt::info!("build {}", BUILD_ID);
 
     // `hw-rev1` is deprecated. Warn on every boot so a device flashed with it
     // is identifiable from RTT alone, not only from the build log. Emitted

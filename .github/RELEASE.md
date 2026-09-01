@@ -118,7 +118,30 @@ component. Adjust the crate set for a non-wire, single-crate release.
    crate that changed. This is no longer generated — an
    empty or missing entry means the release ships undocumented.
 
-5. **Regenerate both lockfiles** so they match the new versions:
+5. **If this release changes `DeviceInfo`'s shape, say so loudly in the
+   CHANGELOG and release notes.** Changing that one type is qualitatively
+   worse than changing any other wire type, and the release process is the
+   last place to catch it.
+
+   postcard-rpc derives each endpoint's key from its response type's
+   schema, so any shape change — appends included — re-keys that endpoint.
+   For every other type that is survivable: `device/info` still answers,
+   and `PicoDeGallo::validate()` reports the version difference as
+   `SchemaMismatch`. For `DeviceInfo` it is not, because the endpoint that
+   re-keys *is* the compatibility probe. The reply is dropped unmatched,
+   `validate()` can only return `Timeout`, and users cannot tell a version
+   skew from a dead board. Bumping the schema version does not make it
+   detectable — the version travels as payload inside the message that is
+   dropped.
+
+   So a `DeviceInfo` change means old hosts and new firmware (and vice
+   versa) cannot diagnose each other, only fail opaquely. Mixing releases
+   across that boundary is not merely unsupported, it is undiagnosable.
+   `pico-de-gallo-internal`'s `device_info_response_key_is_pinned` test
+   fails whenever the key moves, so update the pin in the same commit and
+   treat that as the prompt to write the release note.
+
+6. **Regenerate both lockfiles** so they match the new versions:
    ```bash
    # host workspace (repo root)
    cargo update --workspace --locked
@@ -129,7 +152,7 @@ component. Adjust the crate set for a non-wire, single-crate release.
    If `--locked` refuses because versions moved, drop it for the
    regeneration step, then verify with a locked check below.
 
-6. **Verify both workspaces build locked:**
+7. **Verify both workspaces build locked:**
    ```bash
    cargo check --locked                                   # repo root
    cd crates/pico-de-gallo-firmware && \
@@ -138,36 +161,36 @@ component. Adjust the crate set for a non-wire, single-crate release.
    CI's `lockfile` job gates this; if it fails, the lock is out of
    sync with a `Cargo.toml`.
 
-7. **Commit** everything together with a Conventional Commit, e.g.:
+8. **Commit** everything together with a Conventional Commit, e.g.:
    ```text
    chore(release): internal/lib/hal 0.7.0, ffi/application 0.8.0, ...
    ```
    The version bumps, dep-spec bumps, both `Cargo.lock`s, and the
    per-crate `CHANGELOG.md` edits all belong in one commit.
 
-8. **Open a PR, get CI green, merge to `main`** (rebase or
+9. **Open a PR, get CI green, merge to `main`** (rebase or
    merge-commit — no squash).
 
-9. **Tag the merged commit** — one tag per released component, using
-   the prefixes in the table above:
-   ```bash
-   git checkout main && git pull
-   git tag internal-v0.7.0
-   git tag library-v0.7.0
-   git tag hal-v0.7.0
-   git tag ffi-v0.8.0
-   git tag application-v0.8.0
-   git tag mcp-v0.2.0
-   git tag pyco-v0.5.0
-   git tag firmware-v0.11.0
-   git push upstream --tags
-   ```
-   For crates.io, push `internal-v*` first and wait ~60s for it to
-   index before the dependents' tags, or expect to re-run the failed
-   downstream publish jobs (crates.io indexing race — see
-   `release-crates.yml`).
+10. **Tag the merged commit** — one tag per released component, using
+    the prefixes in the table above:
+    ```bash
+    git checkout main && git pull
+    git tag internal-v0.7.0
+    git tag library-v0.7.0
+    git tag hal-v0.7.0
+    git tag ffi-v0.8.0
+    git tag application-v0.8.0
+    git tag mcp-v0.2.0
+    git tag pyco-v0.5.0
+    git tag firmware-v0.11.0
+    git push upstream --tags
+    ```
+    For crates.io, push `internal-v*` first and wait ~60s for it to
+    index before the dependents' tags, or expect to re-run the failed
+    downstream publish jobs (crates.io indexing race — see
+    `release-crates.yml`).
 
-10. **Watch the release workflows.** Each `*-v*` tag fires its
+11. **Watch the release workflows.** Each `*-v*` tag fires its
     workflow. `release-crates.yml` publishes to crates.io;
     `release-pyco.yml` builds wheels; `release-firmware.yml` builds
     the `.uf2`/`.elf`. Re-run any job that lost the crates.io

@@ -82,7 +82,14 @@ print(pg.ping(123))
 print(pg.version().major, pg.version().minor, pg.version().patch)
 print(pg.device_info().hw_version)
 print(pg.device_info().num_gpios)
+print(pg.device_info().build_id)
 ```
+
+`DeviceInfo.build_id` is the firmware's build-time `git describe` identity, or
+`"unknown"` when git was unavailable. A trailing `-dirty` identifies a build
+from a modified working tree. It is informational only and never controls
+whether validation or another call succeeds; record it when reproducing a
+result from a particular firmware image.
 
 ## GPIO count and the SPI chip select
 

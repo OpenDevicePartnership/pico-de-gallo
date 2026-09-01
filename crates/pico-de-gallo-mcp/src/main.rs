@@ -25,14 +25,20 @@ async fn main() -> anyhow::Result<()> {
     // WARN — never reached the operator it exists to protect. Supply our own
     // fallback instead, used only when `RUST_LOG` is absent.
     //
-    // `error,gallo_mcp=warn`, not a bare `warn`: a bare `warn` would also
-    // enable warnings from rmcp, nusb and postcard-rpc onto the stderr the
+    // `error,gallo_mcp=info`, not a bare `info`: a bare `info` would also
+    // enable events from rmcp, nusb and postcard-rpc onto the stderr the
     // client captures, and that noise has not been assessed. Keeping the
     // leading `error` preserves the global ERROR floor `from_default_env()`
-    // already gave us, so this only ever *adds* the one warning rather than
-    // trading it for the errors we used to surface. `gallo_mcp` has exactly
-    // two tracing call sites, one `warn!` and one `debug!`, so at this level
-    // the only thing it can newly emit is the pin warning itself.
+    // already gave us, so this only ever *adds* this crate's own events
+    // rather than trading them for the errors we used to surface.
+    //
+    // The level is `info`, not `warn`, because this crate deliberately emits
+    // routine-but-important facts at INFO — notably the per-connect line
+    // naming the board's serial, firmware version and build identity, which
+    // is the only record an agent-driven session has of which image it talked
+    // to (issue #159). A `warn` ceiling would silently discard it. Anything
+    // too chatty for an operator's stderr belongs at `debug!` or below, which
+    // this filter still excludes.
     //
     // `try_from_default_env` errors only when `RUST_LOG` is unset or
     // unparseable, so a `RUST_LOG` that is set still wins outright.
@@ -40,7 +46,7 @@ async fn main() -> anyhow::Result<()> {
         .with_writer(std::io::stderr)
         .with_env_filter(
             tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error,gallo_mcp=warn")),
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error,gallo_mcp=info")),
         )
         .init();
 

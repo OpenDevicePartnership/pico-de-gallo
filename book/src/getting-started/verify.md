@@ -4,10 +4,18 @@ Plug the freshly-flashed Pico de Gallo into your host and run:
 
 ```console
 $ gallo version
-Pico de Gallo FW v0.8.0
-Schema v0.4.0
-HW revision 2
-Capabilities: I2C ✓ | SPI ✓ | UART ✓ | GPIO ✓ | PWM ✓ | ADC ✓ | 1-Wire ✓
+╭─────────────┬──────────────────────────────╮
+│ Firmware    │ v0.12.0                      │
+│ Schema      │ v0.8.0                       │
+│ HW revision │ 2                            │
+│ GPIOs       │ 4                            │
+│ Build       │ firmware-v0.12.0-42-g1a2b3c4 │
+╰─────────────┴──────────────────────────────╯
+╭─────┬─────┬──────┬──────┬─────┬─────┬────────╮
+│ I2C │ SPI │ UART │ GPIO │ PWM │ ADC │ 1-Wire │
+├─────┼─────┼──────┼──────┼─────┼─────┼────────┤
+│ ✓   │ ✓   │ ✓    │ ✓    │ ✓   │ ✓   │ ✓      │
+╰─────┴─────┴──────┴──────┴─────┴─────┴────────╯
 ```
 
 If you see that block, you're done. Success 🎉.
@@ -16,10 +24,12 @@ If you see that block, you're done. Success 🎉.
 
 | Field           | What it tells you                                        |
 |-----------------|----------------------------------------------------------|
-| `Pico de Gallo FW v...` | The firmware semver. Lockstepped with the wire crate at release time. |
-| `Schema v...`   | The wire-protocol schema version. The host crate must understand this. |
+| `Firmware`      | The firmware semver. Lockstepped with the wire crate at release time. |
+| `Schema`        | The wire-protocol schema version. The host crate must understand this. |
 | `HW revision`   | `1` if you flashed `hw-rev1` firmware, `2` for `hw-rev2`. |
-| `Capabilities`  | Which peripherals **this firmware build** exposes. A `✗` means the endpoint returns `Unsupported`. |
+| `GPIOs`         | Number of user-controllable GPIO pins this firmware exposes. This is the authoritative bound for a GPIO index and for an SPI chip-select pin. |
+| `Build`         | Firmware build identity from `git describe`. A trailing `-dirty` means the image was built from a modified working tree. Informational only — it never affects whether a command succeeds. Quote this when reporting a bug or reproducing a measurement. |
+| Capability table | Which peripherals **this firmware build** exposes. A `✗` means the endpoint returns `Unsupported`. |
 
 > [!IMPORTANT]
 >

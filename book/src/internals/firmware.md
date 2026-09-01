@@ -41,6 +41,41 @@ handler deadlock.
 reset the chip while you single-step. The watchdog is the same on both
 `hw-rev1` and `hw-rev2` (no rev-specific code).
 
+### Build identity
+
+`crates/pico-de-gallo-firmware/build.rs` runs
+
+```text
+git describe --always --dirty --tags --match firmware-v*
+```
+
+and emits the result as a `BUILD_ID` constant, which `main()` logs at boot over
+`defmt` and the `device/info` handler returns.
+
+Every flag matters, and each has a *silent* failure mode:
+
+| Flag | Removing it causes |
+|---|---|
+| `--tags` | The `firmware-v*` tags are a mix of annotated and lightweight. Without this, `git describe` sees only annotated tags and resolves hundreds of commits too far back. |
+| `--match firmware-v*` | Describe picks the nearest tag in any namespace, returning an `application-v*` description. |
+| `--always` | Describe fails outright when no matching tag is reachable, e.g. in a shallow CI clone. |
+| `--dirty` | The locally-modified marker is lost — the single most useful part for a developer mid-bisect. |
+
+When git is unavailable, exits non-zero, or there is no repository, the script
+emits `"unknown"` and a `cargo:warning`. The build still succeeds, so a source
+tarball remains buildable. Values longer than 64 bytes are truncated on a
+UTF-8 character boundary.
+
+The script re-runs on **every** build, by design. The pre-existing
+`rerun-if-changed=memory.x` narrows re-runs to a single file, so without an
+unconditional trigger the embedded identity would go stale across incremental
+builds and keep reporting a clean tree for a dirty one. A stale identity is
+worse than none, because it confirms a wrong conclusion rather than merely
+failing to prevent one.
+
+Release workflows must fetch tags (`fetch-depth: 0`), or `git describe`
+degrades to a bare commit hash.
+
 ## USB descriptors
 
 The device enumerates as VID `045e` / PID `067d` with

@@ -5,6 +5,46 @@ All notable changes to `pico-de-gallo-internal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-09-01
+
+### Breaking Changes
+
+- Appended `DeviceInfo::build_id`, a `heapless::String<64>` carrying the
+  firmware's `git describe --always --dirty --tags --match firmware-v*`
+  output, or `"unknown"` when git was unavailable. The field is
+  informational and is never a compatibility gate: `validate()` ignores
+  it. Closes #159.
+
+  This is append-only on the wire, but the encoding is not the
+  compatibility axis that matters. postcard-rpc derives each endpoint's
+  key from the response type's schema, so changing `DeviceInfo` also
+  changed the `device/info` endpoint key. A peer built against the other
+  shape replies under the other key, the dispatcher drops the unmatched
+  frame, and the call never returns. It is not a decode error — postcard
+  is never reached — so `validate()` reports it as a `Timeout` after
+  `DEVICE_INFO_TIMEOUT`, misattributed to an unresponsive board.
+
+  **Schema 0.7 and 0.8 components must not be mixed, and a mixed pair
+  cannot diagnose itself.** For any other wire type a version skew is
+  self-describing: `device/info` still answers and `validate()` returns
+  `SchemaMismatch`. Not here — the endpoint that re-keyed *is* the
+  compatibility probe, so the schema numbers naming the incompatibility
+  are sealed inside the dropped message. Bumping the schema version does
+  not make this detectable; the version is payload, not key. `DeviceInfo`
+  is a blind spot for its own versioning mechanism. `gallo version` still
+  works across such a pair, because `VersionInfo`'s schema and key are
+  deliberately held stable.
+
+### Added
+
+- `BUILD_ID_CAPACITY` (64) and the `DeviceInfo::build_id()` accessor, so
+  host crates never need to name `heapless` themselves.
+- `device_info_response_key_is_pinned` and
+  `version_response_key_is_pinned`, which hard-code the postcard-rpc
+  `RESP_KEY` bytes for `device/info` and `version`. Any future change to
+  either response type's shape now fails the test suite instead of
+  silently re-keying the endpoint and producing a hang in the field.
+
 ## [0.7.0] — 2026-08-27
 
 ### Breaking Changes

@@ -5,6 +5,34 @@ All notable changes to `pico-de-gallo-lib` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] — 2026-09-01
+
+### Breaking Changes
+
+- Requires firmware reporting schema 0.8. Because the schema 0.8 change was
+  to `DeviceInfo` itself, a 0.9.0 host against schema 0.7 firmware does not
+  return `SchemaMismatch` — `device/info` is re-keyed, the reply is dropped
+  unmatched, and `validate()` can only return `Timeout`. See the rewritten
+  "Wire shape" note in `PicoDeGallo::validate()`'s documentation.
+
+### Added
+
+- Re-exported `BUILD_ID_CAPACITY`; `DeviceInfo::build_id()` exposes the
+  firmware build identity without requiring callers to depend on `heapless`.
+  `validate()` returns it for diagnostics but deliberately never treats it as
+  a compatibility gate. Closes #159.
+
+### Changed
+
+- `ValidateError::Timeout`'s `Display` no longer advises a retry or a
+  replug. A `device/info` timeout is at least as likely to be a
+  host/firmware build mismatch: postcard-rpc derives each endpoint key from
+  the response type's schema, so peers built from different trees answer
+  under different keys and the reply is dropped as unmatched rather than
+  decoded. Nothing fails, so nothing is reported — the call simply never
+  completes. The message now names both causes and says plainly that the
+  host cannot tell them apart. Refs #159.
+
 ## [0.8.0] — 2026-08-27
 
 ### Added

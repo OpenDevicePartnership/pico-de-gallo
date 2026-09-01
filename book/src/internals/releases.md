@@ -60,19 +60,31 @@ That means coordinating:
 > Nothing enforces wire coupling for you. If a protocol change lands without its
 > matching host and firmware version bumps, users will feel it.
 
-### Schema 0.7 is on `main` but not yet published
+### Schema 0.8 changed `DeviceInfo`, so 0.7 pairs fail opaquely
 
-`main` carries schema **0.7**: `SpiError` gained `InvalidCsPin`,
-`CsPinUnavailable`, and `CsPinMonitored`, `DeviceInfo` gained a final
-`num_gpios` field, and `I2cError` gained `ZeroLengthWrite`. The lockstep
-version bump for those changes has landed, so `pico-de-gallo-internal` reports
-0.7 honestly.
+Schema **0.8** appended `build_id` to `DeviceInfo`. That is an append in the
+encoding, but `DeviceInfo` is not an ordinary wire type: postcard-rpc derives
+each endpoint's key from its response type's schema, so changing it re-keyed
+`device/info` itself.
 
-The newest *published* release is still schema 0.6. That is a normal,
-detectable mismatch rather than a hazard: a host built from `main` and a
-released firmware disagree on the reported schema, so `validate()` returns
-`SchemaMismatch` and the two refuse to talk. Build both sides from the same
-commit, or keep both on a published release.
+The consequence is that a schema 0.8 host and schema 0.7 firmware — or the
+reverse — cannot diagnose each other. The peer replies under the other key,
+the dispatcher drops the unmatched frame, and `validate()` returns `Timeout`
+rather than `SchemaMismatch`. The schema numbers that would have named the
+problem are inside the message that was dropped, and no version bump can
+surface them, because the version is payload rather than key.
+
+So this particular boundary does **not** produce the normal, self-describing
+failure documented below. It looks exactly like an unresponsive board. If
+`gallo` hangs or times out against a board you believe is healthy, suspect a
+0.7/0.8 skew before you suspect the hardware.
+
+`gallo version` still works across the pair and is the tool to reach for: it
+reads the `version` endpoint, whose `VersionInfo` schema is deliberately held
+stable precisely so one diagnostic survives a `device/info` re-key.
+
+The fix is the usual one — build both sides from the same release. Schema 0.7
+and 0.8 firmware and host components must not be mixed.
 
 ## How users check compatibility
 

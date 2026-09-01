@@ -1,6 +1,6 @@
 [package]
 name = "pico-de-gallo-internal"
-version = "0.7.0"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.90"
 description = "Internal library for Pico de Gallo. Do not use!"
@@ -15,7 +15,11 @@ documentation = "https://docs.rs/pico-de-gallo-internal"
 serde = { version = "1.0.228", default-features = false, features = ["derive"] }
 postcard = { version = "1", default-features = false }
 postcard-rpc = "0.12"
-postcard-schema = { version = "0.2.5", features = ["derive"] }
+postcard-schema = { version = "0.2.5", features = ["derive", "heapless-v0_9"] }
+# Bounded string for `DeviceInfo::build_id`, so the field needs no `use-std`
+# split. 0.9.3 is already in both lockfiles via postcard-rpc, and is already a
+# direct firmware dependency, so this introduces no new major to either graph.
+heapless = { version = "0.9", default-features = false, features = ["serde"] }
 
 [dev-dependencies]
 postcard = { version = "1", features = ["alloc"] }

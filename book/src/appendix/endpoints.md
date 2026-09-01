@@ -24,7 +24,7 @@ from.
 |---------------------------|--------------------------------------------------------------|
 | `ping`                    | Echo a `u32`. Useful for liveness checks.                    |
 | `version`                 | Firmware version triple (major / minor / patch).             |
-| `device/info`             | Firmware version + schema version + capability bitfield + runtime GPIO count. |
+| `device/info`             | Firmware version + schema version + capability bitfield + runtime GPIO count + firmware build identity. |
 | `i2c/read`                | Read N bytes from a target address.                          |
 | `i2c/write`               | Write bytes to a target address.                             |
 | `i2c/write-read`          | Write then read on the same target (repeated start).         |

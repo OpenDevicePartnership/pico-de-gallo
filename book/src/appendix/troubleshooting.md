@@ -40,6 +40,28 @@ to match. See [Releases & Compatibility](../internals/releases.md).
 The firmware is too old to answer `device/info`. Re-flash a
 recent firmware build.
 
+### `DeviceInfoTimeout` (status code −75)
+
+`device/info` produced no answer within the 300-second bound. The
+obvious cause is a board that stopped responding, but it is not the
+only one, and the host cannot tell them apart.
+
+postcard-rpc derives every endpoint's key from the *schema of its
+response type*. Changing the shape of `DeviceInfo` — adding, removing,
+renaming, or retyping a field — therefore changes the `device/info`
+key. If the host and the firmware were built from different trees, the
+firmware answers under the other side's key, the receiving dispatcher
+finds no match, and the frame is dropped without ever being decoded.
+No error is raised, because nothing failed; the call simply never
+completes. Retrying or replugging cannot help, since the mismatch is
+fixed at compile time.
+
+If you are running a development build of either side, rebuild both
+from the same tree. `gallo version` still works in this situation: it
+bounds `device/info` at five seconds and then falls back to the legacy
+`version` endpoint, whose response type is unchanged and therefore
+still matches.
+
 ## Peripheral Errors
 
 ### `Unsupported` (status code −65)

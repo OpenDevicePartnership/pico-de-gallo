@@ -5,6 +5,15 @@ All notable changes to `gallo-mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] — 2026-09-01
+
+### Added
+
+- `status` now always serializes a `build_id` key (`null` until a board is
+  reached), and successful connections log the serial, firmware version, and
+  build identity at `info` level. The default filter now enables that event;
+  `device_info` also carries the new wire field. Closes #159.
+
 ## [0.3.0] — 2026-08-27
 
 ### Added

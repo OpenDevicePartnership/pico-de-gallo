@@ -73,7 +73,7 @@ pub use pico_de_gallo_internal::{
 pub use pico_de_gallo_internal::{
     AdcError, GpioError, I2cBatchError, I2cError, OneWireError, PwmError, SpiBatchError, SpiError, UartError,
 };
-pub use pico_de_gallo_internal::{MAX_BATCH_OPS, MAX_TRANSFER_SIZE, NUM_GPIOS};
+pub use pico_de_gallo_internal::{BUILD_ID_CAPACITY, MAX_BATCH_OPS, MAX_TRANSFER_SIZE, NUM_GPIOS};
 pub use pico_de_gallo_internal::{
     encode_i2c_batch_ops, encode_spi_batch_ops, i2c_batch_response_len, spi_batch_response_len,
 };
@@ -216,9 +216,11 @@ impl core::fmt::Display for ValidateError {
             Self::Comms(e) => write!(f, "communication error: {e:?}"),
             Self::Timeout => write!(
                 f,
-                "device/info did not respond within 300 seconds — retry, or \
-                 reconnect the board (unplug and replug) if it stays \
-                 unresponsive"
+                "device/info did not respond within 300 seconds — either \
+                 the board is unresponsive, or host and firmware were built \
+                 from different trees, in which case the response is sent \
+                 under a different endpoint key and silently dropped. This \
+                 host cannot tell the two apart"
             ),
             Self::LegacyFirmware => write!(
                 f,
@@ -1084,7 +1086,8 @@ impl PicoDeGallo {
     }
 
     /// Get extended device information including firmware version, schema
-    /// (wire protocol) version, hardware revision, and peripheral capabilities.
+    /// (wire protocol) version, hardware revision, peripheral capabilities,
+    /// and the informational firmware build identity.
     pub async fn device_info(&self) -> Result<DeviceInfo, PicoDeGalloError<Infallible>> {
         Ok(self.client.send_resp::<GetDeviceInfo>(&()).await?)
     }
@@ -1127,11 +1130,53 @@ impl PicoDeGallo {
     /// callers race on a cold cache, they therefore all observe the one
     /// authoritative winner rather than each observing its own response.
     ///
-    /// Note: during the schema freeze on this branch, a matching reported
-    /// schema version does not prove wire-*shape* compatibility, because
-    /// `DeviceInfo` changed while both peers still report 0.6.1. This
-    /// call bounds how long you can wait and checks the reported numbers;
-    /// it cannot make those numbers trustworthy.
+    /// This checks the reported numbers; it cannot make them trustworthy,
+    /// and there are two distinct ways they can mislead.
+    ///
+    /// Wire *shape*: a matching schema version does not prove shape
+    /// compatibility, and for one specific type this call cannot report
+    /// the difference at all. postcard-rpc derives each endpoint's key
+    /// from the response type's schema, so changing a type's shape —
+    /// appends included — silently re-keys its endpoint. A peer built
+    /// against the other shape replies under the other key, the
+    /// dispatcher drops the unmatched frame, and the call never
+    /// returns.
+    ///
+    /// Where that bites depends on *which* type changed. If the change
+    /// is to any type other than [`DeviceInfo`] — appending an
+    /// `I2cError` variant, say — then `device/info` still answers, its
+    /// reply still decodes, the schema minors still differ, and this
+    /// call correctly returns [`ValidateError::SchemaMismatch`]. Schema
+    /// versioning works as designed.
+    ///
+    /// If the change is to [`DeviceInfo`] itself, `device/info` is the
+    /// endpoint that re-keys, so the probe that would have reported the
+    /// mismatch is the one that breaks. The schema numbers describing
+    /// the incompatibility are sealed inside the message that is
+    /// dropped, and no version bump can surface them: the version is
+    /// payload, not key. This call can then only return
+    /// [`ValidateError::Timeout`] after [`DEVICE_INFO_TIMEOUT`],
+    /// indistinguishable from a board that genuinely stopped answering.
+    /// `DeviceInfo` is, in that sense, a blind spot for its own
+    /// versioning mechanism.
+    ///
+    /// This is not confined to development trees. Any two *released*
+    /// versions whose `DeviceInfo` shapes differ pair this way — a
+    /// schema 0.8 host against schema 0.7 firmware reports a timeout,
+    /// not a mismatch. When a board is unexpectedly unresponsive to
+    /// this call, a version skew is as likely an explanation as a
+    /// hardware fault. `gallo version` still works across such a pair,
+    /// because [`VersionInfo`]'s schema and key are deliberately held
+    /// stable.
+    ///
+    /// Wire *behaviour*: the schema version is derived from the wire
+    /// crate's package version, so it is intended to track wire-type
+    /// changes, not handler changes. Two firmware builds can report
+    /// identical versions and still frame the bus differently. To
+    /// identify the image, read
+    /// [`DeviceInfo::build_id()`](method@pico_de_gallo_internal::DeviceInfo::build_id).
+    /// It is informational only and never affects the outcome of this
+    /// call.
     ///
     /// # Errors
     ///
@@ -1883,6 +1928,7 @@ mod tests {
             hw_version: 1,
             capabilities: Capabilities::NONE,
             num_gpios: NUM_GPIOS as u8,
+            build_id: "test-build".try_into().unwrap(),
         }
     }
 
@@ -1890,6 +1936,26 @@ mod tests {
     fn check_schema_compatible_accepts_matching_versions() {
         let info = make_device_info(SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR);
         check_schema_compatible(&info).expect("matching versions must validate");
+    }
+
+    #[test]
+    fn check_schema_compatible_ignores_build_id() {
+        // `build_id` is informational: it names the image, it does not gate
+        // compatibility. If this ever starts failing, someone has wired the
+        // field into the compatibility policy, which would force a dishonest
+        // schema bump for every behavioural change (issue #159).
+        for id in ["", "unknown", "firmware-v0.11.0-27-gdeadbee-dirty"] {
+            let mut info = make_device_info(SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR);
+            info.build_id = id.try_into().unwrap();
+            check_schema_compatible(&info).unwrap_or_else(|e| panic!("build_id {id:?} must not gate: {e}"));
+        }
+    }
+
+    #[test]
+    fn device_info_exposes_build_id_accessor() {
+        let mut info = make_device_info(SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR);
+        info.build_id = "firmware-v0.11.0".try_into().unwrap();
+        assert_eq!(info.build_id(), "firmware-v0.11.0");
     }
 
     #[test]
@@ -1977,8 +2043,22 @@ mod tests {
         let s = format!("{}", ValidateError::Timeout);
         assert!(s.contains("device/info"), "got: {s}");
         assert!(s.contains("300"), "got: {s}");
+    }
+
+    /// A `device/info` timeout has two indistinguishable causes: a board
+    /// that stopped answering, and a host/firmware pair built from
+    /// different trees, whose differing endpoint keys make the reply be
+    /// dropped as unmatched rather than decoded. The message must name
+    /// both and must not advise a retry, which cannot help with the
+    /// second.
+    #[test]
+    fn validate_error_timeout_display_names_build_mismatch() {
+        let s = format!("{}", ValidateError::Timeout);
+        assert!(s.contains("endpoint key"), "got: {s}");
+        assert!(s.contains("different trees"), "got: {s}");
         let lower = s.to_lowercase();
-        assert!(lower.contains("retry") || lower.contains("reconnect"), "got: {s}");
+        assert!(!lower.contains("retry"), "got: {s}");
+        assert!(!lower.contains("replug"), "got: {s}");
     }
 
     fn all_validate_errors() -> Vec<ValidateError> {

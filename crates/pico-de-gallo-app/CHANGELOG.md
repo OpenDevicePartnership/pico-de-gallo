@@ -5,6 +5,34 @@ All notable changes to `gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] — 2026-09-01
+
+### Changed
+
+- `gallo version` now renders summary and capability tables, including the
+  runtime GPIO count and the firmware build identity. Closes #159.
+
+### Fixed
+
+- `gallo version` no longer hangs indefinitely against a firmware built
+  from a different tree. `PicoDeGallo::device_info` carries no timeout of
+  its own, so the existing fallback to the legacy `version` endpoint was
+  unreachable: no `Err` was ever produced. The call is now bounded at five
+  seconds — `device/info` has no user-controllable work, unlike the
+  `spi_batch` worst case that sizes the library's 300-second bound — and an
+  elapsed timeout takes the fallback path. `VersionInfo`'s schema is
+  unchanged, so the legacy endpoint still matches across the mismatch.
+  Refs #159.
+
+- The firmware-validation failure message no longer advises retrying or
+  replugging on a `device/info` timeout. postcard-rpc keys each endpoint by
+  its response type's schema, so a host and firmware built from different
+  trees exchange `device/info` under different keys and the reply is dropped
+  as unmatched rather than decoded — a compile-time mismatch that no retry
+  can fix. The message now names both that cause and a genuinely
+  unresponsive board, and states that the host cannot distinguish them.
+  Refs #159.
+
 ## [0.9.0] — 2026-08-27
 
 ### Breaking Changes

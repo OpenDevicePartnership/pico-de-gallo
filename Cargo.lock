@@ -671,7 +671,7 @@ dependencies = [
 
 [[package]]
 name = "gallo"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "clap",
  "color-eyre",
@@ -683,7 +683,7 @@ dependencies = [
 
 [[package]]
 name = "gallo-mcp"
-version = "0.3.0"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -786,6 +786,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
 dependencies = [
  "hash32 0.3.1",
+ "serde_core",
  "stable_deref_trait",
 ]
 
@@ -1148,7 +1149,7 @@ checksum = "2ee67f1008b1ba2321834326597b8e186293b049a023cdef258527550b9935b4"
 
 [[package]]
 name = "pico-de-gallo-ffi"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "cbindgen",
  "pico-de-gallo-lib",
@@ -1157,7 +1158,7 @@ dependencies = [
 
 [[package]]
 name = "pico-de-gallo-hal"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
  "embedded-graphics",
  "embedded-hal",
@@ -1176,8 +1177,9 @@ dependencies = [
 
 [[package]]
 name = "pico-de-gallo-internal"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
+ "heapless 0.9.3",
  "postcard",
  "postcard-rpc",
  "postcard-schema",
@@ -1186,7 +1188,7 @@ dependencies = [
 
 [[package]]
 name = "pico-de-gallo-lib"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "embedded-hal",
  "nusb",
@@ -1278,6 +1280,7 @@ version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9475666d89f42231a0a57da32d5f6ca7f9b5cd4c335ea1fe8f3278215b7a21ff"
 dependencies = [
+ "heapless 0.9.3",
  "postcard-derive",
  "serde",
 ]
@@ -1348,7 +1351,7 @@ dependencies = [
 
 [[package]]
 name = "pyco-de-gallo"
-version = "0.5.0"
+version = "0.6.0"
 dependencies = [
  "pico-de-gallo-lib",
  "pyo3",

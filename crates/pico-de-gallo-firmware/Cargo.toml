@@ -1,6 +1,6 @@
 [package]
 name = "pico-de-gallo-firmware"
-version = "0.11.0"
+version = "0.12.0"
 edition = "2024"
 license = "MIT"
 rust-version = "1.90"
@@ -41,7 +41,7 @@ embedded-hal-async = "1.0"
 embedded-io-async = "0.7.0"
 heapless = "0.9"
 panic-probe = "1.0.0"
-pico-de-gallo-internal = { version = "0.7.0", path = "../pico-de-gallo-internal" }
+pico-de-gallo-internal = { version = "0.8.0", path = "../pico-de-gallo-internal" }
 postcard = { version = "1", default-features = false }
 postcard-rpc = { version = "0.12",   features = ["embassy-usb-0_5-server"] }
 static_cell = "2.1.1"

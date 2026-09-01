@@ -5,7 +5,16 @@ All notable changes to `pico-de-gallo-firmware` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.12.0] — 2026-09-01
+
+### Added
+
+- The build script now derives `BUILD_ID` from
+  `git describe --always --dirty --tags --match firmware-v*`, falling back to
+  `"unknown"` and truncating to 64 bytes on a character boundary. The firmware
+  logs it at boot and returns it as the final `DeviceInfo` field. The script
+  reruns on every build so incremental builds cannot retain stale identity.
+  Closes #159.
 
 ### Changed
 

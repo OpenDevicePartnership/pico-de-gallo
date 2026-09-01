@@ -57,9 +57,12 @@ $ gallo list
 Serial Number         Bus    Address
 E6633861A34B8C24      2      14
 E6633861A34B9F17      1      8
+```
 
-$ gallo -s E6633861A34B9F17 version
-Firmware version: 0.1.0
+Then target one of those serials explicitly:
+
+```bash
+gallo -s E6633861A34B9F17 version
 ```
 
 ### `-f, --format hex|binary|ascii`
@@ -93,11 +96,23 @@ E6633861A34B8C24      2      14
 
 ### `version`
 
-Queries the connected board for its firmware version.
+Queries the connected board for firmware, schema, hardware revision, runtime
+GPIO count, build identity, and capabilities.
 
 ```console
 $ gallo version
-Firmware version: 0.1.0
+╭─────────────┬──────────────────────────────╮
+│ Firmware    │ v0.12.0                      │
+│ Schema      │ v0.8.0                       │
+│ HW revision │ 2                            │
+│ GPIOs       │ 4                            │
+│ Build       │ firmware-v0.12.0-42-g1a2b3c4 │
+╰─────────────┴──────────────────────────────╯
+╭─────┬─────┬──────┬──────┬─────┬─────┬────────╮
+│ I2C │ SPI │ UART │ GPIO │ PWM │ ADC │ 1-Wire │
+├─────┼─────┼──────┼──────┼─────┼─────┼────────┤
+│ ✓   │ ✓   │ ✓    │ ✓    │ ✓   │ ✓   │ ✓      │
+╰─────┴─────┴──────┴──────┴─────┴─────┴────────╯
 ```
 
 ### `ping`

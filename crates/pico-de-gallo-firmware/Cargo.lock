@@ -805,6 +805,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
 dependencies = [
  "hash32 0.3.1",
+ "serde_core",
  "stable_deref_trait",
 ]
 
@@ -1029,7 +1030,7 @@ checksum = "5be167a7af36ee22fe3115051bc51f6e6c7054c9348e28deb4f49bd6f705a315"
 
 [[package]]
 name = "pico-de-gallo-firmware"
-version = "0.11.0"
+version = "0.12.0"
 dependencies = [
  "cortex-m",
  "cortex-m-rt",
@@ -1057,8 +1058,9 @@ dependencies = [
 
 [[package]]
 name = "pico-de-gallo-internal"
-version = "0.7.0"
+version = "0.8.0"
 dependencies = [
+ "heapless 0.9.3",
  "postcard",
  "postcard-rpc",
  "postcard-schema",
@@ -1168,6 +1170,7 @@ version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9475666d89f42231a0a57da32d5f6ca7f9b5cd4c335ea1fe8f3278215b7a21ff"
 dependencies = [
+ "heapless 0.9.3",
  "postcard-derive",
  "serde",
 ]

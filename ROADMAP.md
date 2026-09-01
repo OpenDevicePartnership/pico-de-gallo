@@ -156,6 +156,7 @@ Work that shipped without ever having a roadmap row.
 | MCP server (`gallo-mcp`)             | [#85](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/85)   | Per-call board selection by serial number                                                                                                                              |
 | WebUSB descriptors                   | [#87](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/87)   | Browser-reachable without a driver install                                                                                                                             |
 | `i2c/batch` atomicity                | [#128](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/128) | One `transaction()`; repeated START on direction change. Framing not yet analyser-verified — [#160](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/160) |
+| Firmware build identity              | [#159](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/159) | `DeviceInfo::build_id`; surfaced by the CLI, MCP, C FFI, and Python; informational, never a compatibility gate                              |
 | Zephyr module                        | —                                                                         | See [Workstream B](#b-zephyr-module)                                                                                                                                   |
 | `hw-rev1` / `hw-rev2` feature gating | —                                                                         | `hw-rev2` became the default in `d1167c8`                                                                                                                              |
 | `system/reset-subscriptions`         | —                                                                         | Recovers GPIO subscriptions orphaned by a host crash                                                                                                                   |
@@ -239,18 +240,8 @@ which buried it. It belongs here until the ceiling is enforced.
 |------------------------------------------------------------|---------------------------------------------------------------------------|
 | Watchdog proves executor liveness, not dispatcher progress | [#157](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/157) |
 | Real payload ceiling unenforced on every host surface      | [#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158) |
-| Firmware build identity observable in `device/info`        | [#159](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/159) |
 | Verify `i2c/batch` repeated START framing on an analyser   | [#160](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/160) |
 | `SPI_CS` pin cannot be used as a chip select               | [#99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99)   |
-
-[#159](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/159)
-belongs in this workstream rather than in tooling, because every fix
-above is confirmed by a board-attached hardware test. `validate()`
-cannot currently distinguish two firmware builds that report the same
-version but behave differently, so a test can be run against the wrong
-image without anyone noticing — which has already happened once. Until
-build identity is observable, the evidence for closing any item here
-is weaker than it looks.
 
 ---
 
