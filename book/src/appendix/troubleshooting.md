@@ -108,6 +108,24 @@ source of confusion:
   tests, 4096-byte TX-only and 3072-byte full-duplex requests passed their local
   checks, reached the transport, and failed `-ECOMM`.
 
+I²C has separate measured results. A read of 1014 bytes after a one-byte write
+returned exactly 1014 bytes; the tested lengths at and above 1015 returned the
+host-side response decode error `Postcard(DeserializeUnexpectedEnd)` rather
+than wedging the dispatcher. No failing write request length was observed
+through 4096 bytes: each request crossed USB intact, was decoded, initiated a
+bus transaction and returned the expected address NACK. Because the address was
+unpopulated, no payload byte was clocked. This verifies request framing at 4096,
+not successful bus-level clocking of a 4096-byte payload. No I²C hang was found
+in the tested range, but that does not prove none exists.
+
+Only the one-byte-write row of the I²C write/read frontier was measured. The
+available target rejected longer writes. Reading the 1014-byte read edge and
+the 4096-byte request-framing result as independent per-direction limits is an
+**inference from mechanism, not measurement**: a shared roughly 1015-byte
+framing budget is hard to reconcile with a 4096-byte write request being
+delivered, decoded and initiating a bus transaction, while the read failure is
+in response decoding and write data travels in the request.
+
 Split larger transfers. Batch operations still occupy one framed request and
 response; batching does not make an otherwise undeliverable aggregate fit.
 
@@ -118,7 +136,13 @@ containment, not a duplex-capacity guarantee: TX-only 1013 succeeded, TX-only
 needing a documented-safe duplex size must use 512 bytes or less. Do not infer
 1013-byte duplex support from `PDG_SPI_MAX_BUFFER`.
 
-The Zephyr limit does not protect CLI, Rust, C, Python, or MCP callers. In the
+The Zephyr I²C driver similarly rejects reads above 1014 bytes and writes above
+4096 bytes. Unlike SPI's 1015-byte dispatcher wedge, exceeding the measured I²C
+read edge produced a clean error. The 4096-byte write limit is still only the
+largest representable request-framing value tested, not a demonstrated
+bus-payload length or a measured ceiling.
+
+These Zephyr limits do not protect CLI, Rust, C, Python, or MCP callers. In the
 reproduced SPI tests the device resumed after USB re-enumeration (`usbipd
 detach`/attach on Windows/WSL). This is an observation, not proof that detach
 cancels the handler. On Linux/macOS reconnect the cable or use USB

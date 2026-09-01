@@ -48,7 +48,7 @@ config HEAP_MEM_POOL_ADD_SIZE_PDG_I2C
 	  into one contiguous payload with k_malloc() so that the group reaches
 	  the bus as a single transaction, which is what i2c_burst_write() and
 	  every hand-rolled gather write require. At most one such buffer is live
-	  at a time, of at most PDG_I2C_MAX_BUFFER (4096) bytes, so 8192 leaves a
+	  at a time, of at most PDG_I2C_MAX_WRITE (4096) bytes, so 8192 leaves a
 	  large margin over the allocation plus sys_heap per-chunk metadata, the
 	  heap header and alignment padding.
 
