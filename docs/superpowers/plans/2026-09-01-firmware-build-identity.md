@@ -42,8 +42,9 @@ Read these once before Task 1. They are repo policy from `AGENTS.md`, and violat
 | `crates/pico-de-gallo-firmware/src/handlers/info.rs` | Populate `build_id` in the handler | 2 |
 | `crates/pico-de-gallo-lib/src/lib.rs` | Test fixtures; `validate()` doc; the "never a gate" regression test | 2, 3 |
 | `crates/pico-de-gallo-app/src/lib.rs` | `render_device_info` (pure, testable) + `version` printing it | 4 |
-| `crates/pico-de-gallo-mcp/src/device.rs` | `StatusResult.build_id` | 5 |
+| `crates/pico-de-gallo-mcp/src/device.rs` | `StatusResult.build_id`; `fill_status_from_device` extraction | 5 |
 | `crates/pico-de-gallo-mcp/src/lib.rs` | Connect-time `tracing` line | 5 |
+| `crates/pico-de-gallo-mcp/src/main.rs` | Default `EnvFilter` raised to `info` so that line is emitted | 5 |
 | `crates/pico-de-gallo-ffi/src/lib.rs` | `GalloDeviceInfo.build_id` as `char[65]` | 6 |
 | `crates/pyco-de-gallo/src/lib.rs` | Python `DeviceInfo.build_id` | 7 |
 | `book/src/**`, `crates/*/CHANGELOG.md`, `AGENTS.md` | Documentation parity (§15.1) | 8 |
@@ -1240,6 +1241,7 @@ EOF
 **Files:**
 - Modify: `crates/pico-de-gallo-mcp/src/device.rs` (`StatusResult`, `build_status`, `status`)
 - Modify: `crates/pico-de-gallo-mcp/src/lib.rs` (`connect`)
+- Modify: `crates/pico-de-gallo-mcp/src/main.rs` (default `EnvFilter`)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1266,17 +1268,56 @@ In `crates/pico-de-gallo-mcp/src/device.rs`, in the existing `mod tests` block
         assert!(out.build_id.is_none());
         let json = serde_json::to_value(&out).unwrap();
         assert!(json.get("build_id").is_some(), "field must still be present");
+        assert!(
+            json["build_id"].is_null(),
+            "build_id must serialize as null, not be omitted"
+        );
     }
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+Also add a test for the extracted population helper introduced in Step 5a.
+`status` can only reach that logic through `connect()`, i.e. with a physical
+board attached, so without this test the population is completely uncovered:
+deleting the `build_id` assignment leaves the whole suite green.
+
+```rust
+    #[test]
+    fn fill_status_from_device_populates_every_device_field() {
+        let mut out = build_status(vec![Some("ABC123".to_string())], None, None);
+        let info = DeviceInfo {
+            fw_major: 0,
+            fw_minor: 11,
+            fw_patch: 0,
+            schema_major: 0,
+            schema_minor: 7,
+            schema_patch: 0,
+            hw_version: 2,
+            capabilities: pico_de_gallo_lib::Capabilities::NONE,
+            num_gpios: pico_de_gallo_lib::NUM_GPIOS as u8,
+            build_id: "firmware-v0.11.0-27-gdeadbee-dirty".try_into().unwrap(),
+        };
+        fill_status_from_device(&mut out, Some("ABC123"), &info);
+        assert_eq!(out.serial_number.as_deref(), Some("ABC123"));
+        assert_eq!(out.firmware_version.as_deref(), Some("0.11.0"));
+        assert_eq!(out.schema_major, Some(0));
+        assert_eq!(out.schema_minor, Some(7));
+        assert_eq!(
+            out.build_id.as_deref(),
+            Some("firmware-v0.11.0-27-gdeadbee-dirty")
+        );
+    }
+```
+
+- [ ] **Step 2: Run the tests to verify they fail**
 
 Run:
 ```bash
 cd /home/balbi/workspace/pico-de-gallo
 cargo test -p gallo-mcp status_result_ 2>&1 | tail -10
+cargo test -p gallo-mcp fill_status_from_device 2>&1 | tail -10
 ```
-Expected: FAIL to compile — `StatusResult` has no field `build_id`.
+Expected: FAIL to compile — `StatusResult` has no field `build_id`, and
+`fill_status_from_device` does not exist.
 
 - [ ] **Step 3: Add the field to `StatusResult`**
 
@@ -1299,17 +1340,48 @@ as the last field, after `schema_minor: None,`:
         build_id: None,
 ```
 
-- [ ] **Step 5: Populate it in the `status` tool**
+- [ ] **Step 5a: Extract the device-field population into a pure function**
 
-In the same file, in the `status` method, inside the `Ok(dev) => { ... }` arm,
-add after the `out.schema_minor = Some(info.schema_minor);` line:
+The five assignments inside `status`'s `Ok(dev)` arm sit behind `connect()`,
+so they can only be exercised with a physical board. Extract them so they are
+unit-testable. Add above the `#[tool_router(...)] impl GalloMcp` block in
+`crates/pico-de-gallo-mcp/src/device.rs`:
 
 ```rust
-                    out.build_id = Some(info.build_id().to_string());
+/// Fill in the fields of a `status` response that require a reached board.
+///
+/// Split out from `status` so it is unit-testable: the caller needs a live
+/// `connect()` and therefore a physical board, which means anything left
+/// inline there has no automated coverage at all.
+fn fill_status_from_device(out: &mut StatusResult, serial: Option<&str>, info: &DeviceInfo) {
+    out.serial_number = serial.map(str::to_string);
+    out.firmware_version = Some(format!(
+        "{}.{}.{}",
+        info.fw_major, info.fw_minor, info.fw_patch
+    ));
+    out.schema_major = Some(info.schema_major);
+    out.schema_minor = Some(info.schema_minor);
+    out.build_id = Some(info.build_id().to_string());
+}
+```
+
+`DeviceInfo` needs importing: widen the existing import at the top of the file
+to `use pico_de_gallo_lib::{DeviceDescription, DeviceInfo};`.
+
+`Device::serial()` returns `Option<&str>` and `Device::info()` returns
+`&DeviceInfo`, so the signature above needs no clone-juggling at the call site.
+
+- [ ] **Step 5b: Call it from the `status` tool**
+
+In the same file, replace the whole `Ok(dev) => { ... }` arm body — the five
+inline assignments — with a single call:
+
+```rust
+                Ok(dev) => fill_status_from_device(&mut out, dev.serial(), dev.info()),
 ```
 
 This reads the **cached** `dev.info()` captured at connect-time validation, so
-it costs no extra RPC.
+it costs no extra RPC. The serialized JSON is unchanged by the extraction.
 
 - [ ] **Step 6: Run the tests to verify they pass**
 
@@ -1317,8 +1389,9 @@ Run:
 ```bash
 cd /home/balbi/workspace/pico-de-gallo
 cargo test -p gallo-mcp status_result_ 2>&1 | tail -10
+cargo test -p gallo-mcp fill_status_from_device 2>&1 | tail -10
 ```
-Expected: 2 tests PASS.
+Expected: 3 tests PASS.
 
 - [ ] **Step 7: Log the build identity on connect**
 
@@ -1339,6 +1412,37 @@ line `let info = inner.validate().await.map_err(error::map_validate_err)?;`
         );
 ```
 
+- [ ] **Step 7a: Raise the default log filter so that line is actually emitted**
+
+The `info!` above is discarded by default without this. `main.rs` supplies a
+fallback `EnvFilter` used whenever `RUST_LOG` is unset — the normal case, since
+MCP clients spawn the server with whatever environment they happen to have —
+and that fallback was `error,gallo_mcp=warn`. `EnvFilter` treats a directive's
+level as a *maximum* verbosity, so `gallo_mcp=warn` enables ERROR and WARN and
+excludes INFO: the connect line would never reach the transcript.
+
+In `crates/pico-de-gallo-mcp/src/main.rs`, change the fallback:
+
+```rust
+                .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("error,gallo_mcp=info")),
+```
+
+Do **not** downgrade the log call to `warn!` to sneak past the filter — INFO is
+the correct level for a successful routine connection.
+
+While there, fix the now-stale comment above that fallback. It claimed
+`gallo_mcp` "has exactly two tracing call sites, one `warn!` and one `debug!`",
+which the new line falsifies. Reword it so it describes the *policy* rather
+than enumerating call sites, or it will go stale again on the next log line:
+say that INFO carries routine-but-important facts (notably the per-connect
+identity line), and that anything chattier belongs at `debug!` or below, which
+the filter still excludes.
+
+Verify it executably rather than by inspection — a temporary test that builds a
+subscriber with each filter string over a capturing writer and emits a
+`tracing::info!` from inside this crate shows `""` under
+`error,gallo_mcp=warn` and the formatted event under `error,gallo_mcp=info`.
+
 - [ ] **Step 8: Verify the whole crate builds, lints and tests**
 
 Run:
@@ -1355,7 +1459,8 @@ not expected to run.
 
 ```bash
 cd /home/balbi/workspace/pico-de-gallo
-git add crates/pico-de-gallo-mcp/src/device.rs crates/pico-de-gallo-mcp/src/lib.rs
+git add crates/pico-de-gallo-mcp/src/device.rs crates/pico-de-gallo-mcp/src/lib.rs \
+    crates/pico-de-gallo-mcp/src/main.rs
 git commit -F - <<'EOF'
 feat(mcp): Report the firmware build identity in status and on connect
 

@@ -1,6 +1,6 @@
 //! Device-level tools: enumeration, status, info, version, ping.
 
-use pico_de_gallo_lib::DeviceDescription;
+use pico_de_gallo_lib::{DeviceDescription, DeviceInfo};
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{ErrorData, tool, tool_router};
@@ -54,6 +54,10 @@ struct StatusResult {
     firmware_version: Option<String>,
     schema_major: Option<u16>,
     schema_minor: Option<u16>,
+    /// Firmware build identity (`git describe`), null until a board is
+    /// reached. Informational: it names the running image, and never affects
+    /// whether a call succeeds.
+    build_id: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize, schemars::JsonSchema)]
@@ -135,7 +139,24 @@ fn build_status(
         firmware_version: None,
         schema_major: None,
         schema_minor: None,
+        build_id: None,
     }
+}
+
+/// Fill in the fields of a `status` response that require a reached board.
+///
+/// Split out from `status` so it is unit-testable: the caller needs a live
+/// `connect()` and therefore a physical board, which means anything left
+/// inline there has no automated coverage at all.
+fn fill_status_from_device(out: &mut StatusResult, serial: Option<&str>, info: &DeviceInfo) {
+    out.serial_number = serial.map(str::to_string);
+    out.firmware_version = Some(format!(
+        "{}.{}.{}",
+        info.fw_major, info.fw_minor, info.fw_patch
+    ));
+    out.schema_major = Some(info.schema_major);
+    out.schema_minor = Some(info.schema_minor);
+    out.build_id = Some(info.build_id().to_string());
 }
 
 #[tool_router(router = device_router, vis = "pub(crate)")]
@@ -165,16 +186,7 @@ impl GalloMcp {
         let mut out = build_status(attached_serials(), self.pinned_serial(), requested);
         if out.reason.is_none() {
             match self.connect(requested).await {
-                Ok(dev) => {
-                    let info = dev.info();
-                    out.serial_number = dev.serial().map(str::to_string);
-                    out.firmware_version = Some(format!(
-                        "{}.{}.{}",
-                        info.fw_major, info.fw_minor, info.fw_patch
-                    ));
-                    out.schema_major = Some(info.schema_major);
-                    out.schema_minor = Some(info.schema_minor);
-                }
+                Ok(dev) => fill_status_from_device(&mut out, dev.serial(), dev.info()),
                 // Selection succeeded but the board could not be opened or
                 // validated. Say so rather than leaving a bare null.
                 Err(e) => out.reason = Some(e.message.to_string()),
@@ -240,6 +252,64 @@ mod tests {
             manufacturer: Some("Microsoft".to_string()),
             product: Some("Pico de Gallo".to_string()),
         }
+    }
+
+    #[test]
+    fn fill_status_from_device_populates_every_device_field() {
+        // `status` can only reach this logic through `connect()`, i.e. with a
+        // physical board attached, so without this test the population is
+        // completely uncovered -- deleting the build_id assignment used to
+        // leave the whole suite green.
+        let mut out = build_status(vec![Some("ABC123".to_string())], None, None);
+        let info = DeviceInfo {
+            fw_major: 0,
+            fw_minor: 11,
+            fw_patch: 0,
+            schema_major: 0,
+            schema_minor: 7,
+            schema_patch: 0,
+            hw_version: 2,
+            capabilities: pico_de_gallo_lib::Capabilities::NONE,
+            num_gpios: pico_de_gallo_lib::NUM_GPIOS as u8,
+            build_id: "firmware-v0.11.0-27-gdeadbee-dirty".try_into().unwrap(),
+        };
+        fill_status_from_device(&mut out, Some("ABC123"), &info);
+        assert_eq!(out.serial_number.as_deref(), Some("ABC123"));
+        assert_eq!(out.firmware_version.as_deref(), Some("0.11.0"));
+        assert_eq!(out.schema_major, Some(0));
+        assert_eq!(out.schema_minor, Some(7));
+        assert_eq!(
+            out.build_id.as_deref(),
+            Some("firmware-v0.11.0-27-gdeadbee-dirty")
+        );
+    }
+
+    #[test]
+    fn status_result_serializes_build_id() {
+        let mut out = build_status(vec![Some("ABC123".to_string())], None, None);
+        out.build_id = Some("firmware-v0.11.0-27-gdeadbee-dirty".to_string());
+        let json = serde_json::to_value(&out).unwrap();
+        assert_eq!(
+            json["build_id"],
+            serde_json::json!("firmware-v0.11.0-27-gdeadbee-dirty")
+        );
+    }
+
+    #[test]
+    fn status_result_build_id_is_null_before_connecting() {
+        // `build_status` runs before any connection, so it cannot know the
+        // build identity. It must say null rather than inventing one.
+        let out = build_status(vec![Some("ABC123".to_string())], None, None);
+        assert!(out.build_id.is_none());
+        let json = serde_json::to_value(&out).unwrap();
+        assert!(
+            json.get("build_id").is_some(),
+            "field must still be present"
+        );
+        assert!(
+            json["build_id"].is_null(),
+            "build_id must serialize as null, not be omitted"
+        );
     }
 
     #[test]

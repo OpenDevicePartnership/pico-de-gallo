@@ -418,6 +418,16 @@ impl GalloMcp {
 
         let inner = open_with_retry(serial.as_deref()).await?;
         let info = inner.validate().await.map_err(error::map_validate_err)?;
+        // Put the build identity in the transcript on every connect. An
+        // agent-driven session otherwise has no record of which image it
+        // talked to, and the schema version cannot supply one: two builds can
+        // report the same version and behave differently (issue #159).
+        tracing::info!(
+            serial = serial.as_deref().unwrap_or("<none>"),
+            firmware = %format_args!("{}.{}.{}", info.fw_major, info.fw_minor, info.fw_patch),
+            build_id = info.build_id(),
+            "connected"
+        );
         // Tears down *every* GPIO subscription on this board, including ones
         // owned by other host processes — a `gallo` CLI session or a user
         // program watching a pin loses it the moment an agent touches the
