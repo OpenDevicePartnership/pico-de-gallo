@@ -150,6 +150,9 @@ In `crates/pico-de-gallo-firmware/build.rs`, replace the `File::create(out.join(
 ```rust
     let build_id = build_id();
 
+    // `{:?}` on a &str emits a properly escaped Rust string literal, quotes
+    // included. Git refnames forbid backslash but permit `"`, so a tag like
+    // `firmware-v1.0"x` would otherwise emit a syntax error.
     File::create(out.join("version.rs"))
         .unwrap()
         .write_all(
@@ -160,7 +163,7 @@ pub(crate) const VERSION_MINOR: u16 = {minor};
 pub(crate) const VERSION_PATCH: u32 = {patch};
 
 /// Firmware build identity from `git describe`, or `"unknown"`.
-pub(crate) const BUILD_ID: &str = "{build_id}";
+pub(crate) const BUILD_ID: &str = {build_id:?};
 "##
             )
             .as_bytes(),
