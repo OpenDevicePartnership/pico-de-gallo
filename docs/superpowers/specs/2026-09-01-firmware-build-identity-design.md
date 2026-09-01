@@ -66,10 +66,10 @@ enum-variant rule in AGENTS.md §6.1.
 ```rust
 /// Maximum length of [`DeviceInfo::build_id`], in bytes.
 ///
-/// Must stay <= 255: `heapless::String<N>` defaults to `LenT = u8`, and
-/// `postcard-schema`'s `Schema` impl is written for that default. Raising this
-/// past 255 also requires changing `LenT`, at which point the `Schema` impl no
-/// longer applies.
+/// The field must always be spelled `heapless::String<BUILD_ID_CAPACITY>`,
+/// leaving `LenT` at its default. `postcard-schema`'s `Schema` impl is
+/// `impl<const N: usize> Schema for String<N>`, i.e. for the default `LenT`
+/// only; naming a non-default `LenT` silently breaks the `Schema` derive.
 pub const BUILD_ID_CAPACITY: usize = 64;
 
 pub struct DeviceInfo {
@@ -134,6 +134,21 @@ particular `DeviceInfo` deliberately remains non-`Clone` and non-`Copy`.
 Unlike the byte-payload response types, `build_id` uses one type on both sides.
 This is possible because `heapless::String` is `no_std`-native and the host does
 not need to grow the value.
+
+### 3.4 Wire encoding
+
+`heapless`'s `Serialize` impl is `serializer.serialize_str(self)`, so postcard
+encodes the field as a **plain varint-length string**: one length byte for
+anything under 128 bytes, then the UTF-8 payload. Neither `N` nor `LenT` appears
+on the wire. An empty `build_id` therefore costs exactly one byte.
+
+Consequences:
+
+- `BUILD_ID_CAPACITY` is a *receive-side* bound only. Deserialization of a longer
+  string fails with an `invalid_length` error rather than truncating, so the
+  firmware must do the truncating (§4.1).
+- Raising the capacity later is **not** a wire-format change; it only widens what
+  a host will accept. It is still a `Schema` change and so still needs a bump.
 
 ---
 
@@ -408,7 +423,7 @@ the Keep a Changelog answer for "landed, not yet versioned". There is no root
 | R2 | `GalloDeviceInfo` layout change breaks C consumers that do not recompile. | Accepted. The struct grows only at the end; every released crate bumps in lockstep at release; `zephyr/` recompiles in-tree and `zephyr.yml` covers the FFI path filter. |
 | R3 | Always-rerunning `build.rs` costs one `git describe` per firmware build. | Accepted, ~5 ms. The alternative (tracking `.git/HEAD`, refs and index) misses unstaged `.rs` edits, which reintroduces the exact stale-ID failure. |
 | R4 | No automated test covers the `build.rs` git invocation or the firmware handler. | **Honest gap.** The git invocation is not unit-testable in-tree and the handler needs real registers. Covered only by the manual acceptance procedure in §9.2. |
-| R5 | A future capacity raise past 255 silently loses the `Schema` impl (`LenT = u8`). | Guarded by a unit test asserting `BUILD_ID_CAPACITY <= 255` and by the doc comment on the constant. |
+| R5 | Spelling the field with a non-default `LenT` silently breaks the `Schema` derive, since `postcard-schema` only impls `Schema for String<N>` at the default. | Guarded by the doc comment on `BUILD_ID_CAPACITY` (§3) and by the `Schema` derive failing to compile if violated. `LenT` has no wire effect (§3.4). |
 | R6 | `git describe` in a shallow CI clone may not reach a `firmware-v*` tag, yielding a bare hash. | Acceptable — `--always` still gives a usable identity. Release workflows should fetch tags; noted in §9.1. |
 | R7 | The field `build_id` and the accessor `build_id()` share a name, making bare intra-doc links ambiguous and failing the `RUSTDOCFLAGS` doc job. | Guarded by convention: always write `[`DeviceInfo::build_id()`]` for the method and the `field@` disambiguator for the field (§3). |
 
@@ -420,7 +435,7 @@ the Keep a Changelog answer for "landed, not yet versioned". There is no root
 
 | Layer | Test |
 |---|---|
-| `internal` | `device_info_round_trip_carries_build_id` — postcard round-trip with a full 64-char ID, an empty ID, and `"unknown"`. `build_id_capacity_fits_len_type` asserts `BUILD_ID_CAPACITY <= 255` (R5). |
+| `internal` | `device_info_round_trip_carries_build_id` — postcard round-trip with a full 64-char ID, an empty ID, and `"unknown"`. `device_info_encodes_fields_in_declared_order` is **extended** to pin the new byte image, since it currently asserts an exact 9-byte encoding and will fail loudly otherwise. `device_info_rejects_overlong_build_id` asserts that decoding a 65-byte string errors rather than truncating (§3.4). |
 | `lib` | Extend the fake-transport `make_device_info` helper with a build ID. Assert `validate()` **succeeds** on an unexpected build ID, pinning D6. |
 | `app` | Snapshot the two-table `version` output for a fixed `DeviceInfo`, so the `tabled` formatting is covered rather than eyeballed. |
 | `ffi` | `build_id` is NUL-terminated; a full 64-char ID does not overflow `char[65]`; the `const` assert ties `65` to `BUILD_ID_CAPACITY + 1`. |
