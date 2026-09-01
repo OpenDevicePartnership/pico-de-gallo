@@ -149,7 +149,12 @@ Status gallo_system_reset_subscriptions(const PicoDeGallo *gallo,
 ```
 
 `gallo_get_device_info` returns firmware version, schema version, hardware
-revision, and a capability bitfield.
+revision, a capability bitfield, and `build_id`, a NUL-terminated firmware
+identity in the final member of `GalloDeviceInfo`. The buffer size is
+`GALLO_BUILD_ID_LEN` (65 bytes: up to 64 bytes plus the terminator). The
+identity is informational and never affects the return status. Inspect `*info`,
+including its terminator, only after the function returns `Ok`; the output is
+not written on any error path.
 
 `gallo_num_gpios` returns the GPIO count the connected device reports —
 the runtime-authoritative bound for a pin index and for the SPI chip

@@ -5,6 +5,14 @@ All notable changes to `pyco-de-gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `DeviceInfo.build_id` exposes the firmware's diagnostic build identity as a
+  Python `str`. It is informational and never controls whether a call
+  succeeds. Closes #159.
+
 ## [0.5.0] — 2026-08-27
 
 ### Added

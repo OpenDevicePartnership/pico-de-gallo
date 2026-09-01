@@ -136,7 +136,10 @@ against different wire schemas, `validate()` fails instead of letting you debug
 mysterious decoding problems later.
 
 `validate()` returns the `DeviceInfo` on success, so you can immediately inspect
-firmware version, hardware revision, and capability bits.
+firmware version, hardware revision, capability bits, and the informational
+firmware identity through `DeviceInfo::build_id()`. The build identity answers
+which image is running, but `validate()` deliberately ignores it: only schema
+major/minor compatibility determines whether validation succeeds.
 
 The `device/info` round-trip is bounded at **300 seconds**. On expiry
 `validate()` returns `ValidateError::Timeout`, which is deliberately
@@ -280,7 +283,7 @@ The library exposes one typed async method per firmware capability.
 | `gpio_subscribe` | `pin`, `edge` | Ask firmware to monitor a pin for edge events |
 | `gpio_unsubscribe` | `pin` | Stop firmware-side monitoring |
 | `version` | — | Read the firmware version |
-| `device_info` | — | Read firmware version, schema version, HW revision, capabilities, and runtime GPIO count |
+| `device_info` | — | Read firmware version, schema version, HW revision, capabilities, runtime GPIO count, and build identity |
 | `validate` | — | Perform a strict schema compatibility check and return `DeviceInfo` |
 | `num_gpios` | — | Read the device-reported GPIO count; validates lazily on the first call, then caches |
 | `pwm_set_duty_cycle` | `channel`, `duty` | Set a raw PWM duty-cycle value |

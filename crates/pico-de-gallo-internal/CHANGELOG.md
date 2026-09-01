@@ -5,6 +5,29 @@ All notable changes to `pico-de-gallo-internal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- Appended `DeviceInfo::build_id`, a `heapless::String<64>` carrying the
+  firmware's `git describe --always --dirty --tags --match firmware-v*`
+  output, or `"unknown"` when git was unavailable. The field is
+  informational and is never a compatibility gate: `validate()` ignores
+  it. Closes #159.
+
+  This is append-only on the wire, but it landed **after** schema 0.7.0
+  shipped, so a host built from this tree cannot decode `device/info`
+  from a released firmware 0.11.0 — postcard hits end-of-input on the new
+  field — and `validate()` cannot warn, because both peers still report
+  schema 0.7. **Host and firmware must be built from the same tree until
+  the next release.** That release must be 0.8.0, not 0.7.1: a new wire
+  field is not a patch.
+
+### Added
+
+- `BUILD_ID_CAPACITY` (64) and the `DeviceInfo::build_id()` accessor, so
+  host crates never need to name `heapless` themselves.
+
 ## [0.7.0] — 2026-08-27
 
 ### Breaking Changes

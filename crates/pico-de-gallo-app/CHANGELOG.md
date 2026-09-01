@@ -5,6 +5,13 @@ All notable changes to `gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `gallo version` now renders summary and capability tables, including the
+  runtime GPIO count and the firmware build identity. Closes #159.
+
 ## [0.9.0] — 2026-08-27
 
 ### Breaking Changes

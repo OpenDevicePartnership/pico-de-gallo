@@ -26,8 +26,14 @@ the board stays free for the `gallo` CLI or other host processes between
 calls. Each call re-opens and re-validates the device, so there is a small
 fixed per-call connection cost. The server starts even with no board
 attached; tools begin working as soon as a Pico de Gallo is plugged in. Logs
-go to stderr; stdout carries the
-MCP protocol.
+go to stderr; stdout carries the MCP protocol. On each successful connection,
+the default `info` filter logs the board serial, firmware version, and firmware
+build identity. `RUST_LOG` overrides the filter when set.
+
+The `status` response always includes a `build_id` key: it is `null` before a
+board is reached and contains that image's build-time `git describe` identity
+after a successful connection. `device_info` returns the same identity. It is
+diagnostic only and never controls whether a tool call succeeds.
 
 ## Protocol revisions
 

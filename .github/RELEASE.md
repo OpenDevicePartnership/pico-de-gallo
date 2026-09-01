@@ -118,8 +118,9 @@ component. Adjust the crate set for a non-wire, single-crate release.
    crate that changed. This is no longer generated — an
    empty or missing entry means the release ships undocumented.
 
-5. **If this release bumps the schema minor, revisit the dated
-   wire-shape freeze warning** in `PicoDeGallo::validate()`'s rustdoc
+5. **If this release changes the schema compatibility axis — minor before
+   1.0, or major at/after 1.0 — revisit the dated wire-shape freeze warning**
+   in `PicoDeGallo::validate()`'s rustdoc
    (`crates/pico-de-gallo-lib/src/lib.rs`) and remove or rewrite it.
    The `validate_schema_freeze_rustdoc_must_be_revisited_before_schema_0_8`
    test fails until this is done, so a forgotten warning blocks the

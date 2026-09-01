@@ -5,6 +5,15 @@ All notable changes to `pico-de-gallo-ffi` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Breaking Changes
+
+- Appended `char build_id[GALLO_BUILD_ID_LEN]` to `GalloDeviceInfo`, with
+  `GALLO_BUILD_ID_LEN` fixed at 65 bytes including the NUL terminator.
+  `gallo_get_device_info` populates it only on `Status::Ok`; no status code was
+  added or renumbered. Closes #159.
+
 ## [0.8.0] — 2026-08-27
 
 ### Added

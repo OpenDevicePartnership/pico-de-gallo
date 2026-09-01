@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- The build script now derives `BUILD_ID` from
+  `git describe --always --dirty --tags --match firmware-v*`, falling back to
+  `"unknown"` and truncating to 64 bytes on a character boundary. The firmware
+  logs it at boot and returns it as the final `DeviceInfo` field. The script
+  reruns on every build so incremental builds cannot retain stale identity.
+  Closes #159.
+
 ### Changed
 
 - **BREAKING (build):** `hw-rev2` is now the default Cargo feature;

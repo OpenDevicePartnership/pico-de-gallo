@@ -70,7 +70,7 @@ A short slice of the endpoint catalog looks like this:
 |------|--------------|
 | `ping` | Echo test payload |
 | `version` | Report firmware version |
-| `device/info` | Report firmware/schema versions, hardware revision, capabilities, and the runtime GPIO count |
+| `device/info` | Report firmware/schema versions, hardware revision, capabilities, runtime GPIO count, and build identity |
 | `i2c/read` | Read from an I<sup>2</sup>C target |
 | `spi/transfer` | Full-duplex SPI transfer |
 | `gpio/subscribe` | Start GPIO event monitoring |
@@ -124,6 +124,36 @@ For `spi/batch`, the chip-select pin behaves as follows:
 SPI chip-select indices are `0..num_gpios`; when it is zero, no index is
 valid. It supersedes the compile-time `NUM_GPIOS` default and must never be
 synthesized or defaulted when `device/info` decoding fails.
+
+### Build identity
+
+`DeviceInfo::build_id` carries the firmware's
+`git describe --always --dirty --tags --match firmware-v*` output, captured
+when the firmware was built, or `"unknown"` when git was unavailable. A
+trailing `-dirty` means the image was built from a modified working tree.
+
+It is **informational only and never a compatibility gate.** `validate()`
+deliberately ignores it.
+
+The two fields answer different questions, and conflating them would be a
+mistake in both directions:
+
+| Question | Field |
+|---|---|
+| *Can we talk?* | `schema_major` / `schema_minor` |
+| *Are you the build I think you are?* | `build_id` |
+
+The schema version is derived from `pico-de-gallo-internal`'s package version,
+so it moves when the wire **types** change. Firmware behaviour can change while
+the types do not — `i2c/batch` moved from per-operation START/STOP to a single
+transaction inside an unchanged schema 0.7 — and bumping the schema version for
+such a change would falsely signal a wire-format break. `build_id` covers that
+gap without disturbing the compatibility axis.
+
+The field is a `heapless::String<BUILD_ID_CAPACITY>` (64 bytes), encoded by
+postcard as a plain varint-length string, so an empty value costs one byte.
+Decoding an over-long string fails rather than truncating; the firmware build
+script truncates.
 
 ## Schema versioning
 

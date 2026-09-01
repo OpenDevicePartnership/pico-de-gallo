@@ -202,7 +202,8 @@ ambiguous:
   "reason": "Multiple Pico de Gallo devices attached; `serial_number` is required.\nAvailable: 5256657D8A5D7F03, 568E9AAEC72B0D49",
   "firmware_version": null,
   "schema_major": null,
-  "schema_minor": null
+  "schema_minor": null,
+  "build_id": null
 }
 ```
 
@@ -212,6 +213,13 @@ board attached, and when the server is pinned to a board that is not
 attached; `ambiguous` is `false` in both. It stays true even when this
 particular `status` call named a board. `reason` is present only when
 no board was reached.
+
+When `status` reaches a board, `build_id` contains that firmware image's
+`git describe` identity; the key is always present and remains `null` before a
+connection succeeds. `device_info` returns the same identity. Each successful
+connection also logs the serial number, firmware version, and build identity at
+`info` level on stderr. The default filter enables that event; set `RUST_LOG`
+to override it.
 
 ## Concurrency
 
@@ -280,8 +288,8 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 | Tool | Description |
 |---|---|
 | `list_devices` | List connected Pico de Gallo boards |
-| `status` | Which board is reachable, why not when none is, plus firmware/schema version |
-| `device_info` | Firmware version, schema version, capabilities, runtime GPIO count |
+| `status` | Which board is reachable, why not when none is, plus firmware/schema/build identity |
+| `device_info` | Firmware version, schema version, capabilities, runtime GPIO count, build identity |
 | `version` | Firmware version |
 | `ping` | Echo a value (liveness check) |
 
