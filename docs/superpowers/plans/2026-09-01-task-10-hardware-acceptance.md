@@ -58,7 +58,32 @@ Inspecting the identity embedded in each image establishes, at build level:
   identity does not go stale.
 - **PASS** — the reverted build reproduced `clean.uf2` bit-for-bit.
 
-### What the board still has to prove
+### RESULT — executed 2026-09-01, PASS
+
+Run on board `49742081C885AC69` via `flash.sh`, which runs `picotool verify`
+against the file before rebooting. Verify reported `OK` on all three.
+
+| Image flashed | `gallo version` reported `Build` |
+|---|---|
+| `clean.uf2` | `firmware-v0.11.0-41-ga73a8130f9fe` |
+| `dirty.uf2` | `firmware-v0.11.0-41-ga73a8130f9fe-dirty` |
+| `clean2.uf2` | `firmware-v0.11.0-41-ga73a8130f9fe` |
+
+- **PASS** — clean and dirty are distinguishable over the wire, while
+  `Firmware v0.11.0` and `Schema v0.7.0` stayed identical across both. That is
+  the acceptance criterion: two images differing only in handler behaviour now
+  produce two different `device/info` responses, which `validate()` alone could
+  never do.
+- **PASS** — `-dirty` cleared on the reverted image, confirming end to end that
+  the identity does not go stale.
+
+**Always use `flash.sh`, or run `picotool verify` by hand.** A first attempt at
+this procedure produced three identical readings because the second and third
+writes did not land, and nothing in the flow said so — the board simply kept
+running the first image. `picotool verify` is what makes that impossible to
+miss, and a silent no-op here would have looked exactly like a firmware bug.
+
+### What the board proved that a build inspection could not
 
 The above only shows the right bytes are *in the image*. It does not show the
 firmware *reports* them over the wire. Flashing is what verifies the
