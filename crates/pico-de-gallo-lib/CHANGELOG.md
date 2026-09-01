@@ -5,7 +5,15 @@ All notable changes to `pico-de-gallo-lib` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] — 2026-09-01
+
+### Breaking Changes
+
+- Requires firmware reporting schema 0.8. Because the schema 0.8 change was
+  to `DeviceInfo` itself, a 0.9.0 host against schema 0.7 firmware does not
+  return `SchemaMismatch` — `device/info` is re-keyed, the reply is dropped
+  unmatched, and `validate()` can only return `Timeout`. See the rewritten
+  "Wire shape" note in `PicoDeGallo::validate()`'s documentation.
 
 ### Added
 

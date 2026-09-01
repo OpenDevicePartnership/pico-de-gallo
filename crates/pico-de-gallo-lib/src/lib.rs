@@ -1133,18 +1133,41 @@ impl PicoDeGallo {
     /// This checks the reported numbers; it cannot make them trustworthy,
     /// and there are two distinct ways they can mislead.
     ///
-    /// Wire *shape*: during the current unreleased schema freeze a
-    /// matching schema version does not prove shape compatibility.
-    /// postcard-rpc derives each endpoint's key from the response
-    /// type's schema, so appending `build_id` to `DeviceInfo` after
-    /// schema 0.7.0 shipped also changed the `device/info` key. A peer
-    /// built from a different tree replies under the other key, the
+    /// Wire *shape*: a matching schema version does not prove shape
+    /// compatibility, and for one specific type this call cannot report
+    /// the difference at all. postcard-rpc derives each endpoint's key
+    /// from the response type's schema, so changing a type's shape —
+    /// appends included — silently re-keys its endpoint. A peer built
+    /// against the other shape replies under the other key, the
     /// dispatcher drops the unmatched frame, and the call never
-    /// returns. This is *not* a decode error — postcard is never
-    /// reached — so it surfaces here as [`ValidateError::Timeout`]
-    /// after [`DEVICE_INFO_TIMEOUT`], indistinguishable from a board
-    /// that genuinely stopped answering. Build host and firmware from
-    /// the same tree until the 0.8.0 release.
+    /// returns.
+    ///
+    /// Where that bites depends on *which* type changed. If the change
+    /// is to any type other than [`DeviceInfo`] — appending an
+    /// `I2cError` variant, say — then `device/info` still answers, its
+    /// reply still decodes, the schema minors still differ, and this
+    /// call correctly returns [`ValidateError::SchemaMismatch`]. Schema
+    /// versioning works as designed.
+    ///
+    /// If the change is to [`DeviceInfo`] itself, `device/info` is the
+    /// endpoint that re-keys, so the probe that would have reported the
+    /// mismatch is the one that breaks. The schema numbers describing
+    /// the incompatibility are sealed inside the message that is
+    /// dropped, and no version bump can surface them: the version is
+    /// payload, not key. This call can then only return
+    /// [`ValidateError::Timeout`] after [`DEVICE_INFO_TIMEOUT`],
+    /// indistinguishable from a board that genuinely stopped answering.
+    /// `DeviceInfo` is, in that sense, a blind spot for its own
+    /// versioning mechanism.
+    ///
+    /// This is not confined to development trees. Any two *released*
+    /// versions whose `DeviceInfo` shapes differ pair this way — a
+    /// schema 0.8 host against schema 0.7 firmware reports a timeout,
+    /// not a mismatch. When a board is unexpectedly unresponsive to
+    /// this call, a version skew is as likely an explanation as a
+    /// hardware fault. `gallo version` still works across such a pair,
+    /// because [`VersionInfo`]'s schema and key are deliberately held
+    /// stable.
     ///
     /// Wire *behaviour*: the schema version is derived from the wire
     /// crate's package version, so it is intended to track wire-type
@@ -1933,27 +1956,6 @@ mod tests {
         let mut info = make_device_info(SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR);
         info.build_id = "firmware-v0.11.0".try_into().unwrap();
         assert_eq!(info.build_id(), "firmware-v0.11.0");
-    }
-
-    #[test]
-    // Both operands are compile-time constants, which is exactly the point:
-    // the assertion exists to fail the build's test run when the schema
-    // reaches 0.8, not to check anything about runtime state.
-    #[allow(clippy::assertions_on_constants)]
-    fn validate_schema_freeze_rustdoc_must_be_revisited_before_schema_0_8() {
-        // `validate()`'s rustdoc carries a DATED claim: that host and firmware
-        // must be built from the same tree "until the 0.8.0 release". Nothing
-        // else forces anyone to revisit it, and the paragraph it replaced was
-        // itself a stale dated claim about a 0.6.1 freeze that had already
-        // shipped. This test is the guard: it fails the moment the schema
-        // reaches 0.8, so whoever cuts that release must delete or rewrite the
-        // freeze warning rather than leaving public rustdoc quietly wrong.
-        assert!(
-            SCHEMA_VERSION_MAJOR == 0 && SCHEMA_VERSION_MINOR < 8,
-            "validate() rustdoc says host and firmware must be built from the \
-             same tree only until schema 0.8.0; remove or rewrite that dated \
-             freeze warning as part of the 0.8.0 release"
-        );
     }
 
     #[test]

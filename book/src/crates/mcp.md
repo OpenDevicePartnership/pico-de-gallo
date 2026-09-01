@@ -471,9 +471,10 @@ Over stdio, `status` reports the attached board:
   "ambiguous": false,
   "available": ["5256657D8A5D7F03"],
   "pinned": null,
-  "firmware_version": "0.10.1",
+  "firmware_version": "0.12.0",
   "schema_major": 0,
-  "schema_minor": 6
+  "schema_minor": 8,
+  "build_id": "firmware-v0.12.0"
 }
 ```
 

@@ -1589,36 +1589,36 @@ pub const BUILD_ID_CAPACITY: usize = 64;
 ///
 /// This is returned by a separate endpoint from [`VersionInfo`] so that
 /// changes here cannot disturb the `version` endpoint. That separation is
-/// what keeps `version` working across the current schema freeze:
-/// [`VersionInfo`]'s schema is unchanged, so the `version` endpoint key is
-/// unchanged, and old and new peers still match each other's frames. It is
-/// not that older hosts parse `DeviceInfo` leniently — they never see it.
-// SCHEMA FREEZE: `build_id` was appended after the schema 0.7.0 release
-// (tags `internal-v0.7.0` / `firmware-v0.11.0`). The addition is append-only
-// in the *encoding*, but that is not the compatibility axis that matters.
+/// what keeps `version` working against a peer whose `device/info` has
+/// re-keyed: [`VersionInfo`]'s schema is unchanged, so the `version`
+/// endpoint key is unchanged, and old and new peers still match each
+/// other's frames. It is not that older hosts parse `DeviceInfo`
+/// leniently — they never see it.
+// CHANGING THIS TYPE IS QUALITATIVELY WORSE THAN CHANGING ANY OTHER WIRE
+// TYPE. Think hard before adding, removing, or retyping a field here.
 //
 // postcard-rpc keys every endpoint by `Key::for_path::<T>(path)`, i.e. a
 // hash of the type's `Schema` together with the path string, and the
 // `endpoints!` macro derives `RESP_KEY` from the RESPONSE type's schema.
-// Appending `build_id` changed `DeviceInfo::SCHEMA`, and therefore changed
-// the `device/info` response key. A peer built from a different tree replies
-// under the other key; the receiving dispatcher finds no match, drops the
-// frame, and never wakes the pending call. The call does not return.
+// Any change to a request or response type's shape therefore silently
+// re-keys that endpoint, appends included. A peer built against the other
+// shape replies under the other key; the receiving dispatcher finds no
+// match, drops the frame, and never wakes the pending call. The call does
+// not return. This is NOT a decode error -- postcard is never reached --
+// so `map_validate_error` never sees a `DeserFailed`.
 //
-// So this is NOT a decode error -- postcard is never reached -- and
-// `map_validate_error` never sees a `DeserFailed`. `validate()` surfaces it
-// as `ValidateError::Timeout` after `DEVICE_INFO_TIMEOUT`, misattributed to
-// an unresponsive board, and `validate()` cannot warn because both peers
-// still report schema 0.7. Host and firmware must be built from the same
-// tree until release.
+// For every other wire type that is survivable, because `device/info`
+// itself still answers and `PicoDeGallo::validate()` reports the version
+// difference as a `SchemaMismatch`. For THIS type it is not: re-keying
+// `device/info` breaks the very probe that would have reported the
+// mismatch, so the schema numbers that describe the incompatibility are
+// sealed inside the one message that is dropped. `validate()` can only
+// time out, indistinguishable from an unresponsive board, and bumping the
+// schema version does not help -- the version is payload, not key.
 //
-// This mechanism is general: ANY change to a request or response type's
-// shape silently re-keys that endpoint, appends included. See
-// `device_info_response_key_is_pinned` below.
-//
-// Do not release or tag this branch until the maintainer performs the lockstep
-// version bump required by AGENTS.md §6.5. The next `pico-de-gallo-internal`
-// release must be 0.8.0, NOT 0.7.1: a new wire field is not a patch.
+// `DeviceInfo` is thus a blind spot for its own versioning mechanism. See
+// `device_info_response_key_is_pinned` below, which fails the suite rather
+// than letting a re-key reach the field silently.
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct DeviceInfo {
     /// Firmware version — major.

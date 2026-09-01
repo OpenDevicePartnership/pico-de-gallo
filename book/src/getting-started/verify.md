@@ -5,11 +5,11 @@ Plug the freshly-flashed Pico de Gallo into your host and run:
 ```console
 $ gallo version
 ╭─────────────┬──────────────────────────────╮
-│ Firmware    │ v0.11.0                      │
-│ Schema      │ v0.7.0                       │
+│ Firmware    │ v0.12.0                      │
+│ Schema      │ v0.8.0                       │
 │ HW revision │ 2                            │
 │ GPIOs       │ 4                            │
-│ Build       │ firmware-v0.11.0-42-g1a2b3c4 │
+│ Build       │ firmware-v0.12.0-42-g1a2b3c4 │
 ╰─────────────┴──────────────────────────────╯
 ╭─────┬─────┬──────┬──────┬─────┬─────┬────────╮
 │ I2C │ SPI │ UART │ GPIO │ PWM │ ADC │ 1-Wire │

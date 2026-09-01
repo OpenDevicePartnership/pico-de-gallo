@@ -5,6 +5,16 @@ All notable changes to `pico-de-gallo-hal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] — 2026-09-01
+
+### Breaking Changes
+
+- Version bumped in lockstep with the wire-coupled crates for schema 0.8.
+  This crate has no source change; it moves because it depends on
+  `pico-de-gallo-lib`, which tracks `pico-de-gallo-internal`, and the eight
+  wire-coupled crates must never drift in version space (AGENTS.md §6.5).
+  `Hal::new_validated` consequently requires firmware reporting schema 0.8.
+
 ## [0.7.0] — 2026-08-27
 
 ### Breaking Changes
