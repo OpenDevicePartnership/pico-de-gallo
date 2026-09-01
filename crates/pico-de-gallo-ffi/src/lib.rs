@@ -297,9 +297,21 @@ pub const GALLO_MAX_BATCH_OPS: usize = 64;
 /// Mirrors `pico_de_gallo_internal::NUM_GPIOS`.
 pub const GALLO_NUM_GPIOS: usize = 4;
 
+/// Size of [`GalloDeviceInfo::build_id`], in bytes.
+///
+/// One more than `pico_de_gallo_internal::BUILD_ID_CAPACITY` to leave room for
+/// the NUL terminator.
+///
+/// Written as a literal on purpose: cbindgen folds const initializers
+/// syntactically and silently emits nothing for a computed value, so
+/// `BUILD_ID_CAPACITY + 1` here would vanish from the generated header. The
+/// assertion below is what keeps the literal honest.
+pub const GALLO_BUILD_ID_LEN: usize = 65;
+
 const _: () = assert!(GALLO_MAX_TRANSFER_SIZE == lib::MAX_TRANSFER_SIZE);
 const _: () = assert!(GALLO_MAX_BATCH_OPS == lib::MAX_BATCH_OPS);
 const _: () = assert!(GALLO_NUM_GPIOS == lib::NUM_GPIOS);
+const _: () = assert!(GALLO_BUILD_ID_LEN == lib::BUILD_ID_CAPACITY + 1);
 
 // ----------------------------- Configuration Enums -----------------------------
 //
@@ -3152,8 +3164,8 @@ pub const GALLO_CAP_ONEWIRE: u64 = 1 << 6;
 /// C-compatible device information struct.
 ///
 /// Populated by [`gallo_get_device_info`]. Contains firmware version,
-/// schema (wire protocol) version, hardware revision, and peripheral
-/// capabilities as a `u64` bitfield.
+/// schema (wire protocol) version, hardware revision, peripheral capabilities,
+/// and the firmware build identity.
 ///
 /// Test individual capabilities with bitwise AND:
 ///
@@ -3184,6 +3196,32 @@ pub struct GalloDeviceInfo {
     /// Each bit represents a peripheral; use the `GALLO_CAP_*` constants
     /// to test individual capabilities.
     pub capabilities: u64,
+    /// Firmware build identity, NUL-terminated.
+    ///
+    /// The firmware's `git describe --always --dirty --tags --match
+    /// firmware-v*` output, or `"unknown"` when git was unavailable when the
+    /// firmware was built. A trailing `-dirty` means the firmware was built
+    /// from a modified working tree.
+    ///
+    /// Informational only: it names the running image and never affects
+    /// whether a call succeeds.
+    ///
+    /// Terminated only when the call returned `Status::Ok`; see
+    /// [`gallo_get_device_info`].
+    pub build_id: [c_char; GALLO_BUILD_ID_LEN],
+}
+
+/// Copy `src` into a fixed C buffer and NUL-terminate it.
+///
+/// Truncates rather than overflowing if `src` somehow exceeds the buffer. That
+/// cannot happen for a wire-decoded `build_id`, whose length is already bounded
+/// by `BUILD_ID_CAPACITY`, but the bound is enforced here rather than assumed.
+fn write_build_id(dst: &mut [c_char; GALLO_BUILD_ID_LEN], src: &str) {
+    let n = src.len().min(GALLO_BUILD_ID_LEN - 1);
+    for (slot, byte) in dst.iter_mut().zip(src.as_bytes()[..n].iter()) {
+        *slot = *byte as c_char;
+    }
+    dst[n] = 0;
 }
 
 #[unsafe(no_mangle)]
@@ -3197,6 +3235,12 @@ pub struct GalloDeviceInfo {
 /// firmware's wire protocol is incompatible, `Status::LegacyFirmware`
 /// if the firmware does not support this endpoint, or
 /// `Status::DeviceInfoFailed` on communication error.
+///
+/// `*out` is written **only** on `Status::Ok`. On every error path —
+/// including a null pointer and a failed `validate()` — no field is
+/// written, so an uninitialised `GalloDeviceInfo` still holds
+/// indeterminate bytes and `build_id` is NOT NUL-terminated. Inspect the
+/// struct only after a successful return.
 ///
 /// # Safety
 ///
@@ -3232,6 +3276,7 @@ pub unsafe extern "C" fn gallo_get_device_info(
                 (*out).schema_patch = info.schema_patch;
                 (*out).hw_version = info.hw_version;
                 (*out).capabilities = info.capabilities.bits();
+                write_build_id(&mut (*out).build_id, info.build_id());
             }
             Status::Ok
         }
@@ -4791,6 +4836,61 @@ mod tests {
         assert_eq!(Status::SpiBatchFailed as i32, -67);
         assert_eq!(Status::SpiTransferFailed as i32, -68);
         assert_eq!(Status::SystemResetSubscriptionsFailed as i32, -69);
+    }
+
+    #[test]
+    fn gallo_build_id_len_matches_wire_capacity() {
+        // cbindgen folds const initializers syntactically, so the array bound
+        // must be a literal. This assertion is what stops the literal from
+        // drifting away from the wire capacity.
+        assert_eq!(GALLO_BUILD_ID_LEN, lib::BUILD_ID_CAPACITY + 1);
+    }
+
+    #[test]
+    fn write_build_id_nul_terminates() {
+        let mut buf = [0xAA_u8 as c_char; GALLO_BUILD_ID_LEN];
+        write_build_id(&mut buf, "abc");
+        assert_eq!(buf[0], b'a' as c_char);
+        assert_eq!(buf[1], b'b' as c_char);
+        assert_eq!(buf[2], b'c' as c_char);
+        assert_eq!(buf[3], 0, "must be NUL terminated");
+    }
+
+    #[test]
+    fn write_build_id_handles_maximum_length() {
+        // A full-capacity id must fit with room for the terminator, and must
+        // not run off the end of the array.
+        let full = "0123456789012345678901234567890123456789012345678901234567890123";
+        assert_eq!(full.len(), lib::BUILD_ID_CAPACITY);
+        let mut buf = [0xAA_u8 as c_char; GALLO_BUILD_ID_LEN];
+        write_build_id(&mut buf, full);
+        assert_eq!(buf[lib::BUILD_ID_CAPACITY], 0, "terminator must be present");
+        for (i, b) in full.bytes().enumerate() {
+            assert_eq!(buf[i], b as c_char);
+        }
+    }
+
+    #[test]
+    fn write_build_id_truncates_overlong_input() {
+        // The helper's truncation branch is otherwise never executed by the
+        // suite. A wire-decoded build_id cannot exceed BUILD_ID_CAPACITY, but
+        // the bound is enforced here rather than assumed, so it must be tested
+        // rather than trusted.
+        let overlong = "0123456789012345678901234567890123456789012345678901234567890123456789";
+        assert!(overlong.len() > lib::BUILD_ID_CAPACITY);
+        let mut buf = [0xAA_u8 as c_char; GALLO_BUILD_ID_LEN];
+        write_build_id(&mut buf, overlong);
+        assert_eq!(buf[GALLO_BUILD_ID_LEN - 1], 0, "must still be terminated");
+        for (i, b) in overlong.bytes().take(lib::BUILD_ID_CAPACITY).enumerate() {
+            assert_eq!(buf[i], b as c_char, "byte {i} must be copied verbatim");
+        }
+    }
+
+    #[test]
+    fn write_build_id_handles_empty() {
+        let mut buf = [0xAA_u8 as c_char; GALLO_BUILD_ID_LEN];
+        write_build_id(&mut buf, "");
+        assert_eq!(buf[0], 0);
     }
 
     #[test]

@@ -1529,6 +1529,22 @@ In `crates/pico-de-gallo-ffi/src/lib.rs`, in `mod tests`, add:
     }
 
     #[test]
+    fn write_build_id_truncates_overlong_input() {
+        // The helper's truncation branch is otherwise never executed by the
+        // suite. A wire-decoded build_id cannot exceed BUILD_ID_CAPACITY, but
+        // the bound is enforced here rather than assumed, so it must be tested
+        // rather than trusted.
+        let overlong = "0123456789012345678901234567890123456789012345678901234567890123456789";
+        assert!(overlong.len() > lib::BUILD_ID_CAPACITY);
+        let mut buf = [0xAA_u8 as c_char; GALLO_BUILD_ID_LEN];
+        write_build_id(&mut buf, overlong);
+        assert_eq!(buf[GALLO_BUILD_ID_LEN - 1], 0, "must still be terminated");
+        for (i, b) in overlong.bytes().take(lib::BUILD_ID_CAPACITY).enumerate() {
+            assert_eq!(buf[i], b as c_char, "byte {i} must be copied verbatim");
+        }
+    }
+
+    #[test]
     fn write_build_id_handles_empty() {
         let mut buf = [0xAA_u8 as c_char; GALLO_BUILD_ID_LEN];
         write_build_id(&mut buf, "");
@@ -1585,6 +1601,9 @@ In `crates/pico-de-gallo-ffi/src/lib.rs`, add to `GalloDeviceInfo` as the
     ///
     /// Informational only: it names the running image and never affects
     /// whether a call succeeds.
+    ///
+    /// Terminated only when the call returned `Status::Ok`; see
+    /// [`gallo_get_device_info`].
     pub build_id: [c_char; GALLO_BUILD_ID_LEN],
 ```
 
@@ -1623,6 +1642,20 @@ In `gallo_get_device_info`, inside the `unsafe { ... }` block, after
                 write_build_id(&mut (*out).build_id, info.build_id());
 ```
 
+Also add to `gallo_get_device_info`'s doc comment, after the `Returns
+Status::Ok on success, ...` paragraph, a paragraph documenting that the
+out-param is untouched on failure. Without it the `build_id` field's own
+"NUL-terminated" claim reads as unconditional, and a caller could inspect an
+uninitialised struct after an error:
+
+```rust
+/// `*out` is written **only** on `Status::Ok`. On every error path —
+/// including a null pointer and a failed `validate()` — no field is
+/// written, so an uninitialised `GalloDeviceInfo` still holds
+/// indeterminate bytes and `build_id` is NOT NUL-terminated. Inspect the
+/// struct only after a successful return.
+```
+
 - [ ] **Step 7: Run the tests to verify they pass**
 
 Run:
@@ -1630,7 +1663,7 @@ Run:
 cd /home/balbi/workspace/pico-de-gallo
 cargo test -p pico-de-gallo-ffi build_id 2>&1 | tail -10
 ```
-Expected: 4 tests PASS.
+Expected: 5 tests PASS.
 
 - [ ] **Step 8: Verify the generated header contains the field**
 

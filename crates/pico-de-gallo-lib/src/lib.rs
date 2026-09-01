@@ -73,7 +73,7 @@ pub use pico_de_gallo_internal::{
 pub use pico_de_gallo_internal::{
     AdcError, GpioError, I2cBatchError, I2cError, OneWireError, PwmError, SpiBatchError, SpiError, UartError,
 };
-pub use pico_de_gallo_internal::{MAX_BATCH_OPS, MAX_TRANSFER_SIZE, NUM_GPIOS};
+pub use pico_de_gallo_internal::{BUILD_ID_CAPACITY, MAX_BATCH_OPS, MAX_TRANSFER_SIZE, NUM_GPIOS};
 pub use pico_de_gallo_internal::{
     encode_i2c_batch_ops, encode_spi_batch_ops, i2c_batch_response_len, spi_batch_response_len,
 };
