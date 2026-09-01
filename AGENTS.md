@@ -258,23 +258,23 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 
 ### 5.5 Test baseline
 
-About **609 unit tests + 7 doctests** across the host workspace,
+About **614 unit tests + 7 doctests** across the host workspace,
 measured 2026-09-01:
 
 | Crate                    | Passing | `#[ignore]`d |
 |--------------------------|---------|--------------|
-| `pico-de-gallo-internal` | 166     | 0            |
+| `pico-de-gallo-internal` | 168     | 0            |
 | `pico-de-gallo-ffi`      | 128     | 0            |
 | `gallo-mcp`              | 114     | 7            |
-| `pico-de-gallo-lib`      | 77      | 4            |
-| `gallo`                  | 72      | 0            |
+| `pico-de-gallo-lib`      | 78      | 4            |
+| `gallo`                  | 74      | 0            |
 | `pico-de-gallo-hal`      | 43      | 0            |
 | `pyco-de-gallo`          | 9       | 0            |
 
 Counts are measured from the workspace root (`cargo test --locked`),
 which unifies features and therefore enables `pico-de-gallo-internal`'s
 `use-std` tests. Running `cargo test -p pico-de-gallo-internal` alone
-reports 139, because some tests are gated on that feature — see §13.14.
+reports 141, because some tests are gated on that feature — see §13.14.
 
 Doctests: `pico-de-gallo-lib` 4, `pico-de-gallo-hal` 2,
 `pico-de-gallo-internal` 1.
@@ -342,7 +342,7 @@ same commit**.
 |--------------------------|---------------------------------------------------------|
 | `"ping"`                 | Echo a u32 (testing)                                    |
 | `"version"`              | Get firmware version                                    |
-| `"device/info"`          | Get firmware version, schema version, capabilities, runtime GPIO count |
+| `"device/info"`          | Get firmware version, schema version, capabilities, runtime GPIO count, build identity |
 | `"i2c/read"`             | I²C read                                                |
 | `"i2c/write"`            | I²C write                                               |
 | `"i2c/write-read"`       | I²C write-then-read                                     |

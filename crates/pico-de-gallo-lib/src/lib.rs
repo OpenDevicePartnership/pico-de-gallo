@@ -1086,7 +1086,8 @@ impl PicoDeGallo {
     }
 
     /// Get extended device information including firmware version, schema
-    /// (wire protocol) version, hardware revision, and peripheral capabilities.
+    /// (wire protocol) version, hardware revision, peripheral capabilities,
+    /// and the informational firmware build identity.
     pub async fn device_info(&self) -> Result<DeviceInfo, PicoDeGalloError<Infallible>> {
         Ok(self.client.send_resp::<GetDeviceInfo>(&()).await?)
     }

@@ -1701,6 +1701,12 @@ mod tests {
         assert_eq!(
             GetDeviceInfo::RESP_KEY.to_bytes(),
             [0x63, 0x8a, 0x52, 0xf9, 0xb6, 0xda, 0xea, 0x52],
+            "device/info's endpoint key changed, which means DeviceInfo's \
+             schema changed. A peer built from a different tree will reply \
+             under the old key, the frame is dropped unmatched, and the call \
+             hangs instead of erroring. If this change is intended, bump the \
+             schema version per AGENTS.md §6.2/§6.5, release firmware and \
+             host in lockstep, and update this pin in the same commit."
         );
     }
 
@@ -1714,6 +1720,15 @@ mod tests {
         assert_eq!(
             Version::RESP_KEY.to_bytes(),
             [0xe7, 0xf8, 0x84, 0x38, 0xd2, 0xc6, 0x29, 0xc6],
+            "version's endpoint key changed, which means VersionInfo's schema \
+             changed. VersionInfo's stability is a documented guarantee: it is \
+             why `gallo version`'s legacy fallback still reports something \
+             useful against a firmware whose device/info has re-keyed. Break \
+             it and that last diagnostic path hangs too, leaving no way to \
+             identify a mismatched board. Do not re-key VersionInfo to carry \
+             new data -- add a field to DeviceInfo instead. If this really is \
+             intended, bump the schema version per AGENTS.md §6.2/§6.5 and \
+             update this pin in the same commit."
         );
     }
 

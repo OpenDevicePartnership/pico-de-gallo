@@ -1389,7 +1389,8 @@ impl PycoDeGallo {
     }
 
     /// Query extended device information, including firmware version, wire
-    /// schema version, hardware revision, and peripheral capabilities.
+    /// schema version, hardware revision, peripheral capabilities, and the
+    /// informational firmware build identity.
     ///
     /// Returns:
     ///     DeviceInfo: Device identity and capability snapshot.
