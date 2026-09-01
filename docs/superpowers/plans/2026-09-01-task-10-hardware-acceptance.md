@@ -32,6 +32,42 @@ firmware 0.11.0 / schema 0.7 (no `build_id`).
 
 ---
 
+## Pre-built artifacts (hw-rev2)
+
+All three images are built and their embedded identity verified. `hw-rev2` is
+the default feature, so these are rev2 images.
+
+| File | Embedded identity | SHA-256 |
+|---|---|---|
+| `/tmp/pdg-159/clean.uf2` | `firmware-v0.11.0-41-ga73a8130f9fe` | `8eb5d1f7…4ebe67d` |
+| `/tmp/pdg-159/dirty.uf2` | `firmware-v0.11.0-41-ga73a8130f9fe-dirty` | `c1c8bab2…828239fa` |
+| `/tmp/pdg-159/clean2.uf2` | `firmware-v0.11.0-41-ga73a8130f9fe` | `8eb5d1f7…4ebe67d` |
+
+`clean2.uf2` was produced by reverting the edit and rebuilding **without**
+`cargo clean`. It is **byte-identical** to `clean.uf2`, so for Step 5 you can
+simply re-flash `clean.uf2`.
+
+### What is already proven, without a board
+
+Inspecting the identity embedded in each image establishes, at build level:
+
+- **PASS** — clean and dirty identities differ, from a behaviour-only edit that
+  changed no wire type. This is the acceptance criterion's mechanism.
+- **PASS** — `-dirty` cleared after revert on an **incremental** rebuild with no
+  `cargo clean`, so the always-rerun trigger in `build.rs` works and the
+  identity does not go stale.
+- **PASS** — the reverted build reproduced `clean.uf2` bit-for-bit.
+
+### What the board still has to prove
+
+The above only shows the right bytes are *in the image*. It does not show the
+firmware *reports* them over the wire. Flashing is what verifies the
+`device/info` path end to end: that the handler populates `build_id`, that it
+survives postcard encoding, and that `gallo version` renders it. That is the
+part still outstanding.
+
+---
+
 ## Flashing, once (referenced below as "flash `<file>`")
 
 ```bash
@@ -54,14 +90,7 @@ cargo run -p gallo --locked -- list
 
 ## Step 1 — flash the clean build (already built for you)
 
-The artifact is ready at `/tmp/pdg-159/clean.uf2`. It was built from a clean
-tree at commit `b2b38a995014`, and its embedded identity has been verified:
-
-```
-firmware-v0.11.0-40-gb2b38a995014        (no -dirty)
-```
-
-Flash `/tmp/pdg-159/clean.uf2`.
+Flash `/tmp/pdg-159/clean.uf2` (see the artifact table above).
 
 ## Step 2 — record the clean identity
 
@@ -71,7 +100,7 @@ cargo run -p gallo --locked -- version
 ```
 
 **Expect** a two-table output whose `Build` row reads
-`firmware-v0.11.0-40-gb2b38a995014`, with **no** `-dirty` suffix, and
+`firmware-v0.11.0-41-ga73a8130f9fe`, with **no** `-dirty` suffix, and
 `Firmware v0.11.0` / `Schema v0.7.0` / `HW revision 2` / `GPIOs 4`.
 
 Record the `Build` value. Call it **A**.
@@ -82,19 +111,10 @@ Record the `Build` value. Call it **A**.
 
 ## Step 3 — make a behaviour-only change and rebuild
 
-Edit a handler so behaviour changes but no wire type does. Do **not** commit it.
-
-```bash
-cd /home/balbi/workspace/pico-de-gallo
-# Add one line inside ping_handler, e.g. a second defmt::info!.
-$EDITOR crates/pico-de-gallo-firmware/src/handlers/info.rs
-
-cd crates/pico-de-gallo-firmware
-cargo build --release --locked --target thumbv8m.main-none-eabihf
-picotool uf2 convert \
-  target/thumbv8m.main-none-eabihf/release/pico-de-gallo-firmware \
-  -t elf /tmp/pdg-159/dirty.uf2
-```
+Already done for you. `dirty.uf2` was built from the tree with one extra
+`info!` line added to `ping_handler` in
+`crates/pico-de-gallo-firmware/src/handlers/info.rs` — behaviour changed, no
+wire type touched. The edit was reverted afterwards, so the repo is clean.
 
 Flash `/tmp/pdg-159/dirty.uf2`.
 
@@ -120,23 +140,13 @@ Record this value as **B**. **A != B is the pass condition.**
 
 ## Step 5 — the staleness regression check
 
-This is what proves the always-rerun trigger in `build.rs` works. Without it,
-the identity would go stale across incremental builds and keep claiming a clean
-tree. Note there is **no `cargo clean`** here — that is the entire point.
+This proves the always-rerun trigger in `build.rs` works. Without it, the
+identity would go stale across incremental builds and keep claiming a clean
+tree.
 
-```bash
-cd /home/balbi/workspace/pico-de-gallo
-git checkout -- crates/pico-de-gallo-firmware/src/handlers/info.rs
-git status --porcelain          # must be empty again
-
-cd crates/pico-de-gallo-firmware
-cargo build --release --locked --target thumbv8m.main-none-eabihf
-picotool uf2 convert \
-  target/thumbv8m.main-none-eabihf/release/pico-de-gallo-firmware \
-  -t elf /tmp/pdg-159/clean2.uf2
-```
-
-Flash `/tmp/pdg-159/clean2.uf2`, then:
+The build half is **already verified**: `clean2.uf2` was produced by reverting
+the edit and rebuilding with **no `cargo clean`**, and it came out
+byte-identical to `clean.uf2`. So re-flash `/tmp/pdg-159/clean.uf2`, then:
 
 ```bash
 cd /home/balbi/workspace/pico-de-gallo
