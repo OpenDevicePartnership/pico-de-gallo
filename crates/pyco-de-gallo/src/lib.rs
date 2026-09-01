@@ -512,6 +512,19 @@ struct DeviceInfo {
     /// directly as :meth:`PycoDeGallo.num_gpios`.
     #[pyo3(get)]
     num_gpios: u8,
+    /// Firmware build identity.
+    ///
+    /// The firmware's ``git describe --always --dirty --tags --match
+    /// firmware-v*`` output captured at build time, or ``"unknown"`` when git
+    /// was unavailable. A trailing ``-dirty`` means the firmware was built
+    /// from a modified working tree.
+    ///
+    /// Informational only: it names the running image and never affects
+    /// whether a call succeeds. Two firmware builds can report the same
+    /// firmware and schema version and still behave differently, so this is
+    /// the field to log when reproducing a result.
+    #[pyo3(get)]
+    build_id: String,
 }
 
 impl From<LibDeviceInfo> for DeviceInfo {
@@ -526,6 +539,7 @@ impl From<LibDeviceInfo> for DeviceInfo {
             hw_version: info.hw_version,
             capabilities: info.capabilities.0,
             num_gpios: info.num_gpios,
+            build_id: info.build_id().to_string(),
         }
     }
 }
@@ -1683,6 +1697,16 @@ mod tests {
     fn device_info_conversion_carries_num_gpios() {
         let py_info: DeviceInfo = lib_info(7).into();
         assert_eq!(py_info.num_gpios, 7);
+    }
+
+    #[test]
+    fn device_info_conversion_carries_build_id() {
+        for id in ["", "unknown", "firmware-v0.11.0-27-gdeadbee-dirty"] {
+            let mut info = lib_info(4);
+            info.build_id = id.try_into().unwrap();
+            let converted: DeviceInfo = info.into();
+            assert_eq!(converted.build_id, id);
+        }
     }
 
     #[test]
