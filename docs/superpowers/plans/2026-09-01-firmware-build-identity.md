@@ -811,15 +811,73 @@ In `crates/pico-de-gallo-lib/src/lib.rs`, find the `validate()` doc comment
 the schema freeze on this branch,` and references `0.6.1` with:
 
 ```rust
-    /// This checks the reported numbers; it cannot make them trustworthy. A
-    /// matching schema version does not prove matching *behaviour*, because
-    /// the schema version is derived from the wire crate's package version and
-    /// therefore tracks type changes, not handler changes. To answer "am I
-    /// talking to the build I think I am?", read
-    /// [`DeviceInfo::build_id()`](method@pico_de_gallo_internal::DeviceInfo::build_id)
-    /// — it carries the firmware's `git describe` output, including a `-dirty`
-    /// marker for a locally modified build. It is informational only and never
-    /// affects the outcome of this call.
+    /// This checks the reported numbers; it cannot make them trustworthy,
+    /// and there are two distinct ways they can mislead.
+    ///
+    /// Wire *shape*: during the current unreleased schema freeze a
+    /// matching schema version does not prove shape compatibility.
+    /// `DeviceInfo` gained `build_id` after schema 0.7.0 was released, so
+    /// this host cannot decode `device/info` from a released firmware
+    /// 0.11.0 even though both peers report schema 0.7. Build host and
+    /// firmware from the same tree until the 0.8.0 release.
+    ///
+    /// Wire *behaviour*: the schema version is derived from the wire
+    /// crate's package version, so it is intended to track wire-type
+    /// changes, not handler changes. Two firmware builds can report
+    /// identical versions and still frame the bus differently. To
+    /// identify the image, read
+    /// [`DeviceInfo::build_id()`](method@pico_de_gallo_internal::DeviceInfo::build_id).
+    /// It is informational only and never affects the outcome of this
+    /// call.
+```
+
+- [ ] **Step 4b: Guard the dated claim with an executable expiry test**
+
+The freeze warning added in Step 4 has an expiry date, and nothing else
+forces anyone to revisit it — the paragraph it replaced was itself a stale
+dated claim about an already-shipped 0.6.1 freeze. Add this to `mod tests`,
+next to the other `build_id` tests:
+
+```rust
+    #[test]
+    // Both operands are compile-time constants, which is exactly the point:
+    // the assertion exists to fail the build's test run when the schema
+    // reaches 0.8, not to check anything about runtime state.
+    #[allow(clippy::assertions_on_constants)]
+    fn validate_schema_freeze_rustdoc_must_be_revisited_before_schema_0_8() {
+        // `validate()`'s rustdoc carries a DATED claim: that host and firmware
+        // must be built from the same tree "until the 0.8.0 release". Nothing
+        // else forces anyone to revisit it, and the paragraph it replaced was
+        // itself a stale dated claim about a 0.6.1 freeze that had already
+        // shipped. This test is the guard: it fails the moment the schema
+        // reaches 0.8, so whoever cuts that release must delete or rewrite the
+        // freeze warning rather than leaving public rustdoc quietly wrong.
+        assert!(
+            SCHEMA_VERSION_MAJOR == 0 && SCHEMA_VERSION_MINOR < 8,
+            "validate() rustdoc says host and firmware must be built from the \
+             same tree only until schema 0.8.0; remove or rewrite that dated \
+             freeze warning as part of the 0.8.0 release"
+        );
+    }
+```
+
+Prove the guard can fire: temporarily change `< 8` to `< 0`, run
+`cargo test -p pico-de-gallo-lib validate_schema_freeze`, observe the
+failure, then restore `< 8` and confirm it passes.
+
+- [ ] **Step 4c: Add the matching release-checklist item**
+
+Defense in depth, so a human sees it too. Add a numbered step to the
+"Step-by-step: cutting a release" list in `.github/RELEASE.md` (renumbering
+the following steps to match the file's existing style):
+
+```markdown
+5. **If this release bumps the schema minor, revisit the dated
+   wire-shape freeze warning** in `PicoDeGallo::validate()`'s rustdoc
+   (`crates/pico-de-gallo-lib/src/lib.rs`) and remove or rewrite it.
+   The `validate_schema_freeze_rustdoc_must_be_revisited_before_schema_0_8`
+   test fails until this is done, so a forgotten warning blocks the
+   release rather than shipping stale public documentation.
 ```
 
 - [ ] **Step 5: Verify the docs build cleanly**
@@ -830,7 +888,7 @@ ambiguous and fail the doc job.
 Run:
 ```bash
 cd /home/balbi/workspace/pico-de-gallo
-RUSTDOCFLAGS=--cfg docsrs cargo +nightly doc -p pico-de-gallo-lib \
+RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc -p pico-de-gallo-lib \
     -p pico-de-gallo-internal --no-deps --all-features 2>&1 | tail -20
 ```
 Expected: PASS with **no** `ambiguous link` warnings.
@@ -1854,7 +1912,7 @@ Expected: all PASS.
 Run:
 ```bash
 cd /home/balbi/workspace/pico-de-gallo
-RUSTDOCFLAGS=--cfg docsrs cargo +nightly doc --workspace --no-deps --all-features 2>&1 | tail -20
+RUSTDOCFLAGS="--cfg docsrs" cargo +nightly doc --workspace --no-deps --all-features 2>&1 | tail -20
 mdbook build book 2>&1 | tail -5
 ```
 Expected: both PASS, with **no** ambiguous-intra-doc-link warnings (the

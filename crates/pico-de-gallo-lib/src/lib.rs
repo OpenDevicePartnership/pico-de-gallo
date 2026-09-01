@@ -1127,11 +1127,24 @@ impl PicoDeGallo {
     /// callers race on a cold cache, they therefore all observe the one
     /// authoritative winner rather than each observing its own response.
     ///
-    /// Note: during the schema freeze on this branch, a matching reported
-    /// schema version does not prove wire-*shape* compatibility, because
-    /// `DeviceInfo` changed while both peers still report 0.6.1. This
-    /// call bounds how long you can wait and checks the reported numbers;
-    /// it cannot make those numbers trustworthy.
+    /// This checks the reported numbers; it cannot make them trustworthy,
+    /// and there are two distinct ways they can mislead.
+    ///
+    /// Wire *shape*: during the current unreleased schema freeze a
+    /// matching schema version does not prove shape compatibility.
+    /// `DeviceInfo` gained `build_id` after schema 0.7.0 was released, so
+    /// this host cannot decode `device/info` from a released firmware
+    /// 0.11.0 even though both peers report schema 0.7. Build host and
+    /// firmware from the same tree until the 0.8.0 release.
+    ///
+    /// Wire *behaviour*: the schema version is derived from the wire
+    /// crate's package version, so it is intended to track wire-type
+    /// changes, not handler changes. Two firmware builds can report
+    /// identical versions and still frame the bus differently. To
+    /// identify the image, read
+    /// [`DeviceInfo::build_id()`](method@pico_de_gallo_internal::DeviceInfo::build_id).
+    /// It is informational only and never affects the outcome of this
+    /// call.
     ///
     /// # Errors
     ///
@@ -1891,6 +1904,47 @@ mod tests {
     fn check_schema_compatible_accepts_matching_versions() {
         let info = make_device_info(SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR);
         check_schema_compatible(&info).expect("matching versions must validate");
+    }
+
+    #[test]
+    fn check_schema_compatible_ignores_build_id() {
+        // `build_id` is informational: it names the image, it does not gate
+        // compatibility. If this ever starts failing, someone has wired the
+        // field into the compatibility policy, which would force a dishonest
+        // schema bump for every behavioural change (issue #159).
+        for id in ["", "unknown", "firmware-v0.11.0-27-gdeadbee-dirty"] {
+            let mut info = make_device_info(SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR);
+            info.build_id = id.try_into().unwrap();
+            check_schema_compatible(&info).unwrap_or_else(|e| panic!("build_id {id:?} must not gate: {e}"));
+        }
+    }
+
+    #[test]
+    fn device_info_exposes_build_id_accessor() {
+        let mut info = make_device_info(SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR);
+        info.build_id = "firmware-v0.11.0".try_into().unwrap();
+        assert_eq!(info.build_id(), "firmware-v0.11.0");
+    }
+
+    #[test]
+    // Both operands are compile-time constants, which is exactly the point:
+    // the assertion exists to fail the build's test run when the schema
+    // reaches 0.8, not to check anything about runtime state.
+    #[allow(clippy::assertions_on_constants)]
+    fn validate_schema_freeze_rustdoc_must_be_revisited_before_schema_0_8() {
+        // `validate()`'s rustdoc carries a DATED claim: that host and firmware
+        // must be built from the same tree "until the 0.8.0 release". Nothing
+        // else forces anyone to revisit it, and the paragraph it replaced was
+        // itself a stale dated claim about a 0.6.1 freeze that had already
+        // shipped. This test is the guard: it fails the moment the schema
+        // reaches 0.8, so whoever cuts that release must delete or rewrite the
+        // freeze warning rather than leaving public rustdoc quietly wrong.
+        assert!(
+            SCHEMA_VERSION_MAJOR == 0 && SCHEMA_VERSION_MINOR < 8,
+            "validate() rustdoc says host and firmware must be built from the \
+             same tree only until schema 0.8.0; remove or rewrite that dated \
+             freeze warning as part of the 0.8.0 release"
+        );
     }
 
     #[test]
