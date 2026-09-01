@@ -121,6 +121,37 @@ Read data (2 bytes):
 
 See [Transaction Batching](./batching.md) for the full mechanism.
 
+## Measured Transfer Limits
+
+On the measured schema-0.7 setup, an I²C read of **1014 bytes** after a
+one-byte write returned exactly the requested length. The 1015-byte probe
+failed in about 99 ms; larger tested lengths returned the same host-side
+response decode error, `Postcard(DeserializeUnexpectedEnd)`, with increasing
+latency, reaching 391 ms at 4096. No truncation was found at the checked lengths
+of 1, 64, 256, 512, 1000, 1013 and 1014 bytes.
+
+No failing write request length was observed through **4096 bytes**. Every probe
+crossed USB intact, was decoded, initiated a bus transaction and returned the
+expected address NACK. The target address was unpopulated, so no payload byte
+was clocked: this verifies request framing at 4096, not successful bus-level
+clocking of a 4096-byte payload. The probe could go no higher because 4096 is
+the wire-representable `MAX_TRANSFER_SIZE`.
+
+No hang was found at any tested I²C length, but that does not prove that no I²C
+hang window exists. The combined write/read frontier also remains unmeasured
+beyond a one-byte write, because the available TMP102 rejects longer writes.
+Treating the read and write bounds as independent is an **inference from
+mechanism, not measurement**: a shared roughly 1015-byte framing budget is hard
+to reconcile with a 4096-byte write request being delivered, decoded and
+initiating a bus transaction, while the observed failure occurs during response
+decoding and write data travels in the request.
+
+The Zephyr driver contains these observations locally by rejecting reads above
+1014 bytes and writes above 4096 bytes with `-EMSGSIZE`. This containment does
+not protect the `gallo` CLI, Rust library, C FFI, Python bindings, or MCP tools;
+those callers can still request larger reads and encounter the response decode
+error. See [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
 ## Rust Library
 
 All `PicoDeGallo` methods are `async`. `PicoDeGallo::new()` is

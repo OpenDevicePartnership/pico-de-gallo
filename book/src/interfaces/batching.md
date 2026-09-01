@@ -275,7 +275,8 @@ from the request, so no framing is needed in the response.
 |-----------|-------|
 | Maximum operations per batch | 64 (`MAX_BATCH_OPS`) |
 | Protocol packet-buffer/argument bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
-| Demonstrated end-to-end payload | Shape-dependent and below 4096; no general ceiling is published |
+| Direct I²C RPC measurements | Read: 1014 bytes after a 1-byte write; write: no failure through 4096 bytes |
+| Demonstrated SPI payload | Shape-dependent and below 4096; no general ceiling is published |
 | Zero-length I²C writes | Rejected with `ZeroLengthWrite` before bus access |
 
 If a batch violates these constraints, the firmware returns an error
@@ -285,5 +286,7 @@ atomic transaction as a whole and reports operation index 0.
 
 `MAX_TRANSFER_SIZE` is a buffer and argument bound, not a guarantee that 4096
 bytes of application data fit through postcard-rpc and COBS framing. Request
-shape and response size both matter. See the measured SPI evidence in
+shape and response size both matter. The I²C measurements used the direct
+`i2c/write` and `i2c/write-read` RPCs; `i2c/batch` was not measured. See the
+measured I²C and SPI evidence in
 [Troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).

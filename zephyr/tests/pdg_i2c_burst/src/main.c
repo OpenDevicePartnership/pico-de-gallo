@@ -90,7 +90,7 @@ static uint8_t pattern_a[PDG_BURST_REG_LEN] = { 0x12U, 0x30U };
 static uint8_t pattern_b[PDG_BURST_REG_LEN] = { 0x45U, 0x60U };
 
 /*
- * Mirrors PDG_I2C_MAX_BUFFER in zephyr/drivers/i2c/pdg_i2c.c.
+ * Mirrors PDG_I2C_MAX_WRITE in zephyr/drivers/i2c/pdg_i2c.c.
  *
  * Duplicated rather than shared, because that constant lives in a .c file with
  * no header and reaching into driver internals from a test would be worse. This

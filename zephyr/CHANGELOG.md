@@ -178,6 +178,39 @@ The format is based on
   reservation; a direct GPIO consumer can reconfigure or drive it between SPI
   operations and nothing detects it. This is an application obligation.
 
+### Changed
+
+- **The Zephyr I2C driver now uses separate read and write limits.** The old
+  `PDG_I2C_MAX_BUFFER = 4096` treated
+  `pico_de_gallo_internal::MAX_TRANSFER_SIZE` as an end-to-end limit in both
+  directions. That was wrong for reads: the constant bounds wire arguments and
+  packet buffers, while returned data must still fit response framing.
+
+  Hardware measurement on 2026-09-01 found a 1014-byte read edge. Reads of 1014
+  bytes returned exactly 1014 bytes. The 1015-byte probe failed in about 99 ms;
+  larger tested lengths returned the same host-side response decode error,
+  `Postcard(DeserializeUnexpectedEnd)`, with increasing latency, reaching 391 ms
+  at 4096. No dispatcher wedge or hang was found at any tested I2C length. This
+  records the observed test range, not a proof that no I2C hang window exists.
+
+  The write limit remains 4096, but its meaning is now explicit. No failing
+  write request length was observed from 1 through 4096: every request crossed
+  USB intact, was decoded, initiated a bus transaction and returned the
+  expected address NACK in 1--4 ms. The address was unpopulated, so no payload
+  byte was clocked. This verifies request framing at 4096, not successful
+  bus-level clocking of a 4096-byte payload. The probe could go no higher because
+  4096 is `MAX_TRANSFER_SIZE`.
+
+  Only write length 1 was paired with the read sweep. The available TMP102
+  rejects longer writes, so whether the write/read frontier is rectangular or
+  diagonal was not observed. Independent per-direction bounds are an
+  **inference from mechanism**: a shared roughly 1015-byte framing budget is
+  hard to reconcile with a 4096-byte write request being delivered, decoded and
+  initiating a bus transaction, while the read failure occurs during response
+  decoding and writes travel in the request. Closing that measurement gap
+  requires a target that accepts long writes.
+  ([#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146))
+
 ### Added
 
 - **Twister metadata for the seven buildable applications**, and a `twister` job
@@ -239,7 +272,7 @@ The format is based on
 
 - `CONFIG_HEAP_MEM_POOL_ADD_SIZE_PDG_I2C` (default 8192). The I2C driver now
   `k_malloc()`s a merge buffer for a group holding two or more non-empty
-  writes, at most `PDG_I2C_MAX_BUFFER` (4096) bytes and at most one live at a
+  writes, at most `PDG_I2C_MAX_WRITE` (4096) bytes and at most one live at a
   time. Declaring the contribution is mandatory, not optional: `k_malloc()`
   lives in `kernel/mempool.c`, which Zephyr compiles only when the system heap
   is non-empty, and `CONFIG_HEAP_MEM_POOL_SIZE` defaults to 0 — omitting it
@@ -383,21 +416,19 @@ The format is based on
 - **The transfer size limit is now checked per group, not per message.** Two
   4096-byte writes each passed the old per-message check and would have
   concatenated to 8192. The check is now an overflow-safe running total over a
-  group's writes, with the group's terminating read bounded separately, both
-  against the same 4096-byte figure and both returning `-EMSGSIZE`.
+  group's writes, with the group's terminating read bounded separately. At the
+  time of this change, both used the same 4096-byte figure and returned
+  `-EMSGSIZE`.
 
-  This does not narrow what was previously accepted: the reachable payload
-  range was already `[0, 4096]` through a single `i2c_msg`, and it still is.
+  This did not narrow what was accepted at the time: the driver-visible range
+  was already `[0, 4096]` through a single `i2c_msg`.
 
-  **4096 remains unmeasured.** It is `pico_de_gallo_internal::MAX_TRANSFER_SIZE`,
-  the firmware's declared argument bound, and not a demonstrated end-to-end
-  ceiling for this transport. `PDG_SPI_MAX_BUFFER` started from the same figure
-  and had to be lowered to 1013 after 4096 was measured to fail `-ECOMM` and
-  1015 to wedge the firmware dispatcher device-wide. `i2c/write` carries its
-  payload in the request frame exactly as `spi/transfer` does. It was left at
-  4096 rather than lowered by analogy, because a bound measured on a
-  differently framed endpoint is a guess and lowering it would reject
-  single-message writes that work today.
+  **Superseded by the newer separate read/write limit entry above.** Later
+  measurement established a 1014-byte read edge and verified write-request
+  framing through 4096. The write probes used an unpopulated address, so they
+  did not establish that 4096 payload bytes can be clocked to an ACKing target.
+  The original decision not to lower the write bound by analogy with SPI still
+  stands: a bound measured on a differently framed endpoint is a guess.
   ([#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146))
 
 - **A `NULL` message buffer is now refused only when the message claims to

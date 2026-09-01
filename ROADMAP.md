@@ -283,20 +283,20 @@ entirely `[Unreleased]`.
 
 #### Open work
 
-| Item                               | Issue                                                                     |
-|------------------------------------|---------------------------------------------------------------------------|
-| UART driver                        | [#152](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/152) |
-| ADC driver                         | [#153](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/153) |
-| 1-Wire (w1) driver                 | [#154](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/154) |
-| PWM driver                         | [#155](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/155) |
-| `PDG_I2C_MAX_BUFFER` is unmeasured | [#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146) |
-| Upstream the module                | [#98](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/98)   |
+| Item                                                        | Issue                                                                     |
+|-------------------------------------------------------------|---------------------------------------------------------------------------|
+| UART driver                                                 | [#152](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/152) |
+| ADC driver                                                  | [#153](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/153) |
+| 1-Wire (w1) driver                                          | [#154](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/154) |
+| PWM driver                                                  | [#155](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/155) |
+| Characterise the I2C write/read frontier and write ceiling | [#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146) |
+| Upstream the module                                         | [#98](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/98)   |
 
 [#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146)
-is the I2C analogue of the SPI ceiling in
-[Workstream A](#a-reliability--correctness). 4096 was assumed for SPI
-and turned out to be far lower; the I2C limit has never been measured
-at all.
+measured a read edge at 1014 bytes after a one-byte write and observed no
+failing write length through the wire-representable maximum of 4096 bytes.
+The write/read frontier beyond a one-byte write and the true write ceiling
+remain uncharacterised.
 
 ---
 

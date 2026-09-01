@@ -74,31 +74,77 @@ DT_INST_FOREACH_STATUS_OKAY(PDG_I2C_PARENT_ASSERTS)
 LOG_MODULE_REGISTER(i2c_pico_de_gallo, CONFIG_I2C_LOG_LEVEL);
 
 /*
- * Per-group transfer ceiling in bytes, applied separately to a group's
- * concatenated write payload and to its terminating read.
+ * Per-group driver-enforced limits in bytes. The write bound applies to a
+ * group's concatenated write payload, the read bound to its terminating read.
+ * They are two separate numbers because they rest on two different kinds of
+ * evidence, and the driver already checks them at two separate sites.
  *
- * This is pico_de_gallo_internal::MAX_TRANSFER_SIZE, the firmware's declared
- * single-transfer argument bound. It is NOT a measured end-to-end ceiling for
- * this transport and must not be read as one. The sibling SPI driver carries
- * PDG_SPI_MAX_BUFFER = 1013 precisely because starting from 4096 was wrong
- * twice over: on spi/transfer, 4096 TX-only failed -ECOMM, a reasoned 3072
- * full-duplex guess also failed -ECOMM, and 1015 TX-only wedged the firmware
- * dispatcher device-wide (AGENTS.md 13.17, 2026-08-19). i2c/write carries its
- * whole payload in the request frame exactly as spi/transfer does, so a lower
- * real ceiling plausibly exists here too. Nobody has measured it. Issue #146.
+ * MEASURED, NOT DERIVED. Measured 2026-09-01 on board serial 49742081C885AC69,
+ * firmware 0.11.0, schema 0.7, hardware revision 2, Linux host. Only i2c/write
+ * and i2c/write-read were exercised; i2c/batch was not measured. Returned
+ * lengths matched the requests at 1, 64, 256, 512, 1000, 1013 and 1014 bytes.
+ * Issue #146.
  *
- * 4096 is kept rather than lowered by analogy for two reasons. A bound
- * measured on a differently framed endpoint is a guess, not evidence, and the
- * SPI constant's own comment warns against both raising and lowering it by
- * guesswork. And lowering would reject single-message writes between any new
- * bound and 4096 that this driver accepts today.
+ * PDG_I2C_MAX_READ = 1014 is a measured edge. On i2c/write-read against a
+ * TMP102 at 0x48 with a 1-byte write, r = 1014 returns Ok and r = 1015 fails.
+ * The tested lengths at and above 1015 -- 1015, 1016, 1024, 2048, 3072 and
+ * 4096 -- returned the same error. Returned lengths were checked exactly at 1,
+ * 64, 256, 512, 1000, 1013 and 1014, with no truncation at those lengths.
  *
- * Concatenating a group's writes does not widen the exposure: the reachable
- * payload range was already [0, 4096] through one i2c_msg, and the running
- * total in validate_group_() keeps it there. What changes is only how easy a
- * large write is to construct.
+ * PDG_I2C_MAX_WRITE = 4096 is a VERIFIED REQUEST-FRAMING BOUND, not a verified
+ * bus-payload length or a discovered ceiling. On i2c/write to the unpopulated
+ * address 0x50, every length from 1 through 4096 returned NoAcknowledge in
+ * 1-4 ms. The NACK proves that each request crossed USB intact, was decoded by
+ * firmware, and initiated a bus transaction. Because the target NACKed the
+ * address, no payload byte was clocked. This test therefore does not establish
+ * that 4096 payload bytes can be queued, framed or clocked to a target that
+ * ACKs. 4096 is the top of the wire-representable range
+ * (pico_de_gallo_internal::MAX_TRANSFER_SIZE), so no larger request could be
+ * probed.
+ *
+ * WHAT IS STILL UNKNOWN, stated plainly so nobody mistakes this for a solved
+ * problem:
+ *
+ *   - The w x r frontier was NOT measured beyond the w = 1 row. Distinguishing
+ *     a rectangular bound (independent per-direction limits) from a diagonal
+ *     one (a shared w + r budget) needs long writes paired with long reads, and
+ *     the available TMP102 NACKs writes longer than 3 bytes; no other bus target
+ *     was available. So the two constants below are used as if independent,
+ *     but that independence was not measured beyond w = 1.
+ *   - The rectangular reading is INFERENCE FROM MECHANISM, NOT MEASUREMENT. A
+ *     shared w + r <= ~1015 framing budget is hard to reconcile with a
+ *     4096-byte write request being delivered, decoded and initiating a bus
+ *     transaction, and the read failure is a response-decode failure while w
+ *     travels in the request. That is an argument, not an observation. Do not
+ *     rely on it.
+ *   - No failing write request length was observed through 4096, but bus-level
+ *     payload clocking was not exercised. The true write ceiling is unknown,
+ *     and the current wire format cannot represent a larger probe. Raising
+ *     PDG_I2C_MAX_WRITE would require a wire-crate change first.
+ *   - One board, one firmware build, one host USB stack. Nothing here is known
+ *     to generalise across revisions, builds or hosts.
+ *
+ * FAILURE MODE. The 1015-byte probe produced the host-side communication error
+ * Postcard(DeserializeUnexpectedEnd) in about 99 ms. Larger tested lengths
+ * returned the same error with increasing latency, reaching 391 ms at 4096.
+ * No hang was observed at any tested length. The increasing latency is
+ * consistent with the firmware completing the bus read before response framing
+ * fails. It does not prove that sequence, or that no hang window exists; it
+ * only records that no hang was found.
+ *
+ * As with SPI, the read containment lives ONLY in the Zephyr driver. The gallo
+ * CLI, pico-de-gallo-lib, the C FFI, pyco-de-gallo and gallo-mcp can all still
+ * request reads above 1014 and reach whatever the firmware does with them.
+ *
+ * FOLLOW-UP (do not raise or lower either number by guesswork): derive the
+ * usable i2c/write and i2c/write-read payload ceilings from the worst-case
+ * request AND response framing treated as one shared contract, express that
+ * contract once rather than duplicating a constant per consumer, and pin limit
+ * and limit+1 tests against it. Closing the frontier gap needs no protocol work
+ * at all, only a bus target that accepts longer writes.
  */
-#define PDG_I2C_MAX_BUFFER 4096U
+#define PDG_I2C_MAX_READ  1014U
+#define PDG_I2C_MAX_WRITE 4096U
 
 struct pdg_i2c_config {
 	const struct device *mfd;
@@ -315,11 +361,11 @@ static int validate_group_(const struct i2c_msg *msgs, uint8_t first, uint8_t co
 		 * Subtracting from the limit rather than adding to the total
 		 * cannot overflow, because write_len never exceeds it.
 		 */
-		if (msg->len > (PDG_I2C_MAX_BUFFER - write_len)) {
+		if (msg->len > (PDG_I2C_MAX_WRITE - write_len)) {
 			LOG_ERR("The write messages of the I2C group starting at message %u "
-				"exceed the %u-byte transfer limit at message %u (%" PRIu32
+				"exceed the %u-byte write limit at message %u (%" PRIu32
 				" bytes after %zu). Returning -EMSGSIZE.",
-				first, PDG_I2C_MAX_BUFFER, first + i, msg->len, write_len);
+				first, PDG_I2C_MAX_WRITE, first + i, msg->len, write_len);
 			return -EMSGSIZE;
 		}
 
@@ -339,10 +385,10 @@ static int validate_group_(const struct i2c_msg *msgs, uint8_t first, uint8_t co
 			return -ENOTSUP;
 		}
 
-		if (read->len > PDG_I2C_MAX_BUFFER) {
+		if (read->len > PDG_I2C_MAX_READ) {
 			LOG_ERR("I2C read message %u is %" PRIu32 " bytes, which exceeds the "
-				"%u-byte transfer limit. Returning -EMSGSIZE.",
-				first + count - 1U, read->len, PDG_I2C_MAX_BUFFER);
+				"%u-byte read limit. Returning -EMSGSIZE.",
+				first + count - 1U, read->len, PDG_I2C_MAX_READ);
 			return -EMSGSIZE;
 		}
 	}

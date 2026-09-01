@@ -553,6 +553,20 @@ use 512 bytes or less. Do not infer 1013-byte duplex support from
 `PDG_SPI_MAX_BUFFER`; the protocol's 4096-byte constant is a packet-buffer and
 argument bound, not a demonstrated application-payload guarantee.
 
+The Zephyr I2C driver uses separate driver limits. Reads are limited to 1014
+bytes: 1014 returned exactly the requested length, while the tested lengths at
+and above 1015 returned `Postcard(DeserializeUnexpectedEnd)` rather than
+wedging the dispatcher. Writes remain limited to 4096 bytes because write
+requests at every length through 4096 crossed USB intact, were decoded, started
+a bus transaction and returned `NoAcknowledge` cleanly. The probes used an
+unpopulated address, so the address NACKed before any payload byte was clocked;
+they verify request framing at 4096, not successful bus-level clocking of a
+4096-byte payload. The wire format cannot represent a larger probe. No hang was
+found at any tested length; that does not prove that no hang window exists. Only
+the one-byte-write row of the write/read frontier was measured. Treating the
+two limits as independent is an **inference from the request/response
+mechanism**, not an observation of longer combined transfers.
+
 Zephyr collapses a child's `spi-cs-setup-delay-ns` and `spi-cs-hold-delay-ns`
 into one `DIV_ROUND_UP(MAX(setup_ns, hold_ns), 1000)` microsecond value and
 applies it after the assert and before the deassert. Microsecond waits between
@@ -710,7 +724,8 @@ These are enforced in the drivers and reported as errors, not silently ignored.
 | A `NULL` message buffer with a non-zero length | `-EINVAL` |
 | A group carrying no data bytes in either direction (an address-only probe) | `-ENOTSUP`, unless `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ` |
 | A probe whose substituted read is NACKed, with that option set | `-ENXIO` |
-| A group whose writes total over 4096 bytes, or whose read exceeds 4096 | `-EMSGSIZE` |
+| A group whose writes total over 4096 bytes | `-EMSGSIZE` |
+| A group whose read exceeds 1014 bytes | `-EMSGSIZE` |
 | Merge buffer allocation failure on a gather write | `-ENOMEM` |
 
 A group is every message since the previous `I2C_MSG_STOP`, and each group
@@ -738,11 +753,10 @@ Validation is a complete pre-pass. A rejected transfer returns before the
 controller lock is taken and before any USB call, so no partial bus traffic is
 ever emitted.
 
-The 4096-byte figure is the firmware's declared argument bound
-(`pico_de_gallo_internal::MAX_TRANSFER_SIZE`), **not** a measured end-to-end
-ceiling. The SPI driver's equivalent constant had to be lowered to 1013 after
-measurement; the same measurement for I2C has never been taken. See
-[#146](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/146).
+These bounds and their evidence are described with the SPI measurements above.
+In particular, 4096 is not the I2C write ceiling: it is the largest
+wire-representable request and the largest request-framing value probed. The
+unpopulated target NACKed the address before any payload byte was clocked.
 
 #### Zero-length transfers and the address-only probe
 
