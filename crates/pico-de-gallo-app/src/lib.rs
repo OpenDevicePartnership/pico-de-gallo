@@ -593,6 +593,60 @@ enum OneWireCommands {
     Search,
 }
 
+/// Render `device/info` as two tables.
+///
+/// Pure and returning `String` rather than printing, so the formatting is
+/// testable. Two tables rather than one because capabilities are naturally a
+/// wide boolean row; packing seven ticks into a single value cell is what the
+/// previous hand-rolled output did badly.
+fn render_device_info(info: &DeviceInfo) -> String {
+    use pico_de_gallo_lib::Capabilities;
+
+    let mut summary = Builder::with_capacity(5, 2);
+    summary.push_record([
+        "Firmware".to_string(),
+        format!("v{}.{}.{}", info.fw_major, info.fw_minor, info.fw_patch),
+    ]);
+    summary.push_record([
+        "Schema".to_string(),
+        format!("v{}.{}.{}", info.schema_major, info.schema_minor, info.schema_patch),
+    ]);
+    summary.push_record(["HW revision".to_string(), info.hw_version.to_string()]);
+    summary.push_record(["GPIOs".to_string(), info.num_gpios.to_string()]);
+    // Last, mirroring `build_id` being the last wire field.
+    summary.push_record(["Build".to_string(), info.build_id().to_string()]);
+
+    let mut summary = summary.build();
+    // Key/value rows, not a header plus data: `Builder` would otherwise
+    // render record 0 as a header and draw a rule under `Firmware`.
+    summary.with(Style::rounded().remove_horizontals());
+
+    let caps = [
+        ("I2C", Capabilities::I2C),
+        ("SPI", Capabilities::SPI),
+        ("UART", Capabilities::UART),
+        ("GPIO", Capabilities::GPIO),
+        ("PWM", Capabilities::PWM),
+        ("ADC", Capabilities::ADC),
+        ("1-Wire", Capabilities::ONEWIRE),
+    ];
+
+    let mut caps_table = Builder::with_capacity(2, caps.len());
+    caps_table.push_record(caps.iter().map(|(name, _)| (*name).to_string()));
+    caps_table.push_record(caps.iter().map(|(_, flag)| {
+        if info.capabilities.contains(*flag) {
+            "✓".to_string()
+        } else {
+            "✗".to_string()
+        }
+    }));
+
+    let mut caps_table = caps_table.build();
+    caps_table.with(Style::rounded());
+
+    format!("{summary}\n{caps_table}")
+}
+
 fn print_data(data: &[u8], format: &OutputFormat) {
     match format {
         OutputFormat::Hex => {
@@ -787,31 +841,7 @@ impl Cli {
         // Try the new device/info endpoint first; fall back to legacy version.
         match pg.device_info().await {
             Ok(info) => {
-                println!(
-                    "Pico de Gallo FW v{}.{}.{}",
-                    info.fw_major, info.fw_minor, info.fw_patch
-                );
-                println!(
-                    "Schema v{}.{}.{}",
-                    info.schema_major, info.schema_minor, info.schema_patch
-                );
-                println!("HW revision {}", info.hw_version);
-
-                let cap = info.capabilities;
-                let status = |flag: pico_de_gallo_lib::Capabilities| {
-                    if cap.contains(flag) { "✓" } else { "✗" }
-                };
-                println!(
-                    "Capabilities: I2C {} | SPI {} | UART {} | GPIO {} | PWM {} | ADC {} | 1-Wire {}",
-                    status(pico_de_gallo_lib::Capabilities::I2C),
-                    status(pico_de_gallo_lib::Capabilities::SPI),
-                    status(pico_de_gallo_lib::Capabilities::UART),
-                    status(pico_de_gallo_lib::Capabilities::GPIO),
-                    status(pico_de_gallo_lib::Capabilities::PWM),
-                    status(pico_de_gallo_lib::Capabilities::ADC),
-                    status(pico_de_gallo_lib::Capabilities::ONEWIRE),
-                );
-
+                println!("{}", render_device_info(&info));
                 Ok(())
             }
             Err(_) => {
@@ -2303,5 +2333,146 @@ mod tests {
             help.contains("<HIGH|LOW>") || help.contains("high"),
             "help must list the choices:\n{help}"
         );
+    }
+
+    // -------------------------- render_device_info tests -------------------------
+
+    fn sample_device_info() -> pico_de_gallo_lib::DeviceInfo {
+        pico_de_gallo_lib::DeviceInfo {
+            fw_major: 0,
+            fw_minor: 11,
+            fw_patch: 0,
+            schema_major: 0,
+            schema_minor: 7,
+            schema_patch: 0,
+            hw_version: 2,
+            capabilities: pico_de_gallo_lib::Capabilities::I2C | pico_de_gallo_lib::Capabilities::SPI,
+            num_gpios: 4,
+            build_id: "firmware-v0.11.0-27-gdeadbee-dirty".try_into().unwrap(),
+        }
+    }
+
+    /// Index of the rendered line holding `label`, for same-row assertions.
+    ///
+    /// Asserting a label and its value as unrelated substring searches proves
+    /// almost nothing: both would still pass if the values were swapped
+    /// between rows. Locating the row is what makes it a real pin.
+    fn summary_row(out: &str, label: &str) -> (usize, String) {
+        let (idx, line) = out
+            .lines()
+            .enumerate()
+            .find(|(_, line)| line.contains(label))
+            .unwrap_or_else(|| panic!("no row for label {label:?}:\n{out}"));
+        (idx, line.to_string())
+    }
+
+    fn assert_summary_row(out: &str, label: &str, value: &str) {
+        let (_, line) = summary_row(out, label);
+        assert!(
+            line.contains(value),
+            "row for {label:?} does not carry value {value:?}:\n{line}\n\nfull output:\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_device_info_reports_every_field() {
+        let out = render_device_info(&sample_device_info());
+        // Label AND value, on the same rendered row, for every summary field.
+        assert_summary_row(&out, "Firmware", "v0.11.0");
+        assert_summary_row(&out, "Schema", "v0.7.0");
+        assert_summary_row(&out, "HW revision", "2");
+        assert_summary_row(&out, "GPIOs", "4");
+        assert_summary_row(&out, "Build", "firmware-v0.11.0-27-gdeadbee-dirty");
+        // The summary table is key/value, so it must have no internal rule:
+        // `Builder` renders record 0 as a header unless horizontals are
+        // removed, which would draw a rule under `Firmware` and imply it is a
+        // column heading. Counting the left tee across both tables is the
+        // robust pin: exactly one may appear, the capabilities table's own
+        // genuine header rule. It fails if the summary rule returns (2) and
+        // also if someone strips the capabilities header rule (0), without
+        // hard-coding either table's full box-drawing layout.
+        assert_eq!(
+            out.matches('├').count(),
+            1,
+            "expected exactly one header rule (capabilities only):\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_device_info_puts_build_last() {
+        // `Build` is rendered last to mirror `build_id` being the last field
+        // of the wire type. Comparing row indices pins the ordering without
+        // hard-coding the whole table layout.
+        let out = render_device_info(&sample_device_info());
+        let (build, _) = summary_row(&out, "Build");
+        for label in ["Firmware", "Schema", "HW revision", "GPIOs"] {
+            let (other, _) = summary_row(&out, label);
+            assert!(
+                build > other,
+                "`Build` (row {build}) must come after {label:?} (row {other}):\n{out}"
+            );
+        }
+    }
+
+    #[test]
+    fn render_device_info_marks_capabilities() {
+        let out = render_device_info(&sample_device_info());
+        // Every capability column must be present and in the documented order.
+        let names = ["I2C", "SPI", "UART", "GPIO", "PWM", "ADC", "1-Wire"];
+        let (header_idx, header) = summary_row(&out, "1-Wire");
+        for name in names {
+            assert!(
+                header.contains(name),
+                "capability column {name:?} missing from header:\n{header}\n\nfull output:\n{out}"
+            );
+        }
+        // The marks row is two lines below the header (header, rule, marks).
+        // Assert its exact contents rather than merely that some tick exists:
+        // the fixture sets I2C and SPI only, so dropping or miswiring any
+        // column changes this sequence.
+        let marks: Vec<&str> = out
+            .lines()
+            .nth(header_idx + 2)
+            .unwrap_or_else(|| panic!("no marks row after header:\n{out}"))
+            .split('│')
+            .map(str::trim)
+            .filter(|cell| !cell.is_empty())
+            .collect();
+        assert_eq!(
+            marks,
+            ["✓", "✓", "✗", "✗", "✗", "✗", "✗"],
+            "capability marks do not match the fixture (I2C+SPI only):\n{out}"
+        );
+    }
+
+    #[test]
+    fn render_device_info_covers_every_known_capability() {
+        // `Capabilities` is an extensible u64 newtype and `render_device_info`
+        // keeps its own display list, so a bit added to the wire crate would
+        // otherwise be silently missing from `gallo version` with nothing
+        // failing. If this test breaks, a capability was added upstream: add
+        // it to the table in `render_device_info` and extend this mask.
+        use pico_de_gallo_lib::Capabilities;
+        let rendered = Capabilities::I2C
+            | Capabilities::SPI
+            | Capabilities::UART
+            | Capabilities::GPIO
+            | Capabilities::PWM
+            | Capabilities::ADC
+            | Capabilities::ONEWIRE;
+        assert_eq!(
+            rendered.bits(),
+            0x7F,
+            "a capability bit was added to pico-de-gallo-internal but not to \
+             the `gallo version` capability table"
+        );
+    }
+
+    #[test]
+    fn render_device_info_shows_dirty_marker_verbatim() {
+        // The `-dirty` suffix is the most valuable part of the build id for a
+        // bisecting developer, so make sure nothing strips or reformats it.
+        let out = render_device_info(&sample_device_info());
+        assert!(out.contains("-dirty"), "dirty marker lost:\n{out}");
     }
 }
