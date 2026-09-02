@@ -44,6 +44,7 @@ panic-probe = "1.0.0"
 pico-de-gallo-internal = { version = "0.8.0", path = "../pico-de-gallo-internal" }
 postcard = { version = "1", default-features = false }
 postcard-rpc = { version = "0.12",   features = ["embassy-usb-0_5-server"] }
+serde = { version = "1.0", default-features = false }
 static_cell = "2.1.1"
 
 # cargo build/run

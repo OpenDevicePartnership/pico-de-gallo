@@ -83,10 +83,7 @@ pub(crate) struct Slot {
 }
 
 impl Slot {
-    const IDLE: Self = Self {
-        deadline: None,
-        key: 0,
-    };
+    const IDLE: Self = Self { deadline: None, key: 0 };
 }
 
 /// Full supervised state. `Copy` so it can live in a `Cell`.
@@ -322,5 +319,80 @@ impl<R: WireRx> WireRx for WatchedRx<R> {
             dispatch_arm(DEFAULT_DISPATCH_BUDGET, frame_breadcrumb(frame));
         }
         result
+    }
+}
+use core::fmt::Arguments;
+
+use postcard_rpc::header::{VarHeader, VarKeyKind};
+use postcard_rpc::server::WireTx;
+use serde::Serialize;
+
+/// Wraps a [`WireTx`] so the TX slot is armed while any send is outstanding.
+///
+/// Coverage is narrower than it looks. postcard-rpc already bounds the
+/// endpoint writes themselves (`send_all` in
+/// `server/impls/embassy_usb_v0_5.rs` times out at
+/// `frames * timeout_ms_per_frame`). What it does not bound is
+/// `self.inner.lock().await` on `send()`'s first line — its own docs say the
+/// timer "is not started until the sender has exclusive access".
+///
+/// So this wrapper's *unique* coverage is the four `gpio_monitor_task` topic
+/// paths, which run outside `Server::run()` entirely and which the dispatch
+/// slot cannot see at all, plus TX-mutex starvation. Handler-initiated sends
+/// are already inside the dispatch slot.
+#[derive(Clone, Copy)]
+pub struct WatchedTx<T> {
+    inner: T,
+}
+
+impl<T> WatchedTx<T> {
+    pub const fn new(inner: T) -> Self {
+        Self { inner }
+    }
+}
+
+/// Arms the TX slot on construction and disarms on drop, so a cancelled send
+/// cannot leave the slot armed forever.
+struct TxGuard;
+
+impl TxGuard {
+    fn new() -> Self {
+        tx_enter();
+        Self
+    }
+}
+
+impl Drop for TxGuard {
+    fn drop(&mut self) {
+        tx_exit();
+    }
+}
+
+impl<T: WireTx> WireTx for WatchedTx<T> {
+    type Error = T::Error;
+
+    async fn wait_connection(&self) {
+        // A host that is not attached is legitimate idle, not a fault.
+        self.inner.wait_connection().await;
+    }
+
+    async fn send<M: Serialize + ?Sized>(&self, hdr: VarHeader, msg: &M) -> Result<(), Self::Error> {
+        let _guard = TxGuard::new();
+        self.inner.send(hdr, msg).await
+    }
+
+    async fn send_raw(&self, buf: &[u8]) -> Result<(), Self::Error> {
+        let _guard = TxGuard::new();
+        self.inner.send_raw(buf).await
+    }
+
+    async fn send_log_str(&self, kkind: VarKeyKind, s: &str) -> Result<(), Self::Error> {
+        let _guard = TxGuard::new();
+        self.inner.send_log_str(kkind, s).await
+    }
+
+    async fn send_log_fmt<'a>(&self, kkind: VarKeyKind, a: Arguments<'a>) -> Result<(), Self::Error> {
+        let _guard = TxGuard::new();
+        self.inner.send_log_fmt(kkind, a).await
     }
 }

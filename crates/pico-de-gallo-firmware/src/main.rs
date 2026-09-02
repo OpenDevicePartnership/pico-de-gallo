@@ -169,7 +169,7 @@ type AppStorage = WireStorage<ThreadModeRawMutex, AppDriver, 256, 256, 64, 256>;
 /// Packet buffer storage sized for [`MAX_TRANSFER_SIZE`] plus protocol overhead.
 type BufStorage = PacketBuffers<{ MAX_TRANSFER_SIZE + 1024 }, { MAX_TRANSFER_SIZE + 1024 }>;
 /// postcard-rpc transmit implementation.
-type AppTx = WireTxImpl<ThreadModeRawMutex, AppDriver>;
+type AppTx = progress::WatchedTx<WireTxImpl<ThreadModeRawMutex, AppDriver>>;
 /// postcard-rpc receive implementation.
 type AppRx = progress::WatchedRx<WireRxImpl<AppDriver>>;
 /// The complete postcard-rpc server type.
@@ -498,6 +498,9 @@ async fn main(spawner: Spawner) {
 
     let (mut builder, tx_impl, rx_impl) =
         STORAGE.init_without_build(driver, config, pbufs.tx_buf.as_mut_slice(), USB_FS_MAX_PACKET_SIZE);
+    // Wrap once here; `AppTx` is cloned into the GPIO monitor tasks and named
+    // by `define_dispatch!`, so every downstream use picks the wrapper up.
+    let tx_impl = progress::WatchedTx::new(tx_impl);
 
     // Advertise WebUSB so browsers can discover the device and surface the
     // landing page.
