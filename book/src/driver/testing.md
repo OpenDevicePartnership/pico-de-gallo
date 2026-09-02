@@ -12,19 +12,20 @@ only exists so you can manually test one register read.
 
 ## A hardware-in-the-loop test
 
-A minimal blocking test looks like this:
+Our public API is async, so the test is too:
 
 ```rust,no_run
 #[cfg(feature = "hil")]
-#[test]
-fn tmp102_reports_a_plausible_temperature() {
+#[tokio::test]
+async fn tmp102_reports_a_plausible_temperature() {
     use pico_de_gallo_hal::Hal;
+    use tmp102::{Celsius, Tmp102, A0};
 
     let hal = Hal::new();
     let i2c = hal.i2c();
     let mut sensor = Tmp102::new(i2c, A0::Gnd);
 
-    let Celsius(temp) = sensor.temperature_blocking().unwrap();
+    let Celsius(temp) = sensor.temperature().await.unwrap();
 
     assert!((-40.0..=125.0).contains(&temp));
 }
@@ -33,8 +34,8 @@ fn tmp102_reports_a_plausible_temperature() {
 That range is intentionally broad: it matches the device's operating
 range and keeps the test robust across different lab environments.
 
-If your driver's primary API is async, the same idea works with
-`#[tokio::test]` and `.await`.
+The blocking siblings we add in the next chapter work the same way with
+a plain `#[test]` and no `.await`.
 
 ## Why this is special
 
@@ -62,8 +63,8 @@ an opt-in feature:
 
 ```rust,noplayground
 #[cfg(feature = "hil")]
-#[test]
-fn tmp102_reports_a_plausible_temperature() {
+#[tokio::test]
+async fn tmp102_reports_a_plausible_temperature() {
     // ...
 }
 ```
@@ -73,6 +74,7 @@ And in `Cargo.toml`:
 ```toml
 [features]
 default = []
+defmt = ["dep:defmt", "device-driver/defmt"]
 hil = []
 ```
 

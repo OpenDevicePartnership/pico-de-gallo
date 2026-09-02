@@ -23,9 +23,12 @@ an arbitrary calibration constant.
 ## Collect configuration into a builder
 
 Instead of making users pass four unrelated arguments into
-`configure(...)`, give them a small builder with good defaults.
+`configure(...)`, give them a small builder with good defaults. The four
+fields are enums `ddc` generated from the manifest.
 
 ```rust,noplayground
+use registers::{ConversionRate, ExtendedMode, Polarity, ThermostatMode};
+
 #[derive(Clone, Copy, Debug)]
 pub struct Config {
     thermostat_mode: ThermostatMode,
@@ -40,7 +43,7 @@ impl Default for Config {
             thermostat_mode: ThermostatMode::Comparator,
             polarity: Polarity::ActiveLow,
             extended_mode: ExtendedMode::Disable,
-            conversion_rate: ConversionRate::_4Hz,
+            conversion_rate: ConversionRate::FourHz,
         }
     }
 }
@@ -77,7 +80,7 @@ That lets the call site read cleanly:
 ```rust,noplayground
 let config = Config::new()
     .extended_mode(ExtendedMode::Enable)
-    .conversion_rate(ConversionRate::_8Hz);
+    .conversion_rate(ConversionRate::EightHz);
 ```
 
 ## Use typestate for run vs shutdown
@@ -93,11 +96,13 @@ lets us express the distinction in the type system.
 ```rust,noplayground
 use core::marker::PhantomData;
 
+use registers::Tmp102Registers;
+
 pub struct Running;
 pub struct Shutdown;
 
 pub struct Tmp102<I2C, State = Running> {
-    inner: Inner<Interface<I2C>>,
+    inner: Tmp102Registers<Interface<I2C>>,
     extended_mode: bool,
     _state: PhantomData<State>,
 }
@@ -132,7 +137,7 @@ impl<I2C> Tmp102<I2C, Running> {
 
     pub fn continuous(i2c: I2C, a0: A0) -> Self {
         Self {
-            inner: Inner::new(Interface::new(i2c, a0)),
+            inner: Tmp102Registers::new(Interface::new(i2c, a0)),
             extended_mode: false,
             _state: PhantomData,
         }
@@ -159,6 +164,8 @@ smearing it across every high-level method.
 Here is the shape we are after for the async path:
 
 ```rust,noplayground
+use registers::ShutdownMode;
+
 impl<I2C: AsyncI2c> Tmp102<I2C, Running> {
     pub async fn configure(&mut self, config: Config) -> Result<(), ErrorKind> {
         self.extended_mode = config.extended_mode == ExtendedMode::Enable;

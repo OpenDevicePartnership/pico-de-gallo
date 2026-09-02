@@ -3,9 +3,9 @@
 At this point we have generated code, but it still has no idea how to
 reach real hardware. That is our job.
 
-The generated `Inner` type wants a tiny transport object that knows how
-to read and write a register by address. For TMP102 that transport is
-just I<sup>2</sup>C plus the selected device address.
+`Tmp102Registers` wants a tiny transport object that knows how to read
+and write a register by address. For TMP102 that transport is just
+I<sup>2</sup>C plus the selected device address.
 
 ## Encode the legal addresses
 
@@ -67,6 +67,24 @@ impl<I2C> Interface<I2C> {
 }
 ```
 
+`RegisterInterfaceBase` declares the two associated types that the
+blocking and async traits are both built on:
+
+```rust,noplayground
+use device_driver::RegisterInterfaceBase;
+use embedded_hal::i2c::ErrorKind;
+
+impl<I2C> RegisterInterfaceBase for Interface<I2C> {
+    type Error = ErrorKind;
+    type AddressType = u8;
+}
+```
+
+`AddressType` has to match the `register-address-type` we set in the
+manifest. `ErrorKind` comes from `embedded-hal`, and
+`embedded-hal-async` re-exports that same type, so one impl covers both
+sides and needs no bound on `I2C`.
+
 The job of `Interface` is deliberately boring: take register operations
 from generated code and translate them into real I<sup>2</sup>C
 transactions.
@@ -76,18 +94,15 @@ transactions.
 For blocking `embedded-hal`, that translation looks like this:
 
 ```rust,noplayground
-use device_driver::RegisterInterface;
-use embedded_hal::i2c::{Error, ErrorKind, I2c};
+use device_driver::{FieldsetMetadata, RegisterInterface};
+use embedded_hal::i2c::{Error, I2c};
 
 impl<I2C: I2c> RegisterInterface for Interface<I2C> {
-    type Error = ErrorKind;
-    type AddressType = u8;
-
     fn write_register(
         &mut self,
         address: Self::AddressType,
-        _size_bits: u32,
-        data: &[u8],
+        data: &mut [u8],
+        _metadata: &FieldsetMetadata,
     ) -> Result<(), Self::Error> {
         let mut buf = [0u8; 3];
         buf[0] = address;
@@ -99,8 +114,8 @@ impl<I2C: I2c> RegisterInterface for Interface<I2C> {
     fn read_register(
         &mut self,
         address: Self::AddressType,
-        _size_bits: u32,
         data: &mut [u8],
+        _metadata: &FieldsetMetadata,
     ) -> Result<(), Self::Error> {
         self.i2c
             .write_read(self.addr, &[address], data)
@@ -112,6 +127,12 @@ impl<I2C: I2c> RegisterInterface for Interface<I2C> {
 TMP102 keeps this pleasantly simple: one pointer byte, then two bytes of
 payload.
 
+Both methods take `data` as `&mut [u8]`. The write side gets a mutable
+buffer so that an interface can rearrange bytes in place before sending,
+which we do not need here. `_metadata` carries the fieldset's byte
+order, which we can also ignore because the framing is the same for
+every TMP102 register.
+
 > [!NOTE]
 > The fixed `[u8; 3]` buffer is TMP102-specific. For a bigger device with
 > wider registers, size the stack buffer to your largest write or switch
@@ -119,21 +140,19 @@ payload.
 
 ## Async register access
 
-The async version is the same idea with `.await` in the obvious places:
+The async version is the same idea with `.await` in the obvious places.
+Because the template resolved `both` at generation time, this impl sits
+next to the blocking one with no `cfg` between them:
 
 ```rust,noplayground
 use device_driver::AsyncRegisterInterface;
-use embedded_hal_async::i2c::{Error, ErrorKind, I2c as AsyncI2c};
 
 impl<I2C: AsyncI2c> AsyncRegisterInterface for Interface<I2C> {
-    type Error = ErrorKind;
-    type AddressType = u8;
-
     async fn write_register(
         &mut self,
         address: Self::AddressType,
-        _size_bits: u32,
-        data: &[u8],
+        data: &mut [u8],
+        _metadata: &FieldsetMetadata,
     ) -> Result<(), Self::Error> {
         let mut buf = [0u8; 3];
         buf[0] = address;
@@ -145,8 +164,8 @@ impl<I2C: AsyncI2c> AsyncRegisterInterface for Interface<I2C> {
     async fn read_register(
         &mut self,
         address: Self::AddressType,
-        _size_bits: u32,
         data: &mut [u8],
+        _metadata: &FieldsetMetadata,
     ) -> Result<(), Self::Error> {
         self.i2c
             .write_read(self.addr, &[address], data)
@@ -160,29 +179,27 @@ So far, so good. The generated code can finally talk to the sensor.
 
 ## Put the generated layer behind a real driver type
 
-If you stop here and run `cargo build`, you will see the same warnings as
-in the original draft: fields and methods in `Inner` are "never used".
-That is the compiler telling us something true: we generated a low-level
-API, but we still have not wrapped it in a driver humans will actually
-call.
+Build this as it stands and the compiler will report that fields and
+methods on `Tmp102Registers` are never used. It is right: we generated a
+low-level API and nothing calls it yet.
 
-A minimal wrapper is enough to make those warnings go away and give the
-chapter a clean place to keep growing:
+A minimal wrapper clears those warnings and gives the chapter a place to
+keep growing:
 
 ```rust,noplayground
-mod inner;
+mod registers;
 
-use inner::Inner;
+use registers::{ShutdownMode, Tmp102Registers};
 
 pub struct Tmp102<I2C> {
-    inner: Inner<Interface<I2C>>,
+    inner: Tmp102Registers<Interface<I2C>>,
     extended_mode: bool,
 }
 
 impl<I2C> Tmp102<I2C> {
     pub fn new(i2c: I2C, a0: A0) -> Self {
         Self {
-            inner: Inner::new(Interface::new(i2c, a0)),
+            inner: Tmp102Registers::new(Interface::new(i2c, a0)),
             extended_mode: false,
         }
     }

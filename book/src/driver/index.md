@@ -26,7 +26,7 @@ We will take the chapter in the same order you would tackle the work in
 practice:
 
 1. [Explore the device with `gallo`](explore.md)
-2. [Scaffold a normal Rust crate](scaffold.md)
+2. [Scaffold the crate with the drive-rs template](scaffold.md)
 3. [Describe the register map for code generation](codegen.md)
 4. [Bridge the generated code to `embedded-hal`](register-interface.md)
 5. [Build an ergonomic public API](ergonomic-api.md)

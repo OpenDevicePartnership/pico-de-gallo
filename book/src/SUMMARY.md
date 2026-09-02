@@ -41,7 +41,7 @@
 - [Overview](./driver/index.md)
 - [Exploring with `gallo`](./driver/explore.md)
 - [Scaffolding the Crate](./driver/scaffold.md)
-- [Generating Code from TOML](./driver/codegen.md)
+- [Describing the Device in DDSL](./driver/codegen.md)
 - [Implementing the Register Interface](./driver/register-interface.md)
 - [Designing an Ergonomic API](./driver/ergonomic-api.md)
 - [Testing with `pico-de-gallo-hal`](./driver/testing.md)
