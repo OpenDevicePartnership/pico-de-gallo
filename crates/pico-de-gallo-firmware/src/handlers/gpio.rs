@@ -2,7 +2,6 @@
 
 use defmt::debug;
 use embassy_rp::gpio::{Level, Pull};
-use embassy_time::{Duration, with_timeout};
 use pico_de_gallo_internal::{
     GpioDirection, GpioError, GpioGetRequest, GpioGetResponse, GpioPull, GpioPutRequest, GpioPutResponse,
     GpioSetConfigurationRequest, GpioSetConfigurationResponse, GpioState, GpioSubscribeRequest, GpioSubscribeResponse,
@@ -85,9 +84,10 @@ pub(crate) async fn gpio_put_handler(
 
 /// Handler for `gpio/wait-high` — blocks until the pin goes high.
 ///
-/// If `req.timeout_ms` is non-zero, the wait is bounded by that many
-/// milliseconds and returns [`GpioError::Timeout`] on expiry. A value of
-/// `0` preserves the pre-0.7 wait-forever behavior.
+/// `req.timeout_ms` is clamped to
+/// [`MAX_HANDLER_TIMEOUT`](crate::progress::MAX_HANDLER_TIMEOUT). A value of
+/// `0` selects that ceiling; it no longer means "wait forever". Returns
+/// [`GpioError::Timeout`] on expiry.
 pub(crate) async fn gpio_wait_for_high_handler(
     context: &mut Context,
     _header: VarHeader,
@@ -98,29 +98,24 @@ pub(crate) async fn gpio_wait_for_high_handler(
         "gpio wait_for_high: pin={=u8} timeout_ms={=u32}",
         req.pin, req.timeout_ms
     );
-    if req.timeout_ms == 0 {
-        gpio.wait_for_high().await;
-        Ok(())
-    } else {
-        match with_timeout(Duration::from_millis(req.timeout_ms as u64), gpio.wait_for_high()).await {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                defmt::warn!(
-                    "gpio_wait_for_high timeout (pin={=u8}, ms={=u32})",
-                    req.pin,
-                    req.timeout_ms
-                );
-                Err(GpioError::Timeout)
-            }
-        }
-    }
+    crate::progress::bounded(req.timeout_ms, gpio.wait_for_high())
+        .await
+        .map_err(|_| {
+            defmt::warn!(
+                "gpio_wait_for_high timeout (pin={=u8}, ms={=u32})",
+                req.pin,
+                req.timeout_ms
+            );
+            GpioError::Timeout
+        })
 }
 
 /// Handler for `gpio/wait-low` — blocks until the pin goes low.
 ///
-/// If `req.timeout_ms` is non-zero, the wait is bounded by that many
-/// milliseconds and returns [`GpioError::Timeout`] on expiry. A value of
-/// `0` preserves the pre-0.7 wait-forever behavior.
+/// `req.timeout_ms` is clamped to
+/// [`MAX_HANDLER_TIMEOUT`](crate::progress::MAX_HANDLER_TIMEOUT). A value of
+/// `0` selects that ceiling; it no longer means "wait forever". Returns
+/// [`GpioError::Timeout`] on expiry.
 pub(crate) async fn gpio_wait_for_low_handler(
     context: &mut Context,
     _header: VarHeader,
@@ -131,29 +126,24 @@ pub(crate) async fn gpio_wait_for_low_handler(
         "gpio wait_for_low: pin={=u8} timeout_ms={=u32}",
         req.pin, req.timeout_ms
     );
-    if req.timeout_ms == 0 {
-        gpio.wait_for_low().await;
-        Ok(())
-    } else {
-        match with_timeout(Duration::from_millis(req.timeout_ms as u64), gpio.wait_for_low()).await {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                defmt::warn!(
-                    "gpio_wait_for_low timeout (pin={=u8}, ms={=u32})",
-                    req.pin,
-                    req.timeout_ms
-                );
-                Err(GpioError::Timeout)
-            }
-        }
-    }
+    crate::progress::bounded(req.timeout_ms, gpio.wait_for_low())
+        .await
+        .map_err(|_| {
+            defmt::warn!(
+                "gpio_wait_for_low timeout (pin={=u8}, ms={=u32})",
+                req.pin,
+                req.timeout_ms
+            );
+            GpioError::Timeout
+        })
 }
 
 /// Handler for `gpio/wait-rising` — blocks until a rising edge.
 ///
-/// If `req.timeout_ms` is non-zero, the wait is bounded by that many
-/// milliseconds and returns [`GpioError::Timeout`] on expiry. A value of
-/// `0` preserves the pre-0.7 wait-forever behavior.
+/// `req.timeout_ms` is clamped to
+/// [`MAX_HANDLER_TIMEOUT`](crate::progress::MAX_HANDLER_TIMEOUT). A value of
+/// `0` selects that ceiling; it no longer means "wait forever". Returns
+/// [`GpioError::Timeout`] on expiry.
 pub(crate) async fn gpio_wait_for_rising_handler(
     context: &mut Context,
     _header: VarHeader,
@@ -164,34 +154,24 @@ pub(crate) async fn gpio_wait_for_rising_handler(
         "gpio wait_for_rising: pin={=u8} timeout_ms={=u32}",
         req.pin, req.timeout_ms
     );
-    if req.timeout_ms == 0 {
-        gpio.wait_for_rising_edge().await;
-        Ok(())
-    } else {
-        match with_timeout(
-            Duration::from_millis(req.timeout_ms as u64),
-            gpio.wait_for_rising_edge(),
-        )
+    crate::progress::bounded(req.timeout_ms, gpio.wait_for_rising_edge())
         .await
-        {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                defmt::warn!(
-                    "gpio_wait_for_rising timeout (pin={=u8}, ms={=u32})",
-                    req.pin,
-                    req.timeout_ms
-                );
-                Err(GpioError::Timeout)
-            }
-        }
-    }
+        .map_err(|_| {
+            defmt::warn!(
+                "gpio_wait_for_rising timeout (pin={=u8}, ms={=u32})",
+                req.pin,
+                req.timeout_ms
+            );
+            GpioError::Timeout
+        })
 }
 
 /// Handler for `gpio/wait-falling` — blocks until a falling edge.
 ///
-/// If `req.timeout_ms` is non-zero, the wait is bounded by that many
-/// milliseconds and returns [`GpioError::Timeout`] on expiry. A value of
-/// `0` preserves the pre-0.7 wait-forever behavior.
+/// `req.timeout_ms` is clamped to
+/// [`MAX_HANDLER_TIMEOUT`](crate::progress::MAX_HANDLER_TIMEOUT). A value of
+/// `0` selects that ceiling; it no longer means "wait forever". Returns
+/// [`GpioError::Timeout`] on expiry.
 pub(crate) async fn gpio_wait_for_falling_handler(
     context: &mut Context,
     _header: VarHeader,
@@ -202,34 +182,24 @@ pub(crate) async fn gpio_wait_for_falling_handler(
         "gpio wait_for_falling: pin={=u8} timeout_ms={=u32}",
         req.pin, req.timeout_ms
     );
-    if req.timeout_ms == 0 {
-        gpio.wait_for_falling_edge().await;
-        Ok(())
-    } else {
-        match with_timeout(
-            Duration::from_millis(req.timeout_ms as u64),
-            gpio.wait_for_falling_edge(),
-        )
+    crate::progress::bounded(req.timeout_ms, gpio.wait_for_falling_edge())
         .await
-        {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                defmt::warn!(
-                    "gpio_wait_for_falling timeout (pin={=u8}, ms={=u32})",
-                    req.pin,
-                    req.timeout_ms
-                );
-                Err(GpioError::Timeout)
-            }
-        }
-    }
+        .map_err(|_| {
+            defmt::warn!(
+                "gpio_wait_for_falling timeout (pin={=u8}, ms={=u32})",
+                req.pin,
+                req.timeout_ms
+            );
+            GpioError::Timeout
+        })
 }
 
 /// Handler for `gpio/wait-any` — blocks until any edge.
 ///
-/// If `req.timeout_ms` is non-zero, the wait is bounded by that many
-/// milliseconds and returns [`GpioError::Timeout`] on expiry. A value of
-/// `0` preserves the pre-0.7 wait-forever behavior.
+/// `req.timeout_ms` is clamped to
+/// [`MAX_HANDLER_TIMEOUT`](crate::progress::MAX_HANDLER_TIMEOUT). A value of
+/// `0` selects that ceiling; it no longer means "wait forever". Returns
+/// [`GpioError::Timeout`] on expiry.
 pub(crate) async fn gpio_wait_for_any_handler(
     context: &mut Context,
     _header: VarHeader,
@@ -240,22 +210,16 @@ pub(crate) async fn gpio_wait_for_any_handler(
         "gpio wait_for_any: pin={=u8} timeout_ms={=u32}",
         req.pin, req.timeout_ms
     );
-    if req.timeout_ms == 0 {
-        gpio.wait_for_any_edge().await;
-        Ok(())
-    } else {
-        match with_timeout(Duration::from_millis(req.timeout_ms as u64), gpio.wait_for_any_edge()).await {
-            Ok(()) => Ok(()),
-            Err(_) => {
-                defmt::warn!(
-                    "gpio_wait_for_any timeout (pin={=u8}, ms={=u32})",
-                    req.pin,
-                    req.timeout_ms
-                );
-                Err(GpioError::Timeout)
-            }
-        }
-    }
+    crate::progress::bounded(req.timeout_ms, gpio.wait_for_any_edge())
+        .await
+        .map_err(|_| {
+            defmt::warn!(
+                "gpio_wait_for_any timeout (pin={=u8}, ms={=u32})",
+                req.pin,
+                req.timeout_ms
+            );
+            GpioError::Timeout
+        })
 }
 
 /// Handler for `gpio/set-config` — configures a pin's direction and pull resistor.

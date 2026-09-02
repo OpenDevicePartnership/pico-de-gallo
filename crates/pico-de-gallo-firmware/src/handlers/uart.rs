@@ -18,7 +18,9 @@ use crate::context::Context;
 
 /// Handler for `uart/read` — reads bytes from the UART receive buffer.
 ///
-/// Reads up to `count` bytes with a timeout. Returns whatever bytes are
+/// Reads up to `count` bytes. `req.timeout_ms` is clamped to
+/// [`MAX_HANDLER_TIMEOUT`](crate::progress::MAX_HANDLER_TIMEOUT); a value of
+/// `0` still selects the non-blocking 1 ms poll. Returns whatever bytes are
 /// available (1 to count), or an empty slice on timeout.
 #[cfg(feature = "hw-rev2")]
 pub(crate) async fn uart_read_handler<'a>(
@@ -34,19 +36,15 @@ pub(crate) async fn uart_read_handler<'a>(
     let buf = &mut context.buf[..count];
 
     if req.timeout_ms == 0 {
-        // Non-blocking: try to read whatever is buffered
+        // Non-blocking: try to read whatever is buffered. Well inside the
+        // default dispatch budget, so no declaration is needed.
         match with_timeout(Duration::from_millis(1), AsyncRead::read(&mut context.uart, buf)).await {
             Ok(Ok(n)) => Ok(&context.buf[..n]),
             Ok(Err(_)) => Err(UartError::Other),
             Err(_) => Ok(&[]),
         }
     } else {
-        match with_timeout(
-            Duration::from_millis(req.timeout_ms as u64),
-            AsyncRead::read(&mut context.uart, buf),
-        )
-        .await
-        {
+        match crate::progress::bounded(req.timeout_ms, AsyncRead::read(&mut context.uart, buf)).await {
             Ok(Ok(n)) => Ok(&context.buf[..n]),
             Ok(Err(_)) => Err(UartError::Other),
             Err(_) => Ok(&[]),
