@@ -476,14 +476,28 @@ add/remove a pin):
 
 ```bash
 cd <workspace>                       # repo root (host) or crates/pico-de-gallo-firmware/ (firmware)
-rm -f Cargo.lock
-cargo generate-lockfile
-cargo check --locked                 # confirm it builds
+cargo check                          # updates Cargo.lock in place, minimally
+cargo check --locked                 # confirm the lock is now consistent
 git add Cargo.toml Cargo.lock
 ```
 
 Commit `Cargo.toml` and `Cargo.lock` together. CI fails PRs that
 split them.
+
+**Do not delete the lockfile to regenerate it.** `rm -f Cargo.lock &&
+cargo generate-lockfile` re-resolves the *entire* graph, so adding one
+dependency silently bumps every unrelated transitive crate that has
+published a newer semver-compatible version since the lock was written.
+Observed on the #157 branch: adding a single already-present dep moved
+30 unrelated crates, where a plain `cargo check` produced a one-line
+delta. That inflates review surface, and — as the 2026-05-04
+`embassy-usb-driver` row in §13.17 shows — an unnoticed transitive bump
+is exactly how this project has broken the firmware build before.
+
+`cargo check` performs the minimal edit that satisfies the new manifest
+and leaves everything else pinned. Reach for a full regeneration only
+when you actually intend a wholesale dependency refresh, and then say so
+in the commit message.
 
 ### 7.2 Pinned dependency rationale
 
@@ -718,9 +732,11 @@ dep changes.
 
 ### 13.3 Bumping a Cargo.toml without bumping the lock
 
-CI's `lockfile` job will fail and the PR can't merge. **Fix:**
-regenerate the lockfile (`rm -f Cargo.lock && cargo generate-lockfile`)
-and commit both files together.
+CI's `lockfile` job will fail and the PR can't merge. **Fix:** run
+`cargo check` in the affected workspace to update the lock in place,
+then `cargo check --locked` to confirm, and commit both files together
+(§7.1). Do **not** delete the lockfile — that re-resolves the whole
+graph and hides unrelated transitive bumps.
 
 ### 13.4 Reordering enum variants in `pico-de-gallo-internal`
 

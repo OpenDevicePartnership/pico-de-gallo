@@ -618,12 +618,11 @@ If there is no `serde` line, add to `[dependencies]`:
 serde = { version = "1.0", default-features = false }
 ```
 
-then regenerate the lockfile in the **firmware** workspace and commit both together, per AGENTS.md §7.1:
+then update the lockfile in the **firmware** workspace and commit both together, per AGENTS.md §7.1. Do not delete the lockfile — that re-resolves the whole graph:
 
 ```bash
 cd crates/pico-de-gallo-firmware
-rm -f Cargo.lock
-cargo generate-lockfile
+cargo check --target thumbv8m.main-none-eabihf
 cargo check --locked --target thumbv8m.main-none-eabihf
 ```
 
