@@ -171,7 +171,7 @@ type BufStorage = PacketBuffers<{ MAX_TRANSFER_SIZE + 1024 }, { MAX_TRANSFER_SIZ
 /// postcard-rpc transmit implementation.
 type AppTx = WireTxImpl<ThreadModeRawMutex, AppDriver>;
 /// postcard-rpc receive implementation.
-type AppRx = WireRxImpl<AppDriver>;
+type AppRx = progress::WatchedRx<WireRxImpl<AppDriver>>;
 /// The complete postcard-rpc server type.
 type AppServer = Server<AppTx, AppRx, WireRxBuf, PicoDeGallo>;
 
@@ -536,7 +536,13 @@ async fn main(spawner: Spawner) {
         spawner.must_spawn(gpio_monitor_task(slot, tx_impl.clone(), vkk));
     }
 
-    let mut server: AppServer = Server::new(tx_impl, rx_impl, pbufs.rx_buf.as_mut_slice(), dispatcher, vkk);
+    let mut server: AppServer = Server::new(
+        tx_impl,
+        progress::WatchedRx::new(rx_impl),
+        pbufs.rx_buf.as_mut_slice(),
+        dispatcher,
+        vkk,
+    );
     spawner.must_spawn(usb_task(device));
 
     loop {

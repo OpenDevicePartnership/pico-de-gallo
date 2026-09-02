@@ -277,3 +277,50 @@ pub(crate) fn declare(budget: Duration) -> BudgetGuard {
         previous: dispatch_extend(budget.min(MAX_HANDLER_TIMEOUT) + DISPATCH_SLACK),
     }
 }
+
+use postcard_rpc::server::WireRx;
+
+/// Wraps a [`WireRx`] so the dispatch slot arms exactly when a frame is
+/// received and disarms exactly when the server goes back to waiting.
+///
+/// Blocking inside `receive()` is legitimate idle, not a wedge, which is why
+/// the slot is disarmed *before* delegating.
+pub(crate) struct WatchedRx<R> {
+    inner: R,
+}
+
+impl<R> WatchedRx<R> {
+    pub(crate) const fn new(inner: R) -> Self {
+        Self { inner }
+    }
+}
+
+/// First four header bytes of a frame, as a breadcrumb.
+///
+/// Deliberately not a decoded `VarKey`: the key width varies with
+/// `VarKeyKind`, and this value only has to survive a reset and identify the
+/// culprit in a log, not round-trip.
+fn frame_breadcrumb(frame: &[u8]) -> u32 {
+    let mut bytes = [0u8; 4];
+    let n = frame.len().min(4);
+    bytes[..n].copy_from_slice(&frame[..n]);
+    u32::from_le_bytes(bytes)
+}
+
+impl<R: WireRx> WireRx for WatchedRx<R> {
+    type Error = R::Error;
+
+    async fn wait_connection(&mut self) {
+        dispatch_disarm();
+        self.inner.wait_connection().await;
+    }
+
+    async fn receive<'a>(&mut self, buf: &'a mut [u8]) -> Result<&'a mut [u8], Self::Error> {
+        dispatch_disarm();
+        let result = self.inner.receive(buf).await;
+        if let Ok(frame) = &result {
+            dispatch_arm(DEFAULT_DISPATCH_BUDGET, frame_breadcrumb(frame));
+        }
+        result
+    }
+}
