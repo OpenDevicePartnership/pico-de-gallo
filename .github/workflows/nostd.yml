@@ -20,7 +20,7 @@ jobs:
       fail-fast: false
       matrix:
         target: [thumbv8m.main-none-eabihf]
-        hw-rev: [hw-rev1, hw-rev2]
+        hw-rev: [hw-rev1, hw-rev2, wedge-test]
         include:
           # `hw-rev2` is the default feature; `hw-rev1` is deprecated and must
           # opt in explicitly. Keep these aligned with release-firmware.yml.
@@ -28,6 +28,10 @@ jobs:
             feature-flags: "--no-default-features --features hw-rev1"
           - hw-rev: hw-rev2
             feature-flags: ""
+          # TEST ONLY. Keeps the acceptance hatch from bit-rotting. This entry
+          # must NEVER be mirrored into release-firmware.yml.
+          - hw-rev: wedge-test
+            feature-flags: "--features wedge-test"
     steps:
       - uses: actions/checkout@v7
         with:

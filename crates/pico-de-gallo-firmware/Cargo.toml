@@ -19,6 +19,13 @@ default = ["hw-rev2"]
 # `main()` logs a `defmt::warn!` at boot when it is enabled.
 hw-rev1 = []
 hw-rev2 = []
+# TEST ONLY. Disables the zero-length I2C write guard (#101) so the
+# 2026-08-26 dispatcher wedge can be reproduced on demand, to prove the
+# supervisor resets the device instead of letting it hang. Re-enabling the
+# trigger corrupts nothing: the defect is that no I2C transaction ever
+# starts. NEVER enable this in a release build — release-firmware.yml must
+# not reference it.
+wedge-test = []
 
 [dependencies]
 cortex-m = { version = "0.7.7", features = ["inline-asm"] }
