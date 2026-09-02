@@ -20,17 +20,19 @@ keywords = ["tmp102", "temperature", "sensor", "i2c", "embedded-hal"]
 ```
 
 If the crate is `no_std`, say so clearly in the README and crate docs.
-If async support is optional, document the feature flag right next to the
-first example.
+The generated crate resolves blocking versus async when it is scaffolded
+rather than behind a Cargo feature, so state which of the two surfaces it
+exposes right next to the first example.
 
 ## docs.rs
 
-If your docs need specific features enabled, tell docs.rs explicitly:
+If your docs need specific features enabled, tell docs.rs explicitly.
+Here the only optional features are `defmt` and `hil`, so turning
+everything on is the simplest correct answer:
 
 ```toml
 [package.metadata.docs.rs]
-all-features = false
-features = ["async"]
+all-features = true
 rustdoc-args = ["--cfg", "docsrs"]
 ```
 
@@ -44,28 +46,40 @@ At minimum, include:
 - which traits the crate implements or expects
 - a blocking example
 - an async example if you support one
-- feature flags
+- feature flags (`defmt`, and the `hil` gate from the previous chapter)
 - wiring or address-selection notes for `A0`
 
 For this driver, also mention that `pico-de-gallo-hal` is only used for
 examples and tests; it should stay in `[dev-dependencies]` so downstream
 users do not pay for it.
 
-## Optional `defmt` support
+## `defmt` support
 
-If you want the crate to fit nicely into embedded firmware projects,
-optional `defmt` support is a nice touch:
+The template already wired this up, and it spans two places that have to
+agree. `Cargo.toml` keeps the dependency optional and forwards the
+feature to the runtime:
 
-- gate it behind a feature
-- make the dependency optional
-- keep the default feature set small
+```toml
+[dependencies]
+defmt = { version = "1", optional = true }
+
+[features]
+defmt = ["dep:defmt", "device-driver/defmt"]
+```
+
+The other half is the `--rust-defmt-feature=defmt` we passed to `ddc`.
+That is what puts `#[cfg(feature = "defmt")]` and
+`#[cfg_attr(feature = "defmt", derive(defmt::Format))]` in
+`registers.rs`. Rename the Cargo feature without regenerating and the
+generated code silently stops matching it.
 
 ## Release hygiene
 
-Two last bits of boring professionalism matter a lot:
+Three last bits of boring professionalism matter a lot:
 
 - keep a `CHANGELOG.md`
 - follow semver when you change the public API
+- commit `src/registers.rs` and let it into the package
 
 Small drivers live a long time. A clean README, useful crate metadata,
 and predictable releases do more for adoption than one more clever type.

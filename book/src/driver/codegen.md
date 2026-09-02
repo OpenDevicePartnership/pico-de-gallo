@@ -1,190 +1,176 @@
 # Describe the device for code generation
 
-The fastest way to lose momentum in driver work is to hand-write the
-same register boilerplate for the hundredth time. TMP102 is small, but
-it still benefits from code generation.
+Hand-writing register boilerplate is dull, repetitive work. TMP102 is
+small, but it still benefits from code generation.
 
-Create `tmp102.toml` in the crate root.
+Open `device.ddsl` in the crate root and replace the template's
+placeholder device with the real TMP102 map. If you started from an
+empty crate, create the file now.
 
-## 1. Global configuration
+DDSL is device-driver's own specification language. One file describes
+the whole map, including the name of the device itself.
 
-The `config` block tells `device-driver-cli` what an address looks like,
-how to split names into Rust identifiers, and how to interpret the
-register layout that follows.
+## 1. The device block
 
-```toml
-[config]
-register_address_type = "u8"
-default_byte_order = "LE"
-name_word_boundaries = ["Hyphen"]
+The `device` node names the generated low-level type and sets the
+defaults that every object below it inherits.
+
+```text
+device Tmp102Registers {
+    register-address-type: u8,
+    default-byte-order: LE,
+    default-access: RW,
+
+    // registers and fieldsets go here
+}
 ```
+
+- `register-address-type` is the type of a register address. TMP102's
+  pointer register is 8 bits, so `u8`.
+- `default-byte-order` sets the byte order for fieldsets that do not
+  declare one.
+- `default-access` sets the access for objects that do not declare one.
+
+The compiler works out word boundaries on its own, so `Tlow` becomes
+`tlow()` and `SD` becomes `sd()`.
 
 ## 2. Register declarations
 
-Now declare the four registers from the datasheet.
+TMP102 has four registers. Three of them, the reading and the two alert
+limits, share a single layout, so declare that layout once as a named
+fieldset and point all three registers at it.
 
-```toml
-[Temperature]
-type = "register"
-address = 0
-size_bits = 16
-access = "RO"
-description = "Temperature register"
+```text
+    /// Left-justified temperature code, transmitted MSB first.
+    ///
+    /// 12 significant bits in normal mode, 13 in extended mode.
+    fieldset TemperatureCode {
+        size-bytes: 2,
+        byte-order: BE,
 
-[Configuration]
-type = "register"
-address = 1
-size_bits = 16
-access = "RW"
-description = "Configuration register"
+        /// The raw 16-bit register value.
+        field value 15:0 -> uint,
+    },
 
-[Tlow]
-type = "register"
-address = 2
-size_bits = 16
-access = "RW"
-description = "T-low register"
+    /// Temperature register.
+    register Temperature {
+        address: 0,
+        access: RO,
+        fields: TemperatureCode,
+    },
 
-[Thigh]
-type = "register"
-address = 3
-size_bits = 16
-access = "RW"
-description = "T-high register"
+    /// T-low register.
+    register Tlow {
+        address: 2,
+        fields: TemperatureCode,
+    },
+
+    /// T-high register.
+    register Thigh {
+        address: 3,
+        fields: TemperatureCode,
+    },
 ```
 
-That alone is enough to generate raw register accessors. The real value
-comes from teaching the generator about individual fields.
+`byte-order: BE` overrides the device default for these three registers
+only, because TMP102 sends the temperature high byte first. `access: RO`
+on `Temperature` leaves the generated operation without a `write`
+method, so the datasheet's read-only rule shows up as a compile error.
 
 ## 3. Configuration bitfields
 
-TMP102's configuration register contains exactly the kind of structure
-we want to avoid encoding by hand: enums hidden inside bit ranges.
+The configuration register is a pile of enums packed into bit ranges.
+Its layout is used once, so define the fieldset inline; `fieldset _`
+gives the generated type the name of the register it sits in.
 
-```toml
-[Configuration.fields.SD]
-description = "Shutdown mode"
-base = "uint"
-start = 0
-end = 1
+```text
+    /// Configuration register.
+    register Configuration {
+        address: 1,
+        fields: fieldset _ {
+            size-bytes: 2,
 
-[Configuration.fields.SD.conversion]
-name = "shutdown-mode"
-description = "Shutdown mode"
-running = 0
-power-off = 1
-
-[Configuration.fields.TM]
-description = "Thermostat mode"
-base = "uint"
-start = 1
-end = 2
-
-[Configuration.fields.TM.conversion]
-name = "thermostat-mode"
-description = "Thermostat mode of operation"
-comparator = 0
-interrupt = 1
-
-[Configuration.fields.POL]
-description = "Alert pin polarity"
-base = "uint"
-start = 2
-end = 3
-
-[Configuration.fields.POL.conversion]
-name = "Polarity"
-description = "Alert pin polarity"
-active-low = 0
-active-high = 1
-
-[Configuration.fields.F]
-description = "Fault queue"
-base = "uint"
-start = 3
-end = 5
-
-[Configuration.fields.F.conversion]
-name = "fault-queue"
-description = "Fault queue depth"
-_1 = 0
-_2 = 1
-_4 = 2
-_6 = 3
-
-[Configuration.fields.R]
-description = "Resolution"
-access = "RO"
-base = "uint"
-start = 5
-end = 7
-
-[Configuration.fields.OS]
-description = "One-shot"
-base = "bool"
-start = 7
-end = 8
-
-[Configuration.fields.EM]
-description = "extended-mode"
-base = "uint"
-start = 12
-end = 13
-
-[Configuration.fields.EM.conversion]
-name = "extended-mode"
-description = "Extended mode"
-disable = 0
-enable = 1
-
-[Configuration.fields.AL]
-description = "Alert"
-base = "bool"
-start = 13
-end = 14
-
-[Configuration.fields.CR]
-description = "Conversion rate"
-base = "uint"
-start = 14
-end = 16
-
-[Configuration.fields.CR.conversion]
-name = "conversion-rate"
-description = "Conversion rate"
-_0_25Hz = 0
-_1Hz = 1
-_4Hz = 2
-_8Hz = 3
+            /// Shutdown mode.
+            field SD 0 -> _ as enum ShutdownMode {
+                Running: 0,
+                PowerOff: 1,
+            },
+            /// Thermostat mode of operation.
+            field TM 1 -> _ as enum ThermostatMode {
+                Comparator: 0,
+                Interrupt: 1,
+            },
+            /// Alert pin polarity.
+            field POL 2 -> _ as enum Polarity {
+                ActiveLow: 0,
+                ActiveHigh: 1,
+            },
+            /// Fault queue depth.
+            field F 4:3 -> _ as enum FaultQueue {
+                One: 0,
+                Two: 1,
+                Four: 2,
+                Six: 3,
+            },
+            /// Converter resolution.
+            field R 6:5 RO -> uint,
+            /// One-shot conversion.
+            field OS 7 -> bool,
+            /// Extended mode.
+            field EM 12 -> _ as enum ExtendedMode {
+                Disable: 0,
+                Enable: 1,
+            },
+            /// Alert.
+            field AL 13 -> bool,
+            /// Conversion rate.
+            field CR 15:14 -> _ as enum ConversionRate {
+                QuarterHz: 0,
+                OneHz: 1,
+                FourHz: 2,
+                EightHz: 3,
+            },
+        },
+    },
 ```
 
-A few nice things fall out of this immediately:
+Bit ranges are written high-to-low and are inclusive, so `15:14` is the
+two-bit conversion rate and a bare `0` is the single shutdown bit. The
+`_` before `as` lets each field take its base type from the enum it
+converts to.
+
+That means:
 
 - `SD` stops being a magic bit and becomes a `ShutdownMode`
-- `CR` stops being `0b10` and becomes `ConversionRate::_4Hz`
-- read-only fields like `R` are encoded as such in the generated API
+- `CR` stops being `0b10` and becomes `ConversionRate::FourHz`
+- `R` carries `RO`, so the fieldset gets `r()` but no `set_r()`
+- every enum covers all bit patterns of its field, so `sd()` and `cr()`
+  return the enum itself rather than a `Result`
 
 > [!TIP]
-> Keep the TOML file focused on *register truth*, not ergonomic policy.
-> The manifest should describe what the hardware is. The public driver
-> API can then decide what feels pleasant and safe for humans.
+> Keep the manifest focused on *register truth*, not ergonomic policy.
+> It describes what the hardware is; the public driver API decides what
+> is pleasant and safe to call.
 
-## 4. Generate `src/inner.rs`
+## 4. Generate `src/registers.rs`
 
 With the manifest in place, generate the low-level register interface:
 
 ```console
-$ device-driver-cli -m tmp102.toml -d Inner -o src\inner.rs
+$ ddc build rust -s device.ddsl -o src/registers.rs --rust-defmt-feature=defmt
 ```
+
+The `device` node supplies the name, so the generated low-level type is
+`Tmp102Registers`.
 
 The generated file is intentionally not the public API. We will treat it
 as an implementation detail:
 
-- `inner.rs` knows registers, fields, and access widths
+- `registers.rs` knows registers, fields, and access widths
 - our hand-written wrapper will know addresses, conversions, and
   human-facing methods
 
-That split is the sweet spot. Let the machine write the repetitive code;
-keep the policy decisions for the part humans maintain.
+Let the generator write the repetitive code and keep the policy
+decisions in the part you maintain.
 
 Next we connect that generated layer to a real I<sup>2</sup>C bus.

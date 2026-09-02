@@ -15,14 +15,16 @@ configuration builder do not care whether the bus is blocking or async.
 Keep those pieces shared:
 
 ```rust,noplayground
-fn decode_temperature(raw: [u8; 2], extended_mode: bool) -> Celsius {
-    let mut value = i16::from_be_bytes(raw);
-    value /= if extended_mode { 8 } else { 16 };
-    Celsius(value as f32 * 0.0625)
-}
+impl<I2C> Tmp102<I2C, Running> {
+    fn decode_temperature(raw: [u8; 2], extended_mode: bool) -> Celsius {
+        let mut value = i16::from_be_bytes(raw);
+        value /= if extended_mode { 8 } else { 16 };
+        Celsius(value as f32 * 0.0625)
+    }
 
-fn encode_limit(limit: Celsius) -> [u8; 2] {
-    ((limit.0 / 0.0625) as i16 * 16).to_be_bytes()
+    fn encode_limit(limit: Celsius) -> [u8; 2] {
+        ((limit.0 / 0.0625) as i16 * 16).to_be_bytes()
+    }
 }
 ```
 
@@ -42,7 +44,7 @@ for a small driver is:
 impl<I2C: embedded_hal::i2c::I2c> Tmp102<I2C, Running> {
     pub fn temperature_blocking(&mut self) -> Result<Celsius, ErrorKind> {
         let raw: [u8; 2] = self.inner.temperature().read()?.into();
-        Ok(decode_temperature(raw, self.extended_mode))
+        Ok(Self::decode_temperature(raw, self.extended_mode))
     }
 
     pub fn configure_blocking(&mut self, config: Config) -> Result<(), ErrorKind> {
@@ -60,7 +62,7 @@ impl<I2C: embedded_hal::i2c::I2c> Tmp102<I2C, Running> {
 impl<I2C: embedded_hal_async::i2c::I2c> Tmp102<I2C, Running> {
     pub async fn temperature(&mut self) -> Result<Celsius, ErrorKind> {
         let raw: [u8; 2] = self.inner.temperature().read_async().await?.into();
-        Ok(decode_temperature(raw, self.extended_mode))
+        Ok(Self::decode_temperature(raw, self.extended_mode))
     }
 
     pub async fn configure(&mut self, config: Config) -> Result<(), ErrorKind> {
@@ -87,20 +89,26 @@ though, the explicit version is easier to read and maintain.
 
 ```rust,no_run
 use pico_de_gallo_hal::Hal;
+use tmp102::{Celsius, Tmp102, A0};
 
-let hal = Hal::new();
-let i2c = hal.i2c();
-let mut sensor = Tmp102::continuous(i2c, A0::Gnd);
+fn main() -> Result<(), embedded_hal::i2c::ErrorKind> {
+    let hal = Hal::new();
+    let i2c = hal.i2c();
+    let mut sensor = Tmp102::continuous(i2c, A0::Gnd);
 
-let Celsius(temp) = sensor.temperature_blocking()?;
-println!("{temp:.2} °C");
-# Ok::<(), embedded_hal::i2c::ErrorKind>(())
+    let Celsius(temp) = sensor.temperature_blocking()?;
+    println!("{temp:.2} °C");
+    Ok(())
+}
 ```
 
 ## Same driver, async usage
 
+Same crate, same build, no extra feature flag — just an executor:
+
 ```rust,no_run
 use pico_de_gallo_hal::Hal;
+use tmp102::{Celsius, Tmp102, A0};
 
 #[tokio::main]
 async fn main() -> Result<(), embedded_hal::i2c::ErrorKind> {
