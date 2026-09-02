@@ -61,6 +61,15 @@ pub(crate) async fn uart_read_handler<'a>(
     Err(UartError::Unsupported)
 }
 
+/// Fixed supervisor budget for UART transmit paths.
+///
+/// The 1024-byte TX buffer takes about 27 s to drain at 300 baud, which
+/// exceeds the default dispatch budget. Deriving this from the configured
+/// baud rate is possible but couples the handler to UART configuration state
+/// for no practical gain.
+#[cfg(feature = "hw-rev2")]
+const UART_TX_BUDGET: Duration = Duration::from_secs(60);
+
 /// Handler for `uart/write` — writes bytes to the UART transmit buffer.
 #[cfg(feature = "hw-rev2")]
 pub(crate) async fn uart_write_handler(
@@ -72,6 +81,7 @@ pub(crate) async fn uart_write_handler(
         return Err(UartError::BufferTooLong);
     }
 
+    let _budget = crate::progress::declare(UART_TX_BUDGET);
     AsyncWrite::write_all(&mut context.uart, req.contents)
         .await
         .map_err(|_| UartError::Other)
@@ -89,6 +99,7 @@ pub(crate) async fn uart_write_handler(
 /// Handler for `uart/flush` — flushes the UART transmit buffer.
 #[cfg(feature = "hw-rev2")]
 pub(crate) async fn uart_flush_handler(context: &mut Context, _header: VarHeader, _req: ()) -> UartFlushResponse {
+    let _budget = crate::progress::declare(UART_TX_BUDGET);
     AsyncWrite::flush(&mut context.uart).await.map_err(|_| UartError::Other)
 }
 

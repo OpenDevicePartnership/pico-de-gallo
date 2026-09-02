@@ -11,10 +11,6 @@
 //! `main.rs` polls. See
 //! `docs/superpowers/specs/2026-08-31-dispatcher-progress-watchdog-design.md`.
 
-// TEMPORARY: every item below gains a caller in Tasks 2-6; this allow is
-// deleted once the supervisor and handlers are wired up.
-#![allow(dead_code)]
-
 use core::cell::Cell;
 
 use embassy_sync::blocking_mutex::Mutex;
