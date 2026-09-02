@@ -148,8 +148,8 @@ const WEBUSB_LANDING_URL: &str = "https://balbi.sh/pico-de-gallo/";
 
 /// `Url::new` asserts the post-scheme-strip length fits the URL descriptor. Catch
 /// an over-long URL at build time rather than as a boot panic: a panic in `main()`
-/// happens before `watchdog_feeder_task` is ever polled, so the watchdog would
-/// never arm and the device would hang dead.
+/// happens before `watchdog_supervisor_task` is ever polled, so the watchdog and
+/// dispatch-progress supervision would never arm and the device would hang dead.
 const _: () = assert!(WEBUSB_LANDING_URL.len() <= 252);
 
 /// `bRequest` value for WebUSB vendor control transfers.

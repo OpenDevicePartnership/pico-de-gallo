@@ -23,23 +23,51 @@ context, while background tasks handle work such as GPIO event publication.
 
 ### Watchdog
 
-A dedicated `watchdog_feeder_task` arms the RP2350 hardware watchdog at
-**2 seconds** and feeds it every **800 ms**. The 800 ms cadence leaves
-margin for embassy scheduling jitter.
+The `watchdog_supervisor_task` arms the RP2350 hardware watchdog at 2 seconds,
+but feeds it only while dispatch and transmit progress remain plausible. Two
+independent slots track that progress:
 
-The feeder is a **separate embassy task**, not part of any RPC handler. It proves
-executor liveness, not dispatcher progress. M5 demonstrated that a request
-handler can block the serial postcard-rpc dispatcher while the feeder continues
-to run, so the 2 s watchdog does not reset that failure mode. A 1015-byte
-TX-only `spi/transfer` reproduced this device-wide wedge. In those tests the
-device resumed after USB re-enumeration; that is an observed procedure, not
-proof that detach cancels the handler. Treat the watchdog as defense against
-executor-wide stalls, not bounded RPC cancellation or a guarantee against
-handler deadlock.
+- The **dispatch slot** arms after `receive()` returns a frame and disarms when
+  postcard-rpc goes back to waiting. Most handlers receive the 10-second
+  default budget. Slow handlers declare a longer bound; caller-supplied bounds
+  are capped at 30 minutes and receive 30 seconds of reply-serialization slack.
+- The **TX slot** arms while any `WireTx` sender is outstanding. Its 60-second
+  budget covers TX-mutex starvation and GPIO event publishers that run outside
+  the dispatcher.
 
-`pause_on_debug(true)` is set so an attached debugger session does not
-reset the chip while you single-step. The watchdog is the same on both
-`hw-rev1` and `hw-rev2` (no rev-specific code).
+The supervisor polls every 250 ms. The designed reset-latency bound is the
+active slot's budget plus one poll period; this is a design target, not a
+board-attached measurement. On expiry it logs the slot and frame breadcrumb,
+writes them to watchdog scratch registers, and triggers a forced reset. Reset
+drops USB and loses every GPIO subscription. On the next boot, RTT reports the
+breadcrumb and clears it.
+
+`pause_on_debug(true)` stops the hardware watchdog while the core is halted,
+but Embassy time continues. A supervisor wake gap above 500 ms is therefore
+treated as a debugger or scheduling discontinuity: live deadlines are shifted
+by the gap instead of resetting immediately. This rule's board-attached
+acceptance check is still pending.
+
+The supervisor is a backstop, not complete hang detection:
+
+- A wedge inside `receive()` itself is indistinguishable from legitimate idle
+  and is not covered.
+- The TX slot has no hardware acceptance trigger; its correctness rests on
+  inspection.
+- The single TX slot measures aggregate TX progress, not per-sender progress.
+  One permanently starved sender remains masked while another sender completes
+  at least once per 60-second `TX_BUDGET`.
+
+The `wedge-test` feature provides a build-only acceptance hatch by disabling
+the firmware's zero-length I<sup>2</sup>C write guard. It cannot be reached
+through the normal Rust-library or MCP `i2c_write` routes because both reject
+an empty payload host-side. Reproducing the wedge therefore also requires
+temporarily removing one of those host guards locally, as an uncommitted test
+mutation; the guards remain correct production behaviour.
+
+The watchdog is the same on both `hw-rev1` and `hw-rev2` (no rev-specific
+code). The firmware crate has no unit-test harness; none is implied by the pure
+supervision policy function.
 
 ### Build identity
 

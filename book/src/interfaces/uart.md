@@ -186,8 +186,10 @@ GND ────────────────── GND
 
 ## Non-blocking Read
 
-A timeout of **0** performs a non-blocking read — it returns immediately
-with whatever bytes are already in the receive buffer (possibly none):
+A timeout of **0** performs a non-blocking read — it returns after a 1 ms poll
+with whatever bytes are already in the receive buffer (possibly none). This is
+a deliberate exception to GPIO wait semantics. Non-zero values above the
+firmware's 30-minute ceiling are clamped to that ceiling:
 
 ```bash
 # Non-blocking: return whatever is buffered right now
@@ -198,7 +200,7 @@ gallo uart read --count 64 --timeout 0
 use pico_de_gallo_lib::PicoDeGallo;
 
 async fn drain_buffer(gallo: &PicoDeGallo) -> Vec<u8> {
-    // timeout_ms = 0 → non-blocking
+    // timeout_ms = 0 → 1 ms non-blocking poll
     gallo.uart_read(64, 0).await.unwrap()
 }
 ```

@@ -188,11 +188,20 @@ re-enumeration was observed to recover the SPI-framing and
 zero-length-I2C cases, and was never tested against the GPIO-wait
 case.
 
-The 2 s watchdog does not catch it. `watchdog_feeder_task` is an
-independent embassy task, so it keeps feeding while the dispatcher is
-parked — the watchdog proves executor liveness, not dispatcher
-progress. Closing that gap is
-[#157](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/157).
+The firmware now supervises dispatcher progress instead of feeding the 2 s
+watchdog unconditionally. A dispatch receives a 10-second default budget or a
+declared longer budget, and the independent transmit slot receives 60 seconds;
+the supervisor polls every 250 ms and forces a reset when a slot expires. GPIO
+waits and other caller-supplied bounds are capped at 30 minutes. A reset drops
+USB and GPIO subscriptions, but restores a board that would otherwise remain
+wedged.
+
+This is deliberately a backstop rather than complete hang detection. A wedge
+inside `receive()` is indistinguishable from legitimate idle. The TX slot has
+no hardware acceptance trigger and measures aggregate, not per-sender,
+progress, so another completing sender can mask one starved sender. The
+board-attached acceptance run for this implementation is still pending and
+must not be inferred from these design bounds.
 
 Three instances so far. Each is documented in full in the regression
 log at **AGENTS.md §13.17**; they are listed here only to establish
@@ -206,9 +215,9 @@ that this is a class rather than three unrelated bugs.
 
 Each was fixed or contained individually — a `timeout_ms` field on the
 GPIO wait request, a byte cap in the Zephyr SPI driver, a firmware
-guard rejecting empty writes. None of those addresses the shared root
-cause, which is that a handler which never returns can still take the
-whole device down.
+guard rejecting empty writes. Dispatch-progress supervision now addresses
+their shared handler-side failure mechanism within the limits above; the
+per-trigger guards remain necessary.
 
 #### The transfer-size ceiling
 
@@ -238,7 +247,6 @@ which buried it. It belongs here until the ceiling is enforced.
 
 | Item                                                       | Issue                                                                     |
 |------------------------------------------------------------|---------------------------------------------------------------------------|
-| Watchdog proves executor liveness, not dispatcher progress | [#157](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/157) |
 | Real payload ceiling unenforced on every host surface      | [#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158) |
 | Verify `i2c/batch` repeated START framing on an analyser   | [#160](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/160) |
 | `SPI_CS` pin cannot be used as a chip select               | [#99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99)   |

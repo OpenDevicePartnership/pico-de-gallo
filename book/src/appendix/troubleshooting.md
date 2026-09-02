@@ -62,6 +62,28 @@ bounds `device/info` at five seconds and then falls back to the legacy
 `version` endpoint, whose response type is unchanged and therefore
 still matches.
 
+### The board reset itself
+
+The firmware's dispatch supervisor deliberately resets the board when an
+in-flight request or transmit path exceeds its budget. USB disconnects and
+re-enumerates, and active GPIO subscriptions are lost.
+
+Attach an RTT reader and look for these `defmt` messages:
+
+```text
+supervisor: <slot> slot expired (key=<frame-key>) — resetting
+previous boot ended in a supervisor-forced reset: slot=<slot> key=<frame-key>
+```
+
+`dispatch` identifies a request handler that did not complete within its
+default or declared budget. `tx` identifies absence of aggregate transmit
+completion. The hexadecimal key is the first four frame-header bytes retained
+as a breadcrumb; include it with the preceding request when reporting a bug.
+
+If RTT instead reports `previous boot ended in a watchdog reset not raised by
+the supervisor`, the executor itself stopped making enough progress to feed the
+2-second hardware watchdog. A cold boot has neither message.
+
 ## Peripheral Errors
 
 ### `Unsupported` (status code −65)
