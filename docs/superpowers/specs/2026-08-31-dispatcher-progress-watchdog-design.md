@@ -202,6 +202,17 @@ topic paths, which run entirely outside `Server::run()` and which the dispatch
 slot cannot see at all, plus TX-mutex starvation. Handler-initiated sends are
 already inside the dispatch slot.
 
+**Amended during implementation.** The slot is shared by all senders and is
+refreshed whenever any one of them completes, because otherwise sustained
+healthy traffic expires a deadline pinned to the first sender's arm time and
+resets a working device. The consequence is that the slot measures
+**aggregate** TX progress, not per-sender progress: one permanently starved
+sender is masked for as long as some other sender completes at least once per
+[`TX_BUDGET`](#5-numbers). Complete starvation — no sender completing at all —
+is still detected. This is a weaker guarantee than "detects TX-mutex
+starvation" and is stated as such in the `WatchedTx` doc comment and in the
+AGENTS.md §13.17 row.
+
 ### 4.4 Declared budgets
 
 One primitive does the clamping and the declaring together, so the two cannot
@@ -295,7 +306,7 @@ implementation step, not an assumption.
 | `MAX_HANDLER_TIMEOUT`     | 30 minutes | Ceiling for `timeout_ms == 0` and for oversized values                   |
 | `DEFAULT_DISPATCH_BUDGET` | 10 s       | Covers `i2c/scan`'s 6.4 s worst case with margin                         |
 | `DISPATCH_SLACK`          | +30 s      | Added to **declared** budgets only, not to the default. Absorbs the handler's own `with_timeout` firing and reply serialisation |
-| `TX_BUDGET`               | 60 s       | Mutex starvation only; a real send is already ≤60 s by postcard-rpc      |
+| `TX_BUDGET`               | 60 s       | Absence of *aggregate* TX completion (see §4.3); a real send is already ≤60 s by postcard-rpc |
 | supervisor poll           | 250 ms     | Worst-case reset latency is budget + 250 ms                              |
 | watchdog period           | 2 s        | Unchanged. We fire via `trigger_reset()`, not by starving the feed       |
 
@@ -351,6 +362,15 @@ shipping a build that can corrupt an I2C device, for no extra signal.
 - **The TX slot has no hardware trigger.** Starving the TX mutex on demand
   needs a second contrived hook, which does not pay for itself. TX-slot
   correctness rests on inspection and on §6.4.
+- **The TX slot measures aggregate, not per-sender, progress** — see the
+  amendment in §4.3. One starved sender is masked while another completes.
+- **Reaching the trigger needs a host-side mutation too.** Discovered during
+  implementation: `check_i2c_write_payload` (`pico-de-gallo-lib/src/lib.rs:316`)
+  rejects an empty payload before it reaches the wire, and every host surface —
+  FFI, Python, MCP, Zephyr — routes through it. That guard is correct and is
+  #135's whole point, but it means §6.1's hatch is not reachable from an
+  unmodified host. The acceptance run therefore requires **two** temporary
+  uncommitted mutations: the host guard *and* the Task 8 supervisor control.
 
 ### 6.4 Unit coverage
 
