@@ -618,6 +618,7 @@ async fn watchdog_supervisor_task(mut watchdog: Watchdog) {
         Timer::after(progress::SUPERVISOR_POLL).await;
 
         let now = Instant::now();
+        let wake_gap = last_wake.map(|last| now.saturating_duration_since(last));
         let state = progress::snapshot();
 
         match progress::decide(now, last_wake, &state) {
@@ -626,9 +627,11 @@ async fn watchdog_supervisor_task(mut watchdog: Watchdog) {
             }
             progress::Action::Discontinuity => {
                 // A debugger halt or severe executor starvation, not a wedge.
-                // Re-arm rather than punishing the next resume.
+                // Shift live deadlines rather than punishing the next resume.
                 warn!("supervisor: time discontinuity, re-arming");
-                progress::rearm_live_slots();
+                if let Some(elapsed) = wake_gap {
+                    progress::rearm_live_slots(elapsed);
+                }
                 watchdog.feed(Duration::from_secs(2));
             }
             progress::Action::Expired(slot, key) => {

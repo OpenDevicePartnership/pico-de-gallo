@@ -40,9 +40,8 @@ pub(crate) const DISPATCH_SLACK: Duration = Duration::from_secs(30);
 
 /// Budget for an in-flight `WireTx` operation.
 ///
-/// Covers TX-mutex starvation only. postcard-rpc already bounds the endpoint
-/// writes themselves at `frames * timeout_ms_per_frame`, clamped to
-/// `1..=60000` ms.
+/// Detects absence of aggregate TX completion, including complete TX-mutex
+/// starvation. A sender completing while others remain refreshes the deadline.
 pub(crate) const TX_BUDGET: Duration = Duration::from_secs(60);
 
 /// Supervisor poll period. Worst-case reset latency is budget + this.
@@ -87,8 +86,8 @@ impl Slot {
 pub(crate) struct State {
     pub(crate) dispatch: Slot,
     pub(crate) tx: Slot,
-    /// Concurrent `WireTx` senders. The TX slot arms on 0→1 and disarms on
-    /// 1→0, because `AppTx` is cloned into four `gpio_monitor_task`s.
+    /// Concurrent `WireTx` senders. The TX slot arms on 0→1, refreshes whenever
+    /// one sender completes while others remain, and disarms on 1→0.
     pub(crate) tx_inflight: u16,
 }
 
@@ -167,33 +166,41 @@ pub(crate) fn dispatch_arm(budget: Duration, key: u32) {
     });
 }
 
-/// Push the dispatch deadline out, returning the previous value so a
-/// [`BudgetGuard`] can restore it.
-fn dispatch_extend(budget: Duration) -> Option<Instant> {
+/// Extend the dispatch deadline without ever shortening a live declaration.
+fn dispatch_extend(budget: Duration) {
     let deadline = Instant::now() + budget;
     with_state(|state| {
-        let previous = state.dispatch.deadline;
-        // Never shorten an existing deadline.
-        if previous.is_none_or(|p| deadline > p) {
+        if state.dispatch.deadline.is_none_or(|current| deadline > current) {
             state.dispatch.deadline = Some(deadline);
         }
-        previous
-    })
+    });
 }
 
-fn dispatch_restore(previous: Option<Instant>) {
-    with_state(|state| state.dispatch.deadline = previous);
-}
-
-/// Re-arm every live slot relative to now, after a detected discontinuity.
-pub(crate) fn rearm_live_slots() {
-    let now = Instant::now();
+/// Guarantee at least [`DISPATCH_SLACK`] remains on a live dispatch slot.
+///
+/// Never arms an idle slot and never shortens a longer live deadline.
+fn dispatch_ensure_reply_budget() {
+    let deadline = Instant::now() + DISPATCH_SLACK;
     with_state(|state| {
-        if state.dispatch.deadline.is_some() {
-            state.dispatch.deadline = Some(now + DEFAULT_DISPATCH_BUDGET);
+        if let Some(current) = state.dispatch.deadline
+            && deadline > current
+        {
+            state.dispatch.deadline = Some(deadline);
         }
-        if state.tx.deadline.is_some() {
-            state.tx.deadline = Some(now + TX_BUDGET);
+    });
+}
+
+/// Shift every live deadline by the observed scheduling discontinuity.
+///
+/// This preserves each slot's remaining declared budget across debugger halts
+/// or severe executor starvation.
+pub(crate) fn rearm_live_slots(elapsed: Duration) {
+    with_state(|state| {
+        if let Some(deadline) = state.dispatch.deadline {
+            state.dispatch.deadline = Some(deadline + elapsed);
+        }
+        if let Some(deadline) = state.tx.deadline {
+            state.tx.deadline = Some(deadline + elapsed);
         }
     });
 }
@@ -212,28 +219,31 @@ pub(crate) fn tx_enter() {
     });
 }
 
-/// A `WireTx` operation finished. Disarms the TX slot on the 1→0 edge.
+/// A `WireTx` operation finished.
+///
+/// Disarms on the 1→0 edge. If other senders remain, completion is observable
+/// TX progress and refreshes their shared deadline.
 pub(crate) fn tx_exit() {
+    let deadline = Instant::now() + TX_BUDGET;
     with_state(|state| {
         state.tx_inflight = state.tx_inflight.saturating_sub(1);
         if state.tx_inflight == 0 {
             state.tx = Slot::IDLE;
+        } else {
+            state.tx.deadline = Some(deadline);
         }
     });
 }
 
-/// Restores the previous dispatch deadline when dropped, including when the
-/// handler future is cancelled.
+/// Ensures reply-serialization slack remains after guarded work finishes.
 ///
-/// Returned by value rather than as `impl Drop` so callers can name the type
-/// and so the lifetime is obvious at the binding site.
-pub(crate) struct BudgetGuard {
-    previous: Option<Instant>,
-}
+/// The active declaration is never shortened. On drop, including cancellation,
+/// the dispatch retains at least [`DISPATCH_SLACK`] from the current instant.
+pub(crate) struct BudgetGuard;
 
 impl Drop for BudgetGuard {
     fn drop(&mut self) {
-        dispatch_restore(self.previous);
+        dispatch_ensure_reply_budget();
     }
 }
 
@@ -244,17 +254,18 @@ pub(crate) struct Expired;
 /// and run `fut` under it.
 ///
 /// Clamping and declaring happen in one call so the two cannot drift apart.
-/// `requested_ms == 0` clamps to [`MAX_HANDLER_TIMEOUT`] — it no longer means
-/// "wait forever".
+/// `requested_ms == 0` clamps to [`MAX_HANDLER_TIMEOUT`]. The declaration
+/// remains live through response serialization.
 pub(crate) async fn bounded<F: core::future::Future>(requested_ms: u32, fut: F) -> Result<F::Output, Expired> {
     let requested = if requested_ms == 0 {
         MAX_HANDLER_TIMEOUT
     } else {
         Duration::from_millis(u64::from(requested_ms)).min(MAX_HANDLER_TIMEOUT)
     };
-    let _guard = BudgetGuard {
-        previous: dispatch_extend(requested + DISPATCH_SLACK),
-    };
+
+    dispatch_extend(requested + DISPATCH_SLACK);
+    let _guard = BudgetGuard;
+
     embassy_time::with_timeout(requested, fut).await.map_err(|_| Expired)
 }
 
@@ -262,13 +273,11 @@ pub(crate) async fn bounded<F: core::future::Future>(requested_ms: u32, fut: F) 
 /// not expressed as a caller timeout, such as `spi/batch`'s accumulated
 /// `DelayNs` ops or `uart/flush`'s buffer drain.
 ///
-/// The returned guard restores the previous deadline when dropped, so bind it
-/// with `let _budget = ...` — a bare `let _ = ...` drops it immediately and
-/// silently does nothing.
+/// The returned guard preserves reply-serialization slack when dropped, so
+/// bind it with `let _budget = ...`; a bare `let _ = ...` drops it immediately.
 pub(crate) fn declare(budget: Duration) -> BudgetGuard {
-    BudgetGuard {
-        previous: dispatch_extend(budget.min(MAX_HANDLER_TIMEOUT) + DISPATCH_SLACK),
-    }
+    dispatch_extend(budget.min(MAX_HANDLER_TIMEOUT) + DISPATCH_SLACK);
+    BudgetGuard
 }
 
 use postcard_rpc::server::WireRx;
