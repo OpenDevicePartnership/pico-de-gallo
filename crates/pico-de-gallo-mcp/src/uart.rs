@@ -13,7 +13,8 @@ use crate::{GalloMcp, ok_device_json};
 pub struct UartReadParams {
     /// Number of bytes to read.
     pub count: u16,
-    /// Read timeout in milliseconds.
+    /// Read timeout in milliseconds. Zero selects a 1 ms non-blocking poll;
+    /// non-zero values above the firmware's 30-minute ceiling are clamped.
     pub timeout_ms: u32,
     /// USB serial number of the board to use. Required when two or more
     /// boards are attached and the server is not pinned to one; optional

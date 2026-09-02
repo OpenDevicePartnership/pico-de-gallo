@@ -100,7 +100,10 @@ pub fn validate_adc_channel(ch: u8) -> Result<u8, String> {
     Ok(ch)
 }
 
-/// Validate a non-zero timeout in milliseconds.
+/// Validate the MCP GPIO tools' non-zero timeout in milliseconds.
+///
+/// The firmware clamps accepted values above its 30-minute ceiling and
+/// returns the GPIO endpoint's `Timeout` error on expiry.
 pub fn validate_timeout_ms(ms: u32) -> Result<u32, String> {
     if ms == 0 {
         return Err("timeout_ms must be non-zero".to_string());

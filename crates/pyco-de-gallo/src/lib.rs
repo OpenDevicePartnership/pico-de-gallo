@@ -1068,6 +1068,8 @@ impl PycoDeGallo {
     ///
     /// Waits up to ``timeout_ms`` milliseconds for at least one byte. Returns
     /// whatever bytes are available (1 to ``count``), or an empty list on timeout.
+    /// Zero selects a 1 ms non-blocking poll. Non-zero values above the
+    /// firmware's 30-minute ceiling are clamped to it.
     ///
     /// Args:
     ///     count (int): Maximum number of bytes to read.
@@ -1116,32 +1118,31 @@ impl PycoDeGallo {
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
-    /// Block until the GPIO numbered by ``pin`` reads high.
+    /// Wait up to the firmware's 30-minute ceiling for GPIO ``pin`` to read high.
     fn gpio_wait_for_high(&self, py: Python<'_>, pin: u8) -> PyResult<()> {
         self.block(py, self.inner.gpio_wait_for_high(pin))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
-    /// Block until the GPIO numbered by ``pin`` reads low.
+    /// Wait up to the firmware's 30-minute ceiling for GPIO ``pin`` to read low.
     fn gpio_wait_for_low(&self, py: Python<'_>, pin: u8) -> PyResult<()> {
         self.block(py, self.inner.gpio_wait_for_low(pin))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
-    /// Block until a rising edge is detected on the GPIO numbered by ``pin``.
+    /// Wait up to the firmware's 30-minute ceiling for a rising edge on ``pin``.
     fn gpio_wait_for_rising_edge(&self, py: Python<'_>, pin: u8) -> PyResult<()> {
         self.block(py, self.inner.gpio_wait_for_rising_edge(pin))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
-    /// Block until a falling edge is detected on the GPIO numbered by ``pin``.
+    /// Wait up to the firmware's 30-minute ceiling for a falling edge on ``pin``.
     fn gpio_wait_for_falling_edge(&self, py: Python<'_>, pin: u8) -> PyResult<()> {
         self.block(py, self.inner.gpio_wait_for_falling_edge(pin))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
-    /// Block until any (rising or falling) edge is detected on the GPIO
-    /// numbered by ``pin``.
+    /// Wait up to the firmware's 30-minute ceiling for any edge on ``pin``.
     fn gpio_wait_for_any_edge(&self, py: Python<'_>, pin: u8) -> PyResult<()> {
         self.block(py, self.inner.gpio_wait_for_any_edge(pin))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
@@ -1152,9 +1153,9 @@ impl PycoDeGallo {
     ///
     /// Args:
     ///     pin (int): GPIO pin number (0–3).
-    ///     timeout_ms (int): Timeout in milliseconds. 0 means wait
-    ///         forever (equivalent to ``gpio_wait_for_high(pin)``).
-    ///         Non-zero bounds the firmware-side wait.
+    ///     timeout_ms (int): Timeout in milliseconds. 0 selects the
+    ///         firmware's 30-minute ceiling; oversized values are clamped to
+    ///         the same ceiling.
     ///
     /// Raises:
     ///     RuntimeError: If the timeout expires (``GpioError::Timeout``)

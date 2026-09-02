@@ -1039,7 +1039,8 @@ impl Gpio {
     /// Like the [`Wait::wait_for_high`](embedded_hal_async::digital::Wait::wait_for_high)
     /// trait method, but bounded. Returns
     /// `Err(GpioHalError::Gpio(GpioError::Timeout))` if the level is not
-    /// reached within `timeout`.
+    /// reached within `timeout`. A zero or oversized duration selects the
+    /// firmware's 30-minute ceiling.
     ///
     /// **Why this is project-specific:** `embedded-hal-async`'s `Wait`
     /// trait does not accept a timeout. Drivers that need bounded waits
@@ -1171,6 +1172,7 @@ impl embedded_hal::digital::StatefulOutputPin for Gpio {
 }
 
 impl embedded_hal_async::digital::Wait for Gpio {
+    /// Wait for high, bounded by the firmware's 30-minute ceiling.
     async fn wait_for_high(&mut self) -> Result<(), Self::Error> {
         let gallo = self.gallo.lock().await;
         gallo
@@ -1179,6 +1181,7 @@ impl embedded_hal_async::digital::Wait for Gpio {
             .map_err(GpioHalError::from)
     }
 
+    /// Wait for low, bounded by the firmware's 30-minute ceiling.
     async fn wait_for_low(&mut self) -> Result<(), Self::Error> {
         let gallo = self.gallo.lock().await;
         gallo
@@ -1187,6 +1190,7 @@ impl embedded_hal_async::digital::Wait for Gpio {
             .map_err(GpioHalError::from)
     }
 
+    /// Wait for a rising edge, bounded by the firmware's 30-minute ceiling.
     async fn wait_for_rising_edge(&mut self) -> Result<(), Self::Error> {
         let gallo = self.gallo.lock().await;
         gallo
@@ -1195,6 +1199,7 @@ impl embedded_hal_async::digital::Wait for Gpio {
             .map_err(GpioHalError::from)
     }
 
+    /// Wait for a falling edge, bounded by the firmware's 30-minute ceiling.
     async fn wait_for_falling_edge(&mut self) -> Result<(), Self::Error> {
         let gallo = self.gallo.lock().await;
         gallo
@@ -1203,6 +1208,7 @@ impl embedded_hal_async::digital::Wait for Gpio {
             .map_err(GpioHalError::from)
     }
 
+    /// Wait for either edge, bounded by the firmware's 30-minute ceiling.
     async fn wait_for_any_edge(&mut self) -> Result<(), Self::Error> {
         let gallo = self.gallo.lock().await;
         gallo
@@ -1754,7 +1760,9 @@ impl embedded_hal_async::delay::DelayNs for Delay {
 ///
 /// **Read timeout**: UART reads use a configurable timeout (in
 /// milliseconds) to avoid blocking the USB bridge indefinitely. The
-/// default timeout is 1000 ms. Adjust with [`Uart::set_timeout_ms`].
+/// default timeout is 1000 ms. Zero selects a 1 ms non-blocking poll;
+/// non-zero values above the firmware's 30-minute ceiling are clamped to it.
+/// Adjust with [`Uart::set_timeout_ms`].
 // Fields are unused without either feature.
 #[cfg_attr(
     not(any(feature = "embedded-io-06", feature = "embedded-io-07")),
@@ -1770,8 +1778,9 @@ impl Uart {
     /// Set the read timeout in milliseconds.
     ///
     /// This controls how long [`embedded_io::Read::read`] waits for
-    /// data before returning an empty result.  A value of 0 means
-    /// non-blocking: return whatever is buffered immediately.
+    /// data before returning an empty result. A value of 0 selects a 1 ms
+    /// non-blocking poll; non-zero values above the firmware's 30-minute
+    /// ceiling are clamped to it.
     pub fn set_timeout_ms(&mut self, timeout_ms: u32) {
         self.timeout_ms = timeout_ms;
     }
