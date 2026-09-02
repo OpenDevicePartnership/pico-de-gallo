@@ -47,6 +47,7 @@ compile_error!("One of `hw-rev1` or `hw-rev2` must be enabled");
 
 mod context;
 mod handlers;
+mod progress;
 
 use core::sync::atomic::{AtomicU16, Ordering};
 use defmt::{debug, warn};
