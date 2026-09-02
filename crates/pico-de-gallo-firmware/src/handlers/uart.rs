@@ -18,7 +18,9 @@ use crate::context::Context;
 
 /// Handler for `uart/read` — reads bytes from the UART receive buffer.
 ///
-/// Reads up to `count` bytes with a timeout. Returns whatever bytes are
+/// Reads up to `count` bytes. `req.timeout_ms` is clamped to
+/// [`MAX_HANDLER_TIMEOUT`](crate::progress::MAX_HANDLER_TIMEOUT); a value of
+/// `0` still selects the non-blocking 1 ms poll. Returns whatever bytes are
 /// available (1 to count), or an empty slice on timeout.
 #[cfg(feature = "hw-rev2")]
 pub(crate) async fn uart_read_handler<'a>(
@@ -34,19 +36,15 @@ pub(crate) async fn uart_read_handler<'a>(
     let buf = &mut context.buf[..count];
 
     if req.timeout_ms == 0 {
-        // Non-blocking: try to read whatever is buffered
+        // Non-blocking: try to read whatever is buffered. Well inside the
+        // default dispatch budget, so no declaration is needed.
         match with_timeout(Duration::from_millis(1), AsyncRead::read(&mut context.uart, buf)).await {
             Ok(Ok(n)) => Ok(&context.buf[..n]),
             Ok(Err(_)) => Err(UartError::Other),
             Err(_) => Ok(&[]),
         }
     } else {
-        match with_timeout(
-            Duration::from_millis(req.timeout_ms as u64),
-            AsyncRead::read(&mut context.uart, buf),
-        )
-        .await
-        {
+        match crate::progress::bounded(req.timeout_ms, AsyncRead::read(&mut context.uart, buf)).await {
             Ok(Ok(n)) => Ok(&context.buf[..n]),
             Ok(Err(_)) => Err(UartError::Other),
             Err(_) => Ok(&[]),
@@ -63,6 +61,15 @@ pub(crate) async fn uart_read_handler<'a>(
     Err(UartError::Unsupported)
 }
 
+/// Fixed supervisor budget for UART transmit paths.
+///
+/// The 1024-byte TX buffer takes about 27 s to drain at 300 baud, which
+/// exceeds the default dispatch budget. Deriving this from the configured
+/// baud rate is possible but couples the handler to UART configuration state
+/// for no practical gain.
+#[cfg(feature = "hw-rev2")]
+const UART_TX_BUDGET: Duration = Duration::from_secs(60);
+
 /// Handler for `uart/write` — writes bytes to the UART transmit buffer.
 #[cfg(feature = "hw-rev2")]
 pub(crate) async fn uart_write_handler(
@@ -74,6 +81,7 @@ pub(crate) async fn uart_write_handler(
         return Err(UartError::BufferTooLong);
     }
 
+    let _budget = crate::progress::declare(UART_TX_BUDGET);
     AsyncWrite::write_all(&mut context.uart, req.contents)
         .await
         .map_err(|_| UartError::Other)
@@ -91,6 +99,7 @@ pub(crate) async fn uart_write_handler(
 /// Handler for `uart/flush` — flushes the UART transmit buffer.
 #[cfg(feature = "hw-rev2")]
 pub(crate) async fn uart_flush_handler(context: &mut Context, _header: VarHeader, _req: ()) -> UartFlushResponse {
+    let _budget = crate::progress::declare(UART_TX_BUDGET);
     AsyncWrite::flush(&mut context.uart).await.map_err(|_| UartError::Other)
 }
 

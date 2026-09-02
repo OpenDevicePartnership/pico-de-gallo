@@ -227,7 +227,7 @@ The connection lock is keyed on the **board**, not on the server. Calls
 to different boards run concurrently; calls to the same board queue. A
 long-running tool — a `gpio_wait_*` sitting on its full `timeout_ms` —
 holds only the board it addressed, so traffic to every other board keeps
-flowing.
+flowing. Firmware clamps that timeout to a maximum of 30 minutes.
 
 `list_devices` connects to nothing and always answers immediately.
 `status` does open the board it names, so it queues behind a call that is
@@ -393,14 +393,16 @@ firmware, or schema mismatch — is `-32603` (internal error), never
 
 GPIO edge waits are **timeout-bounded only**: each of the three wait
 tools requires a non-zero `timeout_ms`. This release deliberately does
-**not** expose infinite/no-timeout waits or push-based edge
-subscriptions — a wait that never returns would stall the stdio session,
-and event streaming is out of scope for v1.
+**not** expose `0`, which would select the firmware's 30-minute ceiling,
+or push-based edge subscriptions — holding an MCP request for that full
+ceiling is undesirable, and event streaming is out of scope for v1.
+Oversized non-zero values are clamped to the same ceiling; expiry returns
+the GPIO endpoint's `Timeout` error.
 
 `uart_read`'s `timeout_ms` is **not** covered by that rule: there `0` is
 legal and means a non-blocking poll that returns whatever is already
-buffered. The asymmetry is deliberate — for an edge wait, `0` would mean
-an unbounded wait.
+buffered after 1 ms. Its non-zero path is clamped to the 30-minute ceiling.
+The asymmetry is deliberate.
 
 `uart_read` is also one of the twelve tools that hard-fail on a
 `hw-rev1` board: that revision supports only I<sup>2</sup>C, SPI, GPIO,

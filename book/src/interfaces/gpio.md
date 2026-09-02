@@ -154,6 +154,18 @@ The library provides async methods that block until a pin reaches the
 requested state or edge transition. These are useful for waiting on
 external signals without polling.
 
+### Timeout semantics
+
+All five `gpio/wait-*` endpoints carry a firmware-side timeout. A
+`timeout_ms` value of `0` selects the firmware's **30-minute ceiling**; it
+does not wait forever. Values above 30 minutes are clamped to that same
+ceiling. If the requested state or edge does not arrive before the effective
+timeout, the endpoint returns `GpioError::Timeout`.
+
+The Rust methods without a `_with_timeout` suffix and the C functions without
+a `_with_timeout_ms` suffix send `0`, so they also expire at the 30-minute
+ceiling. Use the explicit timeout variants when a shorter bound is appropriate.
+
 ### Rust Library
 
 ```rust,no_run
@@ -189,7 +201,7 @@ async fn wait_for_button(gallo: &PicoDeGallo) {
 #include <stdio.h>
 
 void wait_for_button(PicoDeGallo *gallo) {
-    /* These calls block until the requested edge/state occurs */
+    /* These calls wait up to the firmware's 30-minute ceiling. */
     gallo_gpio_wait_for_high(gallo, 1);
     printf("Pin 1 is now high\n");
 

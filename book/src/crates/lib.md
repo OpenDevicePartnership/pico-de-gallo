@@ -267,18 +267,19 @@ The library exposes one typed async method per firmware capability.
 | `spi_batch` | `cs_pin`, `ops` | Execute atomic multi-step SPI traffic under chip-select (see below) |
 | `spi_set_config` | `spi_frequency`, `spi_phase`, `spi_polarity` | Set SPI timing and mode |
 | `spi_get_config` | — | Read back the active SPI configuration |
-| `uart_read` | `count`, `timeout_ms` | Read up to `count` bytes with timeout |
+| `uart_read` | `count`, `timeout_ms` | Read up to `count` bytes; `0` is a 1 ms poll, oversized non-zero timeouts clamp at 30 minutes |
 | `uart_write` | `contents` | Queue bytes for UART transmit |
 | `uart_flush` | — | Wait until UART TX has drained |
 | `uart_set_config` | `baud_rate` | Set UART baud rate |
 | `uart_get_config` | — | Read back the active UART configuration |
 | `gpio_get` | `pin` | Read a GPIO level |
 | `gpio_put` | `pin`, `state` | Drive a GPIO high or low |
-| `gpio_wait_for_high` | `pin` | Wait until a pin reads high |
-| `gpio_wait_for_low` | `pin` | Wait until a pin reads low |
-| `gpio_wait_for_rising_edge` | `pin` | Wait for a rising edge |
-| `gpio_wait_for_falling_edge` | `pin` | Wait for a falling edge |
-| `gpio_wait_for_any_edge` | `pin` | Wait for either edge |
+| `gpio_wait_for_high` | `pin` | Wait until a pin reads high, bounded by the 30-minute firmware ceiling |
+| `gpio_wait_for_low` | `pin` | Wait until a pin reads low, bounded by the 30-minute firmware ceiling |
+| `gpio_wait_for_rising_edge` | `pin` | Wait for a rising edge, bounded by the 30-minute firmware ceiling |
+| `gpio_wait_for_falling_edge` | `pin` | Wait for a falling edge, bounded by the 30-minute firmware ceiling |
+| `gpio_wait_for_any_edge` | `pin` | Wait for either edge, bounded by the 30-minute firmware ceiling |
+| `gpio_wait_for_*_with_timeout` | `pin`, `timeout` | Use a shorter GPIO wait; zero and oversized values select the 30-minute ceiling, and expiry returns `GpioError::Timeout` |
 | `gpio_set_config` | `pin`, `direction`, `pull` | Set GPIO direction and pull resistor |
 | `gpio_subscribe` | `pin`, `edge` | Ask firmware to monitor a pin for edge events |
 | `gpio_unsubscribe` | `pin` | Stop firmware-side monitoring |

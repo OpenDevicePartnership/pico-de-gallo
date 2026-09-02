@@ -47,6 +47,7 @@ compile_error!("One of `hw-rev1` or `hw-rev2` must be enabled");
 
 mod context;
 mod handlers;
+mod progress;
 
 use core::sync::atomic::{AtomicU16, Ordering};
 use defmt::{debug, warn};
@@ -147,8 +148,8 @@ const WEBUSB_LANDING_URL: &str = "https://balbi.sh/pico-de-gallo/";
 
 /// `Url::new` asserts the post-scheme-strip length fits the URL descriptor. Catch
 /// an over-long URL at build time rather than as a boot panic: a panic in `main()`
-/// happens before `watchdog_feeder_task` is ever polled, so the watchdog would
-/// never arm and the device would hang dead.
+/// happens before `watchdog_supervisor_task` is ever polled, so the watchdog and
+/// dispatch-progress supervision would never arm and the device would hang dead.
 const _: () = assert!(WEBUSB_LANDING_URL.len() <= 252);
 
 /// `bRequest` value for WebUSB vendor control transfers.
@@ -168,9 +169,9 @@ type AppStorage = WireStorage<ThreadModeRawMutex, AppDriver, 256, 256, 64, 256>;
 /// Packet buffer storage sized for [`MAX_TRANSFER_SIZE`] plus protocol overhead.
 type BufStorage = PacketBuffers<{ MAX_TRANSFER_SIZE + 1024 }, { MAX_TRANSFER_SIZE + 1024 }>;
 /// postcard-rpc transmit implementation.
-type AppTx = WireTxImpl<ThreadModeRawMutex, AppDriver>;
+type AppTx = progress::WatchedTx<WireTxImpl<ThreadModeRawMutex, AppDriver>>;
 /// postcard-rpc receive implementation.
-type AppRx = WireRxImpl<AppDriver>;
+type AppRx = progress::WatchedRx<WireRxImpl<AppDriver>>;
 /// The complete postcard-rpc server type.
 type AppServer = Server<AppTx, AppRx, WireRxBuf, PicoDeGallo>;
 
@@ -394,7 +395,23 @@ async fn main(spawner: Spawner) {
     let p = embassy_rp::init(config);
 
     // Arm the hardware watchdog as defence-in-depth against handler hangs.
-    spawner.must_spawn(watchdog_feeder_task(Watchdog::new(p.WATCHDOG)));
+    // Read and clear any breadcrumb from a previous supervisor-forced reset
+    // before handing the peripheral over.
+    let mut watchdog = Watchdog::new(p.WATCHDOG);
+    let reason = watchdog.reset_reason();
+    let scratch_reason = watchdog.get_scratch(SCRATCH_REASON);
+    if scratch_reason & 0xFFFF_FF00 == WEDGE_MAGIC {
+        warn!(
+            "previous boot ended in a supervisor-forced reset: slot={=u32} key={=u32:#010x}",
+            scratch_reason & 0xFF,
+            watchdog.get_scratch(SCRATCH_KEY)
+        );
+        watchdog.set_scratch(SCRATCH_REASON, 0);
+        watchdog.set_scratch(SCRATCH_KEY, 0);
+    } else if reason.is_some() {
+        warn!("previous boot ended in a watchdog reset not raised by the supervisor");
+    }
+    spawner.must_spawn(watchdog_supervisor_task(watchdog));
 
     // Logged unconditionally at boot so an RTT capture records exactly which
     // image is running, independent of any host-side query.
@@ -497,6 +514,9 @@ async fn main(spawner: Spawner) {
 
     let (mut builder, tx_impl, rx_impl) =
         STORAGE.init_without_build(driver, config, pbufs.tx_buf.as_mut_slice(), USB_FS_MAX_PACKET_SIZE);
+    // Wrap once here; `AppTx` is cloned into the GPIO monitor tasks and named
+    // by `define_dispatch!`, so every downstream use picks the wrapper up.
+    let tx_impl = progress::WatchedTx::new(tx_impl);
 
     // Advertise WebUSB so browsers can discover the device and surface the
     // landing page.
@@ -535,7 +555,13 @@ async fn main(spawner: Spawner) {
         spawner.must_spawn(gpio_monitor_task(slot, tx_impl.clone(), vkk));
     }
 
-    let mut server: AppServer = Server::new(tx_impl, rx_impl, pbufs.rx_buf.as_mut_slice(), dispatcher, vkk);
+    let mut server: AppServer = Server::new(
+        tx_impl,
+        progress::WatchedRx::new(rx_impl),
+        pbufs.rx_buf.as_mut_slice(),
+        dispatcher,
+        vkk,
+    );
     spawner.must_spawn(usb_task(device));
 
     loop {
@@ -551,25 +577,74 @@ pub async fn usb_task(mut usb: UsbDevice<'static, AppDriver>) {
     usb.run().await;
 }
 
-/// Dedicated watchdog feeder task.
+/// Marks watchdog scratch slot 0 as ours.
 ///
-/// Feeds the embassy-rp watchdog every 800 ms with a 2-second timeout.
-/// The 800 ms cadence leaves margin for the embassy executor's scheduling
-/// jitter while keeping the worst-case recovery time under 2 seconds when
-/// a handler genuinely wedges (e.g., a 1-Wire PIO program stalling on a
-/// shorted bus, an embassy-rp peripheral bug).
+/// `trigger_reset()` sets `CTRL.TRIGGER`, which `reset_reason()` reports as
+/// `ResetReason::Forced` — but so does a `picotool reboot`, which goes through
+/// the same path. This magic is what separates the two.
+const WEDGE_MAGIC: u32 = 0x5044_4700; // "PDG\0"
+
+// RP2350 bootrom owns WATCHDOG_SCRATCH2..7: 4-7 are the boot vector
+// (magic/entry^magic/SP/entry) and 2-3 carry reboot() p0/p1, clobbered
+// by picotool reboot and BOOTSEL (RP2350 Datasheet 2025-07-29 S5.2.4,
+// pp.371-372). 0 and 1 appear nowhere in the datasheet or the published
+// bootrom source, so they are the only free words -- no spare margin.
+/// Scratch register holding [`WEDGE_MAGIC`] plus the slot discriminant.
+const SCRATCH_REASON: usize = 0;
+/// Scratch register holding the in-flight frame breadcrumb.
+const SCRATCH_KEY: usize = 1;
+
+/// Dispatch supervisor and watchdog feeder.
 ///
-/// This task MUST be the only feeder. RPC handlers cannot be trusted to
-/// feed — the dispatcher-wedge regression closed in commit fdb3ba15e64d
-/// means a wedged handler would also wedge any handler-based feed scheme.
-/// See docs/superpowers/specs/2026-06-03-pico-de-gallo-category-a-review-synthesis.md
-/// finding #3.
+/// Feeds the embassy-rp watchdog only while dispatcher progress is plausible.
+/// This task used to feed unconditionally, which made the watchdog prove
+/// **executor liveness** rather than **dispatcher progress**: postcard-rpc
+/// dispatches handlers serially, so a handler that never returns blocks every
+/// endpoint while this task keeps being scheduled. Three device-wide wedges
+/// survived that (AGENTS.md §13.17); recovery needed USB re-enumeration or a
+/// power cycle.
+///
+/// On expiry the device is reset. That drops USB and every GPIO subscription,
+/// which is a deliberate, documented loss and strictly better than a wedge
+/// that loses them anyway and does not come back.
 #[embassy_executor::task]
-async fn watchdog_feeder_task(mut watchdog: Watchdog) {
+async fn watchdog_supervisor_task(mut watchdog: Watchdog) {
     watchdog.start(Duration::from_secs(2));
     watchdog.pause_on_debug(true);
+
+    let mut last_wake: Option<Instant> = None;
+
     loop {
-        Timer::after(Duration::from_millis(800)).await;
-        watchdog.feed(Duration::from_secs(2));
+        Timer::after(progress::SUPERVISOR_POLL).await;
+
+        let now = Instant::now();
+        let wake_gap = last_wake.map(|last| now.saturating_duration_since(last));
+        let state = progress::snapshot();
+
+        match progress::decide(now, last_wake, &state) {
+            progress::Action::Feed => {
+                watchdog.feed(Duration::from_secs(2));
+            }
+            progress::Action::Discontinuity => {
+                // A debugger halt or severe executor starvation, not a wedge.
+                // Shift live deadlines rather than punishing the next resume.
+                warn!("supervisor: time discontinuity, re-arming");
+                if let Some(elapsed) = wake_gap {
+                    progress::rearm_live_slots(elapsed);
+                }
+                watchdog.feed(Duration::from_secs(2));
+            }
+            progress::Action::Expired(slot, key) => {
+                defmt::error!("supervisor: {} slot expired (key={=u32:#010x}) — resetting", slot, key);
+                watchdog.set_scratch(SCRATCH_REASON, WEDGE_MAGIC | (slot as u32));
+                watchdog.set_scratch(SCRATCH_KEY, key);
+                watchdog.trigger_reset();
+                // trigger_reset() does not return, but the compiler does not
+                // know that.
+                core::future::pending::<()>().await;
+            }
+        }
+
+        last_wake = Some(now);
     }
 }

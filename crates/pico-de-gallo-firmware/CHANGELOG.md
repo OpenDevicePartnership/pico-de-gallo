@@ -16,7 +16,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reruns on every build so incremental builds cannot retain stale identity.
   Closes #159.
 
+### Added
+
+- Dispatch-progress supervision now feeds the RP2350 watchdog only while the
+  postcard-rpc dispatch and aggregate transmit slots remain within their
+  budgets. An expired slot logs its frame breadcrumb, records it in watchdog
+  scratch registers, and forces a reset; the next boot reports the cause over
+  RTT. A reset drops USB and all GPIO subscriptions. The supervisor does not
+  cover a wedge inside `receive()`, and the TX slot has no hardware acceptance
+  trigger. Because that slot measures aggregate rather than per-sender
+  progress, one starved sender can remain masked while another completes at
+  least once per 60-second TX budget. Board-attached acceptance is pending.
+
 ### Changed
+
+- **BREAKING (behaviour):** the five `gpio/wait-*` handlers now cap every
+  caller-supplied timeout at 30 minutes. `timeout_ms == 0` selects that ceiling
+  instead of waiting forever, oversized values are clamped to it, and expiry
+  returns `GpioError::Timeout`. `uart/read` remains asymmetric: `0` is still a
+  1 ms non-blocking poll, while only its non-zero path is clamped.
+
+  > The `timeout_ms == 0` clamp changes documented wire semantics without
+  > changing wire shape. `pico-de-gallo-internal` remains at `0.7.0`, and
+  > `internal-v0.7.0` is already published, so `validate()` cannot distinguish a
+  > pre-clamp 0.7 firmware from a post-clamp one. Host and firmware must be
+  > built from the same tree until the bump lands. Before any release,
+  > AGENTS.md §16 step 2 requires bumping `internal` to `0.8.0` in lockstep
+  > across all eight released crates, with dep-spec rewrites, per-crate
+  > CHANGELOGs and both regenerated `Cargo.lock`s.
 
 - **BREAKING (build):** `hw-rev2` is now the default Cargo feature;
   `hw-rev1` is no longer default. A build with no feature flags produces

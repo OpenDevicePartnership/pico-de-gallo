@@ -94,8 +94,12 @@ pub(crate) async fn spi_batch_handler<'a>(
         });
     }
 
-    // Pre-validate: walk the ops to compute total read length
+    // Pre-validate: walk the ops to compute total read length and the
+    // accumulated delay, which sets this dispatch's supervisor budget.
+    // MAX_BATCH_OPS (64) DelayNs ops of u32::MAX ns each is 274.9 s, well
+    // above DEFAULT_DISPATCH_BUDGET.
     let mut total_read = 0usize;
+    let mut total_delay_ns = 0u64;
     let mut remaining = ops;
     let mut validated = 0usize;
     while !remaining.is_empty() {
@@ -106,6 +110,7 @@ pub(crate) async fn spi_batch_handler<'a>(
         match op {
             SpiBatchOp::Read { len } => total_read += len as usize,
             SpiBatchOp::Transfer { data } => total_read += data.len(),
+            SpiBatchOp::DelayNs { ns } => total_delay_ns = total_delay_ns.saturating_add(u64::from(ns)),
             _ => {}
         }
         remaining = rest;
@@ -123,6 +128,12 @@ pub(crate) async fn spi_batch_handler<'a>(
             kind: SpiError::BufferTooLong,
         });
     }
+
+    // Declared before chip-select is touched, so the guard covers the whole
+    // transaction including deassertion.
+    let _budget = crate::progress::declare(
+        crate::progress::DEFAULT_DISPATCH_BUDGET + embassy_time::Duration::from_millis(total_delay_ns / 1_000_000),
+    );
 
     if cs_idx >= NUM_GPIOS {
         debug!(

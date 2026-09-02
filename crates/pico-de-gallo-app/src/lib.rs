@@ -482,7 +482,8 @@ enum UartCommands {
         #[arg(short, long)]
         count: u16,
 
-        /// Read timeout in milliseconds (0 = non-blocking)
+        /// Read timeout in milliseconds (0 = 1 ms non-blocking poll;
+        /// non-zero values above 30 minutes are clamped)
         #[arg(short, long, default_value_t = 1000)]
         timeout: u32,
     },

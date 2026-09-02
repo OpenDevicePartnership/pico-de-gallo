@@ -346,6 +346,12 @@ Status gallo_gpio_subscribe(const PicoDeGallo *gallo, uint8_t pin, uint8_t edge)
 Status gallo_gpio_unsubscribe(const PicoDeGallo *gallo, uint8_t pin);
 ```
 
+The five wait functions above send `timeout_ms == 0`, which selects the
+firmware's 30-minute ceiling rather than waiting forever. Their
+`_with_timeout_ms` variants accept an explicit timeout; `0` selects the same
+ceiling, oversized values are clamped to it, and expiry returns
+`GpioTimeout` (−70).
+
 ### UART
 
 ```c
@@ -358,6 +364,10 @@ Status gallo_uart_flush(const PicoDeGallo *gallo);
 Status gallo_uart_set_config(const PicoDeGallo *gallo, uint32_t baud_rate);
 Status gallo_uart_get_config(const PicoDeGallo *gallo, uint32_t *out_baud_rate);
 ```
+
+For `gallo_uart_read`, `timeout_ms == 0` is a deliberate exception: it selects
+a 1 ms non-blocking poll. Non-zero values above the firmware's 30-minute
+ceiling are clamped to it; expiry returns success with `*out_len == 0`.
 
 ### PWM
 

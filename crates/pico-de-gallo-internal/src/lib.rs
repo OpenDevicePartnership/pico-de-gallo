@@ -540,8 +540,8 @@ pub enum GpioError {
     PinNotMonitored,
     /// Returned by `gpio_wait_*` endpoints when the host-supplied
     /// `timeout_ms` elapses before the requested edge or level is detected.
-    /// Introduced in schema 0.7. A `timeout_ms` of `0` waits forever and
-    /// never returns this variant.
+    /// Introduced in schema 0.7. A `timeout_ms` of `0` selects the firmware's
+    /// 30-minute ceiling; oversized values are clamped to the same ceiling.
     Timeout,
 }
 
@@ -600,9 +600,9 @@ impl From<GpioState> for bool {
 pub struct GpioWaitRequest {
     /// GPIO pin index (0–3).
     pub pin: u8,
-    /// Per-request timeout in milliseconds. A value of `0` means wait
-    /// forever (matches pre-0.7 behavior). Any non-zero value bounds the
-    /// firmware-side wait; expiry returns [`GpioError::Timeout`].
+    /// Per-request timeout in milliseconds. A value of `0` selects the
+    /// firmware's 30-minute ceiling; oversized values are clamped to the same
+    /// ceiling. Expiry returns [`GpioError::Timeout`].
     pub timeout_ms: u32,
 }
 
@@ -859,8 +859,9 @@ impl core::fmt::Display for UartError {
 pub struct UartReadRequest {
     /// Maximum number of bytes to read (max [`MAX_TRANSFER_SIZE`]).
     pub count: u16,
-    /// Maximum time to wait for data, in milliseconds.
-    /// Use 0 for a non-blocking poll (return only already-buffered data).
+    /// Maximum time to wait for data, in milliseconds. Use `0` for a 1 ms
+    /// non-blocking poll that returns only already-buffered data. Non-zero
+    /// values above the firmware's 30-minute ceiling are clamped to it.
     pub timeout_ms: u32,
 }
 

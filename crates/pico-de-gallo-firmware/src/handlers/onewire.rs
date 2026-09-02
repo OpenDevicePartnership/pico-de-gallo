@@ -105,6 +105,9 @@ pub(crate) async fn onewire_write_pullup_handler<'a>(
         req.data.len(),
         req.pullup_duration_ms
     );
+    // pullup_duration_ms is u16, so up to 65.5 s — well above the default
+    // dispatch budget.
+    let _budget = crate::progress::declare(duration + crate::progress::DEFAULT_DISPATCH_BUDGET);
     context.onewire.write_bytes_pullup(req.data, duration).await;
     Ok(())
 }

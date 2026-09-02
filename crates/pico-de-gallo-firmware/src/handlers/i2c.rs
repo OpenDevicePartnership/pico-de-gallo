@@ -46,14 +46,17 @@ pub(crate) async fn i2c_read_handler<'a>(
 /// still awaits a `STOP_DET`/`TX_ABRT` interrupt that can never fire. That
 /// await never completes, and because postcard-rpc dispatches handlers
 /// serially it wedges every endpoint on the device until USB
-/// re-enumeration. The watchdog does not help — `watchdog_feeder_task` is
-/// an independent task, so it keeps feeding while the dispatcher is stuck.
+/// re-enumeration. This guard is the primary defence: it returns a clean
+/// `ZeroLengthWrite` in about a millisecond. The `watchdog_supervisor_task`
+/// is only a backstop — without this guard it would notice the dispatch slot
+/// blowing its budget and reset the device after roughly 10 s.
 /// Issue #101.
 pub(crate) async fn i2c_write_handler<'a>(
     context: &mut Context,
     _header: VarHeader,
     req: I2cWriteRequest<'a>,
 ) -> I2cWriteResponse {
+    #[cfg(not(feature = "wedge-test"))]
     if req.contents.is_empty() {
         warn!("i2c write: empty payload refused (addr={=u8:#x})", req.address);
         return Err(I2cError::ZeroLengthWrite);

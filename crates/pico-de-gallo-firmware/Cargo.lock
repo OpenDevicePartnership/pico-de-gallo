@@ -1053,6 +1053,7 @@ dependencies = [
  "pico-de-gallo-internal",
  "postcard",
  "postcard-rpc",
+ "serde",
  "static_cell",
 ]
 

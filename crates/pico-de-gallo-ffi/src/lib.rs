@@ -1712,6 +1712,9 @@ pub unsafe extern "C" fn gallo_gpio_put(gallo: *const PicoDeGallo, pin: u8, stat
 
 /// gallo_gpio_wait_for_high - Waits for a high level on a given GPIO pin.
 ///
+/// The wait is bounded by the firmware's 30-minute ceiling; expiry returns
+/// [`Status::GpioTimeout`].
+///
 /// Returns `Status::Ok` in case of success or various error codes.
 ///
 /// # Safety
@@ -1739,6 +1742,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_high(gallo: *const PicoDeGallo, pin
 
 /// gallo_gpio_wait_for_low - Waits for a low level on a given GPIO pin.
 ///
+/// The wait is bounded by the firmware's 30-minute ceiling; expiry returns
+/// [`Status::GpioTimeout`].
+///
 /// Returns `Status::Ok` in case of success or various error codes.
 ///
 /// # Safety
@@ -1765,6 +1771,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_low(gallo: *const PicoDeGallo, pin:
 }
 
 /// gallo_gpio_wait_for_rising_edge - Waits for a rising edge on a given GPIO pin.
+///
+/// The wait is bounded by the firmware's 30-minute ceiling; expiry returns
+/// [`Status::GpioTimeout`].
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
 ///
@@ -1796,6 +1805,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_rising_edge(
 
 /// gallo_gpio_wait_for_falling_edge - Waits for a falling edge on a given GPIO pin.
 ///
+/// The wait is bounded by the firmware's 30-minute ceiling; expiry returns
+/// [`Status::GpioTimeout`].
+///
 /// Returns `Status::Ok` in case of success or various error codes.
 ///
 /// # Safety
@@ -1825,6 +1837,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_falling_edge(
 }
 
 /// gallo_gpio_wait_for_any_edge - Waits for a any edge on a given GPIO pin.
+///
+/// The wait is bounded by the firmware's 30-minute ceiling; expiry returns
+/// [`Status::GpioTimeout`].
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
 ///
@@ -1859,9 +1874,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_any_edge(
 /// gallo_gpio_wait_for_high_with_timeout_ms - Waits for a high level
 /// on a given GPIO pin, bounded by `timeout_ms`.
 ///
-/// `timeout_ms == 0` waits forever (equivalent to
-/// [`gallo_gpio_wait_for_high`]). Non-zero bounds the firmware-side
-/// wait; expiry returns [`Status::GpioTimeout`].
+/// `timeout_ms == 0` selects the firmware's 30-minute ceiling; oversized
+/// values are clamped to the same ceiling. Expiry returns
+/// [`Status::GpioTimeout`].
 ///
 /// Available on firmware schema 0.7+. Returns
 /// [`Status::SchemaMismatch`] if invoked against older firmware.
@@ -1900,9 +1915,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_high_with_timeout_ms(
 /// gallo_gpio_wait_for_low_with_timeout_ms - Waits for a low level on
 /// a given GPIO pin, bounded by `timeout_ms`.
 ///
-/// `timeout_ms == 0` waits forever (equivalent to
-/// [`gallo_gpio_wait_for_low`]). Non-zero bounds the firmware-side
-/// wait; expiry returns [`Status::GpioTimeout`].
+/// `timeout_ms == 0` selects the firmware's 30-minute ceiling; oversized
+/// values are clamped to the same ceiling. Expiry returns
+/// [`Status::GpioTimeout`].
 ///
 /// Available on firmware schema 0.7+. Returns
 /// [`Status::SchemaMismatch`] if invoked against older firmware.
@@ -1941,9 +1956,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_low_with_timeout_ms(
 /// gallo_gpio_wait_for_rising_edge_with_timeout_ms - Waits for a
 /// rising edge on a given GPIO pin, bounded by `timeout_ms`.
 ///
-/// `timeout_ms == 0` waits forever (equivalent to
-/// [`gallo_gpio_wait_for_rising_edge`]). Non-zero bounds the
-/// firmware-side wait; expiry returns [`Status::GpioTimeout`].
+/// `timeout_ms == 0` selects the firmware's 30-minute ceiling; oversized
+/// values are clamped to the same ceiling. Expiry returns
+/// [`Status::GpioTimeout`].
 ///
 /// Available on firmware schema 0.7+. Returns
 /// [`Status::SchemaMismatch`] if invoked against older firmware.
@@ -1981,9 +1996,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_rising_edge_with_timeout_ms(
 /// gallo_gpio_wait_for_falling_edge_with_timeout_ms - Waits for a
 /// falling edge on a given GPIO pin, bounded by `timeout_ms`.
 ///
-/// `timeout_ms == 0` waits forever (equivalent to
-/// [`gallo_gpio_wait_for_falling_edge`]). Non-zero bounds the
-/// firmware-side wait; expiry returns [`Status::GpioTimeout`].
+/// `timeout_ms == 0` selects the firmware's 30-minute ceiling; oversized
+/// values are clamped to the same ceiling. Expiry returns
+/// [`Status::GpioTimeout`].
 ///
 /// Available on firmware schema 0.7+. Returns
 /// [`Status::SchemaMismatch`] if invoked against older firmware.
@@ -2021,9 +2036,9 @@ pub unsafe extern "C" fn gallo_gpio_wait_for_falling_edge_with_timeout_ms(
 /// gallo_gpio_wait_for_any_edge_with_timeout_ms - Waits for any edge
 /// on a given GPIO pin, bounded by `timeout_ms`.
 ///
-/// `timeout_ms == 0` waits forever (equivalent to
-/// [`gallo_gpio_wait_for_any_edge`]). Non-zero bounds the
-/// firmware-side wait; expiry returns [`Status::GpioTimeout`].
+/// `timeout_ms == 0` selects the firmware's 30-minute ceiling; oversized
+/// values are clamped to the same ceiling. Expiry returns
+/// [`Status::GpioTimeout`].
 ///
 /// Available on firmware schema 0.7+. Returns
 /// [`Status::SchemaMismatch`] if invoked against older firmware.
@@ -2395,6 +2410,9 @@ pub unsafe extern "C" fn gallo_spi_get_config(
 /// number of bytes read to `*out_len`. If no data arrives within
 /// `timeout_ms` milliseconds, sets `*out_len = 0` and returns
 /// `Status::Ok`.
+///
+/// `timeout_ms == 0` selects a 1 ms non-blocking poll. Non-zero values above
+/// the firmware's 30-minute ceiling are clamped to it.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
 ///

@@ -744,6 +744,8 @@ impl PicoDeGallo {
     /// If no data is immediately available, it waits up to `timeout_ms`
     /// milliseconds for at least one byte. Returns whatever bytes are
     /// available (1 to `count`), or an empty `Vec` on timeout.
+    /// `timeout_ms == 0` selects a 1 ms non-blocking poll; non-zero values
+    /// above the firmware's 30-minute ceiling are clamped to it.
     ///
     /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
     /// (4096) bytes.
@@ -801,8 +803,8 @@ impl PicoDeGallo {
     ///
     /// Pico de Gallo offers 4 total GPIOs, numbered 0 through 3.
     ///
-    /// This call waits forever. For a bounded wait that returns
-    /// [`GpioError::Timeout`] on expiry, use
+    /// This call selects the firmware's 30-minute ceiling and returns
+    /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_high_with_timeout`](Self::gpio_wait_for_high_with_timeout).
     pub async fn gpio_wait_for_high(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
         self.client
@@ -815,8 +817,8 @@ impl PicoDeGallo {
     ///
     /// Pico de Gallo offers 4 total GPIOs, numbered 0 through 3.
     ///
-    /// This call waits forever. For a bounded wait that returns
-    /// [`GpioError::Timeout`] on expiry, use
+    /// This call selects the firmware's 30-minute ceiling and returns
+    /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_low_with_timeout`](Self::gpio_wait_for_low_with_timeout).
     pub async fn gpio_wait_for_low(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
         self.client
@@ -829,8 +831,8 @@ impl PicoDeGallo {
     ///
     /// Pico de Gallo offers 4 total GPIOs, numbered 0 through 3.
     ///
-    /// This call waits forever. For a bounded wait that returns
-    /// [`GpioError::Timeout`] on expiry, use
+    /// This call selects the firmware's 30-minute ceiling and returns
+    /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_rising_edge_with_timeout`](Self::gpio_wait_for_rising_edge_with_timeout).
     pub async fn gpio_wait_for_rising_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
         self.client
@@ -843,8 +845,8 @@ impl PicoDeGallo {
     ///
     /// Pico de Gallo offers 4 total GPIOs, numbered 0 through 3.
     ///
-    /// This call waits forever. For a bounded wait that returns
-    /// [`GpioError::Timeout`] on expiry, use
+    /// This call selects the firmware's 30-minute ceiling and returns
+    /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_falling_edge_with_timeout`](Self::gpio_wait_for_falling_edge_with_timeout).
     pub async fn gpio_wait_for_falling_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
         self.client
@@ -858,8 +860,8 @@ impl PicoDeGallo {
     ///
     /// Pico de Gallo offers 4 total GPIOs, numbered 0 through 3.
     ///
-    /// This call waits forever. For a bounded wait that returns
-    /// [`GpioError::Timeout`] on expiry, use
+    /// This call selects the firmware's 30-minute ceiling and returns
+    /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_any_edge_with_timeout`](Self::gpio_wait_for_any_edge_with_timeout).
     pub async fn gpio_wait_for_any_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
         self.client
@@ -872,9 +874,9 @@ impl PicoDeGallo {
     /// host-supplied timeout.
     ///
     /// Returns `Err(PicoDeGalloError::Endpoint(GpioError::Timeout))`
-    /// if the level is not reached within `timeout`. Passing
-    /// `Duration::ZERO` reverts to the wait-forever behavior of
-    /// [`gpio_wait_for_high`](Self::gpio_wait_for_high).
+    /// if the level is not reached within `timeout`. `Duration::ZERO`
+    /// selects the firmware's 30-minute ceiling; larger durations are
+    /// clamped to the same ceiling.
     ///
     /// Available on firmware schema 0.7+.
     ///
@@ -895,9 +897,9 @@ impl PicoDeGallo {
     /// host-supplied timeout.
     ///
     /// Returns `Err(PicoDeGalloError::Endpoint(GpioError::Timeout))`
-    /// if the level is not reached within `timeout`. Passing
-    /// `Duration::ZERO` reverts to the wait-forever behavior of
-    /// [`gpio_wait_for_low`](Self::gpio_wait_for_low).
+    /// if the level is not reached within `timeout`. `Duration::ZERO`
+    /// selects the firmware's 30-minute ceiling; larger durations are
+    /// clamped to the same ceiling.
     ///
     /// Available on firmware schema 0.7+.
     ///
@@ -918,9 +920,9 @@ impl PicoDeGallo {
     /// host-supplied timeout.
     ///
     /// Returns `Err(PicoDeGalloError::Endpoint(GpioError::Timeout))`
-    /// if no rising edge is detected within `timeout`. Passing
-    /// `Duration::ZERO` reverts to the wait-forever behavior of
-    /// [`gpio_wait_for_rising_edge`](Self::gpio_wait_for_rising_edge).
+    /// if no rising edge is detected within `timeout`. `Duration::ZERO`
+    /// selects the firmware's 30-minute ceiling; larger durations are
+    /// clamped to the same ceiling.
     ///
     /// Available on firmware schema 0.7+.
     ///
@@ -941,9 +943,9 @@ impl PicoDeGallo {
     /// host-supplied timeout.
     ///
     /// Returns `Err(PicoDeGalloError::Endpoint(GpioError::Timeout))`
-    /// if no falling edge is detected within `timeout`. Passing
-    /// `Duration::ZERO` reverts to the wait-forever behavior of
-    /// [`gpio_wait_for_falling_edge`](Self::gpio_wait_for_falling_edge).
+    /// if no falling edge is detected within `timeout`. `Duration::ZERO`
+    /// selects the firmware's 30-minute ceiling; larger durations are
+    /// clamped to the same ceiling.
     ///
     /// Available on firmware schema 0.7+.
     ///
@@ -964,9 +966,9 @@ impl PicoDeGallo {
     /// numbered by `pin`, with a host-supplied timeout.
     ///
     /// Returns `Err(PicoDeGalloError::Endpoint(GpioError::Timeout))`
-    /// if no edge is detected within `timeout`. Passing
-    /// `Duration::ZERO` reverts to the wait-forever behavior of
-    /// [`gpio_wait_for_any_edge`](Self::gpio_wait_for_any_edge).
+    /// if no edge is detected within `timeout`. `Duration::ZERO` selects
+    /// the firmware's 30-minute ceiling; larger durations are clamped to
+    /// the same ceiling.
     ///
     /// Available on firmware schema 0.7+.
     ///
