@@ -502,9 +502,10 @@ pub type SpiTransferError = SpiError;
 /// [`GpioError::InvalidPin`].
 ///
 /// The same indices double as SPI chip-select selectors: see
-/// [`SpiBatchRequest::cs_pin`]. Note the dedicated `SPI_CS` header pin
-/// (GPIO5) is *not* one of these and is not currently claimed by the
-/// firmware.
+/// [`SpiBatchRequest::cs_pin`]. The header pin silkscreened `SPI_CS`
+/// (GPIO5) is a PCB net label rather than a usable chip select: it is
+/// *not* one of these indices, and no firmware claims or drives it.
+/// See [issue #99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99).
 ///
 /// Host code must use [`DeviceInfo::num_gpios`] as the runtime-authoritative
 /// count. This constant is only the compile-time default.

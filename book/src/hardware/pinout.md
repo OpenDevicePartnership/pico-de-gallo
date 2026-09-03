@@ -15,7 +15,7 @@ which revision PCB they're routed to.
 | I²C SDA       | GPIO 2      | v1.0+        | I²C1, async DMA             |
 | I²C SCL       | GPIO 3      | v1.0+        |                             |
 | SPI RX (MISO) | GPIO 4      | v1.0+        | SPI0, DMA full-duplex       |
-| SPI_CS net    | GPIO 5      | v1.1+        | Routed to pin 8; firmware never drives it |
+| SPI_CS net    | GPIO 5      | v1.1+        | PCB net name only; firmware never claims or drives it |
 | SPI SCK       | GPIO 6      | v1.0+        |                             |
 | SPI TX (MOSI) | GPIO 7      | v1.0+        |                             |
 | GPIO 0        | GPIO 8      | v1.0+        | User pin, in/out/edge       |
@@ -56,7 +56,7 @@ left; odd-numbered pins (top row) are on the right.
  Pin 2  GND          ┃ VREF (+3V3) Pin 1
  Pin 4  I2C_SCL      ┃ I2C_SDA     Pin 3
  Pin 6  SPI_MOSI     ┃ SPI_MISO    Pin 5
- Pin 8  SPI_CS       ┃ SPI_SCK     Pin 7
+ Pin 8  SPI_CS *      ┃ SPI_SCK     Pin 7
  Pin 10 UART_RX      ┃ UART_TX     Pin 9
  Pin 12 GPIO1        ┃ GPIO0       Pin 11
  Pin 14 GPIO3        ┃ GPIO2       Pin 13
@@ -66,6 +66,10 @@ left; odd-numbered pins (top row) are on the right.
  Pin 22 ADC2         ┃ ADC1        Pin 21
  Pin 24 GND          ┃ +3V3        Pin 23
 ```
+
+`*` The silkscreen and schematic label pin 8 `SPI_CS`, but that name
+describes the PCB net only. No firmware claims GPIO 5, so the pin is
+**not** a working chip select — see below.
 
 ### Full v1.1 Pinout Table
 
@@ -78,7 +82,7 @@ left; odd-numbered pins (top row) are on the right.
 | 5          | SPI_MISO | GPIO 4      | Input     | SPI0 RX                   |
 | 6          | SPI_MOSI | GPIO 7      | Output    | SPI0 TX                   |
 | 7          | SPI_SCK  | GPIO 6      | Output    | SPI0 SCK                  |
-| 8          | SPI_CS   | GPIO 5      | Not driven by firmware | PCB net; GPIO 5 remains in its reset state |
+| 8          | SPI_CS (unused) | GPIO 5 | Not driven by firmware | PCB net name only; GPIO 5 remains in its reset state |
 | 9          | UART_TX  | GPIO 0      | Output    | UART0 TX                  |
 | 10         | UART_RX  | GPIO 1      | Input     | UART0 RX                  |
 | 11         | GPIO0    | GPIO 8      | Bidir     | User GPIO 0               |
@@ -101,6 +105,13 @@ current firmware never claims or drives that pad. It is not a valid
 `spi/batch` chip-select index or user GPIO index. Use firmware GPIO
 indices 0–3, which map to RP2350 GPIO 8–11, for chip-select instead.
 No pull or stable inactive level is guaranteed on GPIO 5.
+
+The `SPI_CS` name is a **silkscreen and schematic net label, not a
+capability**. It records what the net was routed for, not what the
+firmware does with it, and the board offers no working dedicated
+chip-select signal. The label cannot be corrected without a new board
+revision, so treat this page — not the silkscreen — as authoritative.
+See [issue #99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99).
 
 The device currently reports `num_gpios == 4`, so host validation
 refuses `--cs 5` before transmitting anything. If that validation is

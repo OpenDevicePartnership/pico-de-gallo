@@ -75,8 +75,8 @@ default `hw-rev2` firmware.
   separate jumper bundles.
 - **All implemented peripheral signals routed.** UART, 1-Wire, and
   the three ADC inputs are physically absent on v1.0. v1.1 also
-  routes the PCB's SPI_CS net from RP2350 GPIO 5, but current
-  firmware never claims or drives that pad.
+  routes the PCB's SPI_CS net from RP2350 GPIO 5, but that net is a
+  label only — current firmware never claims or drives that pad.
 - **On-board passives.**
   - 4.7 kΩ pull-ups on I²C (no more dangling resistors).
   - 100 Ω series resistors on each ADC input for protection and a
@@ -121,6 +121,12 @@ header but absent on v1.0, and current firmware does not claim or
 drive GPIO 5 on either revision. Soldering to that pad does not make
 it usable as firmware-controlled chip-select; use a user GPIO index
 reported by `device/info` instead.
+
+Note that `SPI_CS` on the v1.1 silkscreen and in the KiCad schematic
+is a net label, not a feature. Neither revision provides a working
+dedicated chip-select signal, and the misleading label can only be
+retired by a future board revision. See
+[issue #99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99).
 
 ## Identifying Your Board
 

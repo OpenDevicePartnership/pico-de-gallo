@@ -89,8 +89,10 @@ yields `Status::InvalidArgument`.
 
 `GALLO_NUM_GPIOS` bounds the valid pin indices, `0..GALLO_NUM_GPIOS`, which
 map to physical GPIO8-GPIO11 on the Pico 2 header. Anything at or above it
-yields `Status::GpioInvalidPin`. Note the dedicated `SPI_CS` header pin
-(GPIO5) is not one of these and is not currently claimed by the firmware.
+yields `Status::GpioInvalidPin`. The header pin silkscreened `SPI_CS`
+(GPIO5) is a PCB net label, not a usable chip select: it is not one of
+these indices and no firmware claims or drives it. See
+[issue #99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99).
 
 For the SPI chip select in `gallo_spi_batch`, prefer the *runtime* count
 from `gallo_num_gpios` over this compile-time constant — see below.
