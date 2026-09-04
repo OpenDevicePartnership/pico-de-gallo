@@ -89,9 +89,11 @@ Most methods return `Result<T, PicoDeGalloError<E>>`.
 That split is deliberate:
 
 - `PicoDeGalloError::Comms(...)` means the transport failed: disconnect,
-  timeout, wire decode issue, closed connection, and similar host-side problems.
+  wire decode issue, closed connection, and similar host-side problems.
 - `PicoDeGalloError::Endpoint(E)` means the request made it to firmware and the
   endpoint itself reported an error.
+- `PicoDeGalloError::Timeout { waited }` means the request was transmitted but
+  no reply arrived within this call's bound. See [Call Timeouts](#call-timeouts).
 
 The endpoint-specific `E` is one of the protocol error enums:
 
@@ -123,8 +125,65 @@ async fn read_sensor(gallo: &PicoDeGallo) {
 }
 ```
 
-## `validate()` and Schema Compatibility
+## Call Timeouts
 
+Every RPC is bounded. Without a bound, a request whose response is never
+produced parks the caller forever, because there is no lower layer that gives
+up. That is not hypothetical: a request frame larger than the firmware's
+receive buffer is dropped before the dispatcher ever sees it, so the board
+stays perfectly healthy — measured answering 40 of 40 concurrent pings — while
+the call waits indefinitely.
+
+The default is `DEFAULT_CALL_TIMEOUT`, **5 seconds**, roughly twice the
+slowest measured legitimate operation (a 4096-byte 1-Wire read, about 2.4 s).
+
+Calls that can legitimately take longer are not bounded by that default. They
+derive their own bound from what the firmware itself allows, plus the
+configured call timeout as transport slack:
+
+| Call | Firmware-side term |
+|---|---|
+| `i2c_scan` | `UNDECLARED_DISPATCH_BUDGET_MS` (10 s) — it probes up to 128 addresses |
+| `uart_read` | the caller's `timeout_ms` |
+| `gpio_wait_*_with_timeout` | the caller's `timeout_ms` |
+| `gpio_wait_*` (no timeout) | `MAX_HANDLER_TIMEOUT_MS` (30 min) |
+| `onewire_write_pullup` | the caller's `pullup_duration_ms` |
+| `spi_batch` | the sum of its `DelayNs` operations |
+| `device_info`, `validate` | `DEVICE_INFO_TIMEOUT` (300 s) |
+
+Note that a `timeout_ms` of `0` selects the firmware's 30-minute ceiling
+rather than meaning "wait forever"; the host mirrors that clamp exactly.
+
+Override the default with `with_call_timeout`, which also widens every
+derived bound:
+
+``rust,no_run
+use pico_de_gallo_lib::PicoDeGallo;
+use std::time::Duration;
+
+let gallo = PicoDeGallo::try_new()?.with_call_timeout(Duration::from_secs(30));
+# Ok::<(), String>(())
+``
+
+A timed-out call leaves the handle usable: abandoning it drops the reply
+waiter, and sequence numbers are never reused, so a late reply is discarded
+rather than mismatched onto a later call.
+
+### Concurrency caveat
+
+Firmware dispatch is **serial** — one handler runs at a time. A call issued
+while another is in flight waits for that one to finish before its own handler
+starts, and the host cannot observe when that happens.
+
+So if you share one handle across tasks and one of them issues a long call (a
+`gpio_wait_*`, or an `spi_batch` carrying large `DelayNs` operations),
+concurrent calls can exceed the default through no fault of the device.
+
+Sequential use — which is what the `embedded-hal` implementations produce,
+and the overwhelmingly common pattern — is unaffected. If you do drive a board
+concurrently alongside long calls, raise the bound.
+
+## `validate()` and Schema Compatibility
 `validate().await` is the strict compatibility gate.
 
 It calls the `device/info` endpoint and checks the firmware's schema version

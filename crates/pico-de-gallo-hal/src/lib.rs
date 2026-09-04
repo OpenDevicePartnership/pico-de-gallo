@@ -66,6 +66,7 @@ use pico_de_gallo_lib::{
     PwmError, SpiError, UartError, ValidateError,
 };
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::runtime::{Handle, Runtime};
 use tokio::sync::Mutex;
 use tokio::task::block_in_place;
@@ -221,6 +222,7 @@ impl Hal {
             .block_on(gallo.i2c_get_config())
             .map_err(|e| match e {
                 PicoDeGalloError::Comms(c) => I2cHalError::Comms(format!("{c:?}")),
+                PicoDeGalloError::Timeout { waited } => I2cHalError::Timeout(waited),
                 PicoDeGalloError::Endpoint(never) => match never {},
             })
     }
@@ -244,6 +246,7 @@ impl Hal {
             .block_on(gallo.spi_get_config())
             .map_err(|e| match e {
                 PicoDeGalloError::Comms(c) => SpiHalError::Comms(format!("{c:?}")),
+                PicoDeGalloError::Timeout { waited } => SpiHalError::Timeout(waited),
                 PicoDeGalloError::Endpoint(never) => match never {},
             })
     }
@@ -387,6 +390,7 @@ impl Hal {
             .block_on(gallo.adc_get_config())
             .map_err(|e| match e {
                 PicoDeGalloError::Comms(c) => AdcHalError::Comms(format!("{c:?}")),
+                PicoDeGalloError::Timeout { waited } => AdcHalError::Timeout(waited),
                 PicoDeGalloError::Endpoint(e) => AdcHalError::Adc(e),
             })
     }
@@ -639,6 +643,7 @@ impl Hal {
             .block_on(gallo.system_reset_subscriptions())
             .map_err(|e| match e {
                 PicoDeGalloError::Comms(c) => SystemHalError::Comms(format!("{c:?}")),
+                PicoDeGalloError::Timeout { waited } => SystemHalError::Timeout(waited),
                 PicoDeGalloError::Endpoint(never) => match never {},
             })
     }
@@ -683,12 +688,25 @@ impl From<ValidateError> for HalInitError {
 pub enum SystemHalError {
     /// A USB communication error.
     Comms(String),
+    /// The device did not answer within this call's bound.
+    ///
+    /// Distinct from [`Self::Comms`]: the transport is healthy and the device
+    /// very likely is too, so this is not a link failure. See
+    /// `pico_de_gallo_lib::DEFAULT_CALL_TIMEOUT` (issue #178).
+    Timeout(Duration),
 }
 
 impl core::fmt::Display for SystemHalError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::Timeout(waited) => {
+                write!(
+                    f,
+                    "device did not respond within {:.3} s",
+                    waited.as_secs_f64()
+                )
+            }
         }
     }
 }
@@ -702,6 +720,12 @@ pub enum GpioHalError {
     Gpio(GpioError),
     /// A USB communication error.
     Comms(String),
+    /// The device did not answer within this call's bound.
+    ///
+    /// Distinct from [`Self::Comms`]: the transport is healthy and the device
+    /// very likely is too, so this is not a link failure. See
+    /// `pico_de_gallo_lib::DEFAULT_CALL_TIMEOUT` (issue #178).
+    Timeout(Duration),
 }
 
 impl core::fmt::Display for GpioHalError {
@@ -709,6 +733,13 @@ impl core::fmt::Display for GpioHalError {
         match self {
             Self::Gpio(e) => write!(f, "{e}"),
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::Timeout(waited) => {
+                write!(
+                    f,
+                    "device did not respond within {:.3} s",
+                    waited.as_secs_f64()
+                )
+            }
         }
     }
 }
@@ -720,6 +751,7 @@ impl From<PicoDeGalloError<GpioError>> for GpioHalError {
         match e {
             PicoDeGalloError::Endpoint(e) => Self::Gpio(e),
             PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            PicoDeGalloError::Timeout { waited } => Self::Timeout(waited),
         }
     }
 }
@@ -737,6 +769,12 @@ pub enum I2cHalError {
     I2c(I2cError),
     /// A USB communication error.
     Comms(String),
+    /// The device did not answer within this call's bound.
+    ///
+    /// Distinct from [`Self::Comms`]: the transport is healthy and the device
+    /// very likely is too, so this is not a link failure. See
+    /// `pico_de_gallo_lib::DEFAULT_CALL_TIMEOUT` (issue #178).
+    Timeout(Duration),
 }
 
 impl core::fmt::Display for I2cHalError {
@@ -744,6 +782,13 @@ impl core::fmt::Display for I2cHalError {
         match self {
             Self::I2c(e) => write!(f, "{e}"),
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::Timeout(waited) => {
+                write!(
+                    f,
+                    "device did not respond within {:.3} s",
+                    waited.as_secs_f64()
+                )
+            }
         }
     }
 }
@@ -755,6 +800,7 @@ impl From<PicoDeGalloError<I2cError>> for I2cHalError {
         match e {
             PicoDeGalloError::Endpoint(e) => Self::I2c(e),
             PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            PicoDeGalloError::Timeout { waited } => Self::Timeout(waited),
         }
     }
 }
@@ -764,6 +810,7 @@ impl From<PicoDeGalloError<pico_de_gallo_lib::I2cBatchError>> for I2cHalError {
         match e {
             PicoDeGalloError::Endpoint(batch_err) => Self::I2c(batch_err.kind),
             PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            PicoDeGalloError::Timeout { waited } => Self::Timeout(waited),
         }
     }
 }
@@ -792,6 +839,12 @@ pub enum SpiHalError {
     Spi(SpiError),
     /// A USB communication error.
     Comms(String),
+    /// The device did not answer within this call's bound.
+    ///
+    /// Distinct from [`Self::Comms`]: the transport is healthy and the device
+    /// very likely is too, so this is not a link failure. See
+    /// `pico_de_gallo_lib::DEFAULT_CALL_TIMEOUT` (issue #178).
+    Timeout(Duration),
     /// The device-reported GPIO count could not be established, so no
     /// chip-select could be validated.
     ///
@@ -819,6 +872,13 @@ impl core::fmt::Display for SpiHalError {
         match self {
             Self::Spi(e) => write!(f, "{e}"),
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::Timeout(waited) => {
+                write!(
+                    f,
+                    "device did not respond within {:.3} s",
+                    waited.as_secs_f64()
+                )
+            }
             Self::DeviceInfo(e) => write!(f, "failed to determine num_gpios: {e}"),
             Self::NoGpios => write!(
                 f,
@@ -840,6 +900,7 @@ impl From<PicoDeGalloError<SpiError>> for SpiHalError {
         match e {
             PicoDeGalloError::Endpoint(e) => Self::Spi(e),
             PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            PicoDeGalloError::Timeout { waited } => Self::Timeout(waited),
         }
     }
 }
@@ -852,6 +913,7 @@ impl From<pico_de_gallo_lib::SpiBatchCallError> for SpiHalError {
             E::NoGpios => Self::NoGpios,
             E::InvalidCsPin { cs, num_gpios } => Self::InvalidCsPin { cs, num_gpios },
             E::Comms(c) => Self::Comms(format!("{c:?}")),
+            E::Timeout { waited } => Self::Timeout(waited),
             E::Endpoint(batch_err) => Self::Spi(batch_err.kind),
         }
     }
@@ -907,6 +969,12 @@ pub enum UartHalError {
     Uart(UartError),
     /// A USB communication error.
     Comms(String),
+    /// The device did not answer within this call's bound.
+    ///
+    /// Distinct from [`Self::Comms`]: the transport is healthy and the device
+    /// very likely is too, so this is not a link failure. See
+    /// `pico_de_gallo_lib::DEFAULT_CALL_TIMEOUT` (issue #178).
+    Timeout(Duration),
 }
 
 impl core::fmt::Display for UartHalError {
@@ -914,6 +982,13 @@ impl core::fmt::Display for UartHalError {
         match self {
             Self::Uart(e) => write!(f, "{e}"),
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::Timeout(waited) => {
+                write!(
+                    f,
+                    "device did not respond within {:.3} s",
+                    waited.as_secs_f64()
+                )
+            }
         }
     }
 }
@@ -932,6 +1007,7 @@ impl From<PicoDeGalloError<UartError>> for UartHalError {
         match e {
             PicoDeGalloError::Endpoint(e) => Self::Uart(e),
             PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            PicoDeGalloError::Timeout { waited } => Self::Timeout(waited),
         }
     }
 }
@@ -1960,6 +2036,12 @@ pub enum PwmHalError {
     Pwm(PwmError),
     /// A USB communication error.
     Comms(String),
+    /// The device did not answer within this call's bound.
+    ///
+    /// Distinct from [`Self::Comms`]: the transport is healthy and the device
+    /// very likely is too, so this is not a link failure. See
+    /// `pico_de_gallo_lib::DEFAULT_CALL_TIMEOUT` (issue #178).
+    Timeout(Duration),
 }
 
 impl core::fmt::Display for PwmHalError {
@@ -1967,6 +2049,13 @@ impl core::fmt::Display for PwmHalError {
         match self {
             Self::Pwm(e) => write!(f, "{e}"),
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::Timeout(waited) => {
+                write!(
+                    f,
+                    "device did not respond within {:.3} s",
+                    waited.as_secs_f64()
+                )
+            }
         }
     }
 }
@@ -1978,6 +2067,7 @@ impl From<PicoDeGalloError<PwmError>> for PwmHalError {
         match e {
             PicoDeGalloError::Endpoint(e) => Self::Pwm(e),
             PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            PicoDeGalloError::Timeout { waited } => Self::Timeout(waited),
         }
     }
 }
@@ -2035,6 +2125,12 @@ pub enum AdcHalError {
     Adc(AdcError),
     /// A USB communication error.
     Comms(String),
+    /// The device did not answer within this call's bound.
+    ///
+    /// Distinct from [`Self::Comms`]: the transport is healthy and the device
+    /// very likely is too, so this is not a link failure. See
+    /// `pico_de_gallo_lib::DEFAULT_CALL_TIMEOUT` (issue #178).
+    Timeout(Duration),
 }
 
 impl core::fmt::Display for AdcHalError {
@@ -2042,6 +2138,13 @@ impl core::fmt::Display for AdcHalError {
         match self {
             Self::Adc(e) => write!(f, "{e}"),
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::Timeout(waited) => {
+                write!(
+                    f,
+                    "device did not respond within {:.3} s",
+                    waited.as_secs_f64()
+                )
+            }
         }
     }
 }
@@ -2053,6 +2156,7 @@ impl From<PicoDeGalloError<AdcError>> for AdcHalError {
         match e {
             PicoDeGalloError::Endpoint(e) => Self::Adc(e),
             PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            PicoDeGalloError::Timeout { waited } => Self::Timeout(waited),
         }
     }
 }
@@ -2064,6 +2168,12 @@ pub enum OneWireHalError {
     OneWire(OneWireError),
     /// A USB communication error.
     Comms(String),
+    /// The device did not answer within this call's bound.
+    ///
+    /// Distinct from [`Self::Comms`]: the transport is healthy and the device
+    /// very likely is too, so this is not a link failure. See
+    /// `pico_de_gallo_lib::DEFAULT_CALL_TIMEOUT` (issue #178).
+    Timeout(Duration),
 }
 
 impl core::fmt::Display for OneWireHalError {
@@ -2071,6 +2181,13 @@ impl core::fmt::Display for OneWireHalError {
         match self {
             Self::OneWire(e) => write!(f, "{e}"),
             Self::Comms(msg) => write!(f, "communication error: {msg}"),
+            Self::Timeout(waited) => {
+                write!(
+                    f,
+                    "device did not respond within {:.3} s",
+                    waited.as_secs_f64()
+                )
+            }
         }
     }
 }
@@ -2082,6 +2199,7 @@ impl From<PicoDeGalloError<OneWireError>> for OneWireHalError {
         match e {
             PicoDeGalloError::Endpoint(e) => Self::OneWire(e),
             PicoDeGalloError::Comms(c) => Self::Comms(format!("{c:?}")),
+            PicoDeGalloError::Timeout { waited } => Self::Timeout(waited),
         }
     }
 }
@@ -2586,6 +2704,7 @@ mod tests {
         vec![
             SpiHalError::Spi(SpiError::Other),
             SpiHalError::Comms("closed".to_string()),
+            SpiHalError::Timeout(Duration::from_secs(5)),
             SpiHalError::DeviceInfo(ValidateError::Timeout),
             SpiHalError::NoGpios,
             SpiHalError::InvalidCsPin {
@@ -2606,11 +2725,12 @@ mod tests {
                 SpiHalError::DeviceInfo(_) => 2,
                 SpiHalError::NoGpios => 3,
                 SpiHalError::InvalidCsPin { .. } => 4,
+                SpiHalError::Timeout(_) => 5,
             }
         }
         let tags: std::collections::HashSet<u8> =
             all_spi_hal_errors().iter().map(witness).collect();
-        assert_eq!(tags.len(), 5);
+        assert_eq!(tags.len(), 6);
     }
 
     #[test]

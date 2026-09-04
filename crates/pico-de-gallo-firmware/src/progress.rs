@@ -16,6 +16,7 @@ use core::cell::Cell;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_time::{Duration, Instant};
+use pico_de_gallo_internal::{MAX_HANDLER_TIMEOUT_MS, UNDECLARED_DISPATCH_BUDGET_MS};
 
 /// Ceiling for any caller-supplied handler timeout.
 ///
@@ -23,13 +24,19 @@ use embassy_time::{Duration, Instant};
 /// values clamp to this. The handler's own `with_timeout` still fires and
 /// still returns its normal `Timeout` error, so callers get a clean error
 /// rather than a reboot.
-pub(crate) const MAX_HANDLER_TIMEOUT: Duration = Duration::from_secs(30 * 60);
+///
+/// Derived from [`MAX_HANDLER_TIMEOUT_MS`] so the host, which uses the same
+/// constant to bound its own waits, cannot drift from the firmware.
+pub(crate) const MAX_HANDLER_TIMEOUT: Duration = Duration::from_millis(MAX_HANDLER_TIMEOUT_MS as u64);
 
 /// Budget for a dispatch that declares nothing.
 ///
 /// Sized to cover `i2c/scan`'s worst case (128 addresses × 50 ms = 6.4 s,
 /// `handlers/i2c.rs`) with margin. Every other undeclared handler is µs–ms.
-pub(crate) const DEFAULT_DISPATCH_BUDGET: Duration = Duration::from_secs(10);
+///
+/// Derived from [`UNDECLARED_DISPATCH_BUDGET_MS`] so the host, which uses the
+/// same constant to bound `i2c/scan`, cannot drift from the firmware.
+pub(crate) const DEFAULT_DISPATCH_BUDGET: Duration = Duration::from_millis(UNDECLARED_DISPATCH_BUDGET_MS as u64);
 
 /// Added to **declared** budgets only, never to [`DEFAULT_DISPATCH_BUDGET`].
 ///

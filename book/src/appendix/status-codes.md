@@ -105,6 +105,16 @@ that doesn't appear in your header means success.
 | `SpiCsPinMonitored`        |   −73 | SPI chip-select pin is monitored for GPIO events         |
 | `SpiNoGpios`               |   −74 | Device reports zero GPIOs, so no chip-select pin exists  |
 | `DeviceInfoTimeout`        |   −75 | `device/info` did not respond within 300 seconds         |
+| `CallTimeout`              |   −76 | Device did not answer an RPC within its bound            |
+
+`CallTimeout` (−76) means the request was transmitted but no reply arrived.
+It is deliberately distinct from `CommsFailed` (−20): the transport is
+healthy and the device very likely is too, so it is not a link failure. It
+is also distinct from `DeviceInfoTimeout` (−75), which covers only the
+validated metadata fetch and has a far longer bound. The handle stays
+usable, so the call may simply be retried — except after a batch, whose
+fate is unknown (it may have executed fully, partially, or not at all), so
+a blind retry there can repeat side effects.
 
 `SpiInvalidCsPin` (−71) and `SpiNoGpios` (−74) are host-side refusals: the
 chip-select was rejected before anything was transmitted, and no pin was

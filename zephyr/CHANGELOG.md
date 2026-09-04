@@ -8,6 +8,20 @@ The format is based on
 
 ## [Unreleased]
 
+### Added
+
+- `pdg_common_status_to_errno()` maps the new `CallTimeout` status to
+  `-ETIMEDOUT`. Refs #178.
+
+  `CallTimeout` means the request was sent but no reply arrived, with the
+  transport and the board both very likely healthy — hence `-ETIMEDOUT`
+  rather than `-EIO`. For a batch operation the transaction's fate is
+  unknown, so a caller must not retry blindly.
+
+  This case was mandatory rather than optional: the switch carries no
+  `default:` and the drivers build with `-Werror=switch`, so the module would
+  not compile until it was added. Working as designed.
+
 ### Breaking Changes
 
 - **A zero-length I2C write now returns `-ENOTSUP` rather than `-EINVAL`.**

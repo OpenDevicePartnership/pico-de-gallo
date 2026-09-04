@@ -5,6 +5,18 @@ All notable changes to `gallo-mcp` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Tool calls can no longer hang forever when the device does not answer; they
+  return a timeout error instead. Refs #178.
+
+  Reported as an internal error rather than invalid-params: the request was
+  well formed, so telling an agent its arguments were wrong would send it
+  rewriting a perfectly good call. The `spi_batch` message additionally
+  states that the batch may or may not have executed, so an agent does not
+  retry blindly and repeat its writes.
 ## [0.4.0] — 2026-09-01
 
 ### Added

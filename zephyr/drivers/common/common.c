@@ -46,6 +46,13 @@ int pdg_common_status_to_errno(Status status)
         case GpioPinNotMonitored:     return -ENOENT;
         case GpioTimeout:             return -ETIMEDOUT;
         case DeviceInfoTimeout:       return -ETIMEDOUT;
+        /*
+         * The request was sent but no reply arrived. The transport and the
+         * board are both very likely healthy, so this is -ETIMEDOUT rather
+         * than -EIO. Note that for a batch operation the transaction's fate
+         * is unknown, so a caller must not retry blindly.
+         */
+        case CallTimeout:             return -ETIMEDOUT;
         case LegacyFirmware:          return -ENOSYS;
         case Unsupported:             return -ENOTSUP;
         case I2cReadFailed:           return -EIO;

@@ -73,6 +73,29 @@ pub const PICO_DE_GALLO_PID: u16 = 0x067d;
 /// firmware with an error.
 pub const MAX_TRANSFER_SIZE: usize = 4096;
 
+/// Ceiling the firmware applies to any caller-supplied handler timeout.
+///
+/// A `timeout_ms` of `0` does **not** mean "wait forever": both `0` and
+/// oversized values clamp to this, after which the handler returns its normal
+/// `Timeout` error. Hosts use this to bound how long a call carrying a
+/// caller-supplied duration can legitimately take.
+///
+/// Mirrored by `MAX_HANDLER_TIMEOUT` in the firmware's `progress` module,
+/// which derives its `Duration` from this constant so the two cannot drift.
+pub const MAX_HANDLER_TIMEOUT_MS: u32 = 30 * 60 * 1000;
+
+/// Supervisor budget the firmware grants a handler that declares no budget of
+/// its own.
+///
+/// Sized to cover `i2c/scan`'s worst case (128 addresses × 50 ms = 6.4 s) with
+/// margin. Hosts use this to bound calls that are slow but carry no
+/// caller-supplied duration — `i2c/scan` above all, which legitimately exceeds
+/// a typical per-call default.
+///
+/// Mirrored by `DEFAULT_DISPATCH_BUDGET` in the firmware's `progress` module,
+/// which derives its `Duration` from this constant so the two cannot drift.
+pub const UNDECLARED_DISPATCH_BUDGET_MS: u32 = 10_000;
+
 // ---
 
 /// Response type for I2C write operations.

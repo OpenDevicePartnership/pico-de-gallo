@@ -254,6 +254,22 @@ pub enum Status {
     /// at all — the request is simply still outstanding — and collapsing
     /// the two would erase the only actionable diagnosis.
     DeviceInfoTimeout = -75,
+    /// The device did not answer an RPC within its bound.
+    ///
+    /// Distinct from [`Status::CommsFailed`]: the transport is healthy and
+    /// the device very likely is too. The known cause is a request frame
+    /// large enough that the firmware drops it before its dispatcher sees
+    /// it, after which the board answers every other call normally
+    /// (issue #178).
+    ///
+    /// Distinct from [`Status::DeviceInfoTimeout`], which covers only the
+    /// validated metadata fetch and has a far longer bound.
+    ///
+    /// The handle remains usable; the call may simply be retried. Note that
+    /// for a `gallo_spi_batch` or `gallo_i2c_batch` the batch's fate is
+    /// **unknown** — it may have executed fully, partially, or not at all —
+    /// so a blind retry can repeat side effects.
+    CallTimeout = -76,
 }
 
 // ----------------------------- Limits -----------------------------
@@ -421,6 +437,7 @@ fn i2c_error_to_status(e: PicoDeGalloError<I2cError>) -> Status {
         // argument this hardware cannot honour, so InvalidArgument is honest.
         PicoDeGalloError::Endpoint(I2cError::ZeroLengthWrite) => Status::InvalidArgument,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
+        PicoDeGalloError::Timeout { .. } => Status::CallTimeout,
     }
 }
 
@@ -432,6 +449,7 @@ fn spi_error_to_status(e: PicoDeGalloError<SpiError>) -> Status {
         PicoDeGalloError::Endpoint(SpiError::CsPinUnavailable) => Status::SpiCsPinUnavailable,
         PicoDeGalloError::Endpoint(SpiError::CsPinMonitored) => Status::SpiCsPinMonitored,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
+        PicoDeGalloError::Timeout { .. } => Status::CallTimeout,
     }
 }
 
@@ -467,6 +485,7 @@ fn spi_batch_call_error_to_status(e: &lib::SpiBatchCallError) -> Status {
         lib::SpiBatchCallError::NoGpios => Status::SpiNoGpios,
         lib::SpiBatchCallError::InvalidCsPin { .. } => Status::SpiInvalidCsPin,
         lib::SpiBatchCallError::Comms(_) => Status::CommsFailed,
+        lib::SpiBatchCallError::Timeout { .. } => Status::CallTimeout,
         lib::SpiBatchCallError::Endpoint(SpiBatchError { kind, .. }) => {
             spi_error_to_status(PicoDeGalloError::Endpoint(*kind))
         }
@@ -482,6 +501,7 @@ fn gpio_error_to_status(e: PicoDeGalloError<GpioError>) -> Status {
         PicoDeGalloError::Endpoint(GpioError::Timeout) => Status::GpioTimeout,
         PicoDeGalloError::Endpoint(GpioError::Other) => Status::GpioGetFailed,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
+        PicoDeGalloError::Timeout { .. } => Status::CallTimeout,
     }
 }
 
@@ -496,6 +516,7 @@ fn uart_error_to_status(e: PicoDeGalloError<UartError>) -> Status {
         PicoDeGalloError::Endpoint(UartError::Other) => Status::UartReadFailed,
         PicoDeGalloError::Endpoint(UartError::Unsupported) => Status::Unsupported,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
+        PicoDeGalloError::Timeout { .. } => Status::CallTimeout,
     }
 }
 
@@ -508,6 +529,7 @@ fn pwm_error_to_status(e: PicoDeGalloError<PwmError>) -> Status {
         }
         PicoDeGalloError::Endpoint(PwmError::Other) => Status::PwmSetDutyCycleFailed,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
+        PicoDeGalloError::Timeout { .. } => Status::CallTimeout,
     }
 }
 
@@ -517,6 +539,7 @@ fn adc_error_to_status(e: PicoDeGalloError<AdcError>) -> Status {
         PicoDeGalloError::Endpoint(AdcError::Other) => Status::AdcReadFailed,
         PicoDeGalloError::Endpoint(AdcError::Unsupported) => Status::Unsupported,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
+        PicoDeGalloError::Timeout { .. } => Status::CallTimeout,
     }
 }
 
@@ -528,6 +551,7 @@ fn onewire_error_to_status(e: PicoDeGalloError<OneWireError>) -> Status {
         PicoDeGalloError::Endpoint(OneWireError::Other) => Status::OneWireReadFailed,
         PicoDeGalloError::Endpoint(OneWireError::Unsupported) => Status::Unsupported,
         PicoDeGalloError::Comms(_) => Status::CommsFailed,
+        PicoDeGalloError::Timeout { .. } => Status::CallTimeout,
     }
 }
 
@@ -1194,6 +1218,7 @@ pub unsafe extern "C" fn gallo_spi_transfer(
         Err(PicoDeGalloError::Endpoint(SpiError::CsPinUnavailable)) => Status::SpiCsPinUnavailable,
         Err(PicoDeGalloError::Endpoint(SpiError::CsPinMonitored)) => Status::SpiCsPinMonitored,
         Err(PicoDeGalloError::Comms(_)) => Status::CommsFailed,
+        Err(PicoDeGalloError::Timeout { .. }) => Status::CallTimeout,
     }
 }
 
@@ -1633,6 +1658,13 @@ pub unsafe extern "C" fn gallo_i2c_batch(
         Err(PicoDeGalloError::Comms(_)) => {
             unsafe { *out_len = 0 };
             Status::CommsFailed
+        }
+        Err(PicoDeGalloError::Timeout { .. }) => {
+            // The batch's fate is unknown: it may have executed fully,
+            // partially, or not at all. Report no output rather than a
+            // partial one the caller might mistake for a complete read.
+            unsafe { *out_len = 0 };
+            Status::CallTimeout
         }
     }
 }
@@ -3666,6 +3698,9 @@ mod tests {
                 num_gpios: 4,
             },
             lib::SpiBatchCallError::Comms(lib::HostErr::Closed),
+            lib::SpiBatchCallError::Timeout {
+                waited: std::time::Duration::from_secs(5),
+            },
             lib::SpiBatchCallError::Endpoint(SpiBatchError {
                 failed_op: 0,
                 kind: SpiError::Other,
@@ -3698,10 +3733,11 @@ mod tests {
                 lib::SpiBatchCallError::InvalidCsPin { .. } => 2,
                 lib::SpiBatchCallError::Comms(_) => 3,
                 lib::SpiBatchCallError::Endpoint(_) => 4,
+                lib::SpiBatchCallError::Timeout { .. } => 5,
             }
         }
         let tags: HashSet<u8> = all_spi_batch_call_errors().iter().map(witness).collect();
-        assert_eq!(tags.len(), 5);
+        assert_eq!(tags.len(), 6);
     }
 
     // --- gallo_spi_batch output invariants (via the outputs seam) ---

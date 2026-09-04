@@ -5,6 +5,28 @@ All notable changes to `pico-de-gallo-ffi` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `Status::CallTimeout` (-76): the device did not answer an RPC within its
+  bound. Closes #178 on the C surface.
+
+  Appended, never renumbered — `Status` values are stable C ABI (AGENTS.md
+  section 8). Kept distinct from `CommsFailed` because the transport is
+  healthy and the board very likely is too, and distinct from
+  `DeviceInfoTimeout`, which covers only the validated metadata fetch.
+
+  C consumers writing the recommended exhaustive
+  `switch ((enum Status)x)` will fail to build until they add a case. That
+  is intended: a silent fallthrough is how a new status becomes a wrong
+  `errno`.
+
+### Fixed
+
+- `gallo_*` calls can no longer block indefinitely when a response is lost.
+  On `gallo_i2c_batch` timeout the output length is set to zero rather than
+  left partial. Callers should note a timed-out batch may still have executed.
 ## [0.9.0] — 2026-09-01
 
 ### Breaking Changes
