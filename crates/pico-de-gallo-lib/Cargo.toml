@@ -17,7 +17,7 @@ pico-de-gallo-internal = { version = "0.8.0", path = "../pico-de-gallo-internal"
 postcard-rpc = { version = "0.12", features = ["use-std", "raw-nusb"] }
 serde = { version = "1", default-features = false }
 tokio = { version = "1.52.3", features = ["rt-multi-thread", "macros", "time"] }
-nusb = "0.1.9"
+nusb = "0.2.7"
 
 [dev-dependencies]
 postcard = "1"
