@@ -274,6 +274,7 @@ from the request, so no framing is needed in the response.
 | Parameter | Value |
 |-----------|-------|
 | Maximum operations per batch | 64 (`MAX_BATCH_OPS`) |
+| Maximum size of an individual operation | None — bounded only by the total request |
 | Protocol packet-buffer/argument bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
 | Direct I²C RPC measurements | Read: 1014 bytes after a 1-byte write; write: no failure through 4096 bytes |
 | Demonstrated SPI payload | Shape-dependent and below 4096; no general ceiling is published |

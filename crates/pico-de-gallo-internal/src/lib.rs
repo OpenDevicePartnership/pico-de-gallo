@@ -1435,17 +1435,22 @@ impl core::fmt::Display for SpiBatchError {
 ///
 /// Returns the serialized byte stream suitable for [`I2cBatchRequest::ops`].
 ///
+/// There is no limit on the size of an individual operation: each one is
+/// serialized straight into the growable output buffer. Callers remain
+/// responsible for keeping the *total* request within the transport's framing
+/// budget; this function does not police that.
+///
 /// # Panics
 ///
-/// Panics if `ops.len()` exceeds [`MAX_BATCH_OPS`].
+/// Panics if `ops.len()` exceeds [`MAX_BATCH_OPS`]. Serialization itself
+/// cannot fail, because [`postcard::to_extend`] only reports an error when the
+/// sink rejects a write and [`Vec`] never does.
 #[cfg(feature = "use-std")]
 pub fn encode_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Vec<u8> {
     assert!(ops.len() <= MAX_BATCH_OPS, "too many batch operations");
     let mut buf = Vec::new();
-    let mut tmp = [0u8; 1024];
     for op in ops {
-        let encoded = postcard::to_slice(op, &mut tmp).expect("I2cBatchOp encode failed");
-        buf.extend_from_slice(encoded);
+        buf = postcard::to_extend(op, buf).expect("serializing into a Vec cannot fail");
     }
     buf
 }
@@ -1454,17 +1459,22 @@ pub fn encode_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Vec<u8> {
 ///
 /// Returns the serialized byte stream suitable for [`SpiBatchRequest::ops`].
 ///
+/// There is no limit on the size of an individual operation: each one is
+/// serialized straight into the growable output buffer. Callers remain
+/// responsible for keeping the *total* request within the transport's framing
+/// budget; this function does not police that.
+///
 /// # Panics
 ///
-/// Panics if `ops.len()` exceeds [`MAX_BATCH_OPS`].
+/// Panics if `ops.len()` exceeds [`MAX_BATCH_OPS`]. Serialization itself
+/// cannot fail, because [`postcard::to_extend`] only reports an error when the
+/// sink rejects a write and [`Vec`] never does.
 #[cfg(feature = "use-std")]
 pub fn encode_spi_batch_ops(ops: &[SpiBatchOp<'_>]) -> Vec<u8> {
     assert!(ops.len() <= MAX_BATCH_OPS, "too many batch operations");
     let mut buf = Vec::new();
-    let mut tmp = [0u8; 1024];
     for op in ops {
-        let encoded = postcard::to_slice(op, &mut tmp).expect("SpiBatchOp encode failed");
-        buf.extend_from_slice(encoded);
+        buf = postcard::to_extend(op, buf).expect("serializing into a Vec cannot fail");
     }
     buf
 }
@@ -3423,32 +3433,95 @@ mod tests {
         encode_spi_batch_ops(&ops);
     }
 
-    /// Regression: a single Write op whose data exceeds the old 128-byte
-    /// per-op scratch buffer must encode without panicking
-    /// (`SerializeBufferFull`). 256 bytes is a flash page-program payload —
-    /// the exact case that overflowed before the buffer was widened.
+    /// Regression for #176: a single op must encode regardless of size.
+    ///
+    /// The encoder used to serialize each op through a fixed scratch buffer,
+    /// so an op larger than that buffer aborted the host process with
+    /// `SerializeBufferFull`. The buffer was 128 bytes, then 1024 — giving
+    /// cliffs at 125 and 1021 bytes of payload respectively.
+    ///
+    /// The sizes below are deliberate. 1022 is the first payload that the
+    /// 1024-byte buffer rejected, and [`MAX_TRANSFER_SIZE`] is past any
+    /// scratch buffer this function has ever had. The previous version of this
+    /// test pinned 256 bytes, which passed under *both* historical buffers and
+    /// so could never have caught either cliff.
     #[cfg(feature = "use-std")]
     #[test]
-    fn encode_i2c_batch_ops_handles_large_write_op() {
-        let data = [0xA5u8; 256];
-        let encoded = encode_i2c_batch_ops(&[I2cBatchOp::Write { data: &data }]);
-        let (decoded, rest) = postcard::take_from_bytes::<I2cBatchOp>(&encoded).unwrap();
-        assert!(rest.is_empty());
-        assert_eq!(decoded, I2cBatchOp::Write { data: &data });
+    fn encode_i2c_batch_ops_encodes_ops_of_any_size() {
+        for len in [1021, 1022, MAX_TRANSFER_SIZE] {
+            let data = vec![0xA5u8; len];
+            let op = I2cBatchOp::Write { data: &data };
+            let encoded = encode_i2c_batch_ops(core::slice::from_ref(&op));
+            let (decoded, rest) = postcard::take_from_bytes::<I2cBatchOp>(&encoded).unwrap();
+            assert!(rest.is_empty(), "trailing bytes for len {len}");
+            assert_eq!(decoded, op, "round-trip mismatch for len {len}");
+        }
     }
 
-    /// Regression: a single Write op whose data exceeds the old 128-byte
-    /// per-op scratch buffer must encode without panicking
-    /// (`SerializeBufferFull`). 256 bytes is a flash page-program payload —
-    /// the exact case that overflowed before the buffer was widened.
+    /// Regression for #176. See [`encode_i2c_batch_ops_encodes_ops_of_any_size`].
     #[cfg(feature = "use-std")]
     #[test]
-    fn encode_spi_batch_ops_handles_large_write_op() {
-        let data = [0xA5u8; 256];
-        let encoded = encode_spi_batch_ops(&[SpiBatchOp::Write { data: &data }]);
-        let (decoded, rest) = postcard::take_from_bytes::<SpiBatchOp>(&encoded).unwrap();
+    fn encode_spi_batch_ops_encodes_ops_of_any_size() {
+        for len in [1021, 1022, MAX_TRANSFER_SIZE] {
+            let data = vec![0xA5u8; len];
+            let op = SpiBatchOp::Write { data: &data };
+            let encoded = encode_spi_batch_ops(core::slice::from_ref(&op));
+            let (decoded, rest) = postcard::take_from_bytes::<SpiBatchOp>(&encoded).unwrap();
+            assert!(rest.is_empty(), "trailing bytes for len {len}");
+            assert_eq!(decoded, op, "round-trip mismatch for len {len}");
+        }
+    }
+
+    /// Regression for #176: several oversized ops in one batch must all
+    /// concatenate correctly.
+    ///
+    /// Encoding now writes straight into the accumulating buffer rather than
+    /// copying each op out of a scratch array, so this pins that successive
+    /// ops still land back-to-back and decode in order.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn encode_i2c_batch_ops_concatenates_multiple_large_ops() {
+        let first = vec![0x11u8; 2000];
+        let second = vec![0x22u8; 3000];
+        let ops = [
+            I2cBatchOp::Write { data: &first },
+            I2cBatchOp::Read { len: 7 },
+            I2cBatchOp::Write { data: &second },
+        ];
+
+        let encoded = encode_i2c_batch_ops(&ops);
+
+        let mut rest: &[u8] = &encoded;
+        for (i, expected) in ops.iter().enumerate() {
+            let (decoded, tail) = postcard::take_from_bytes::<I2cBatchOp>(rest).unwrap();
+            assert_eq!(decoded, *expected, "mismatch at op {i}");
+            rest = tail;
+        }
         assert!(rest.is_empty());
-        assert_eq!(decoded, SpiBatchOp::Write { data: &data });
+    }
+
+    /// Regression for #176. See
+    /// [`encode_i2c_batch_ops_concatenates_multiple_large_ops`].
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn encode_spi_batch_ops_concatenates_multiple_large_ops() {
+        let first = vec![0x11u8; 2000];
+        let second = vec![0x22u8; 3000];
+        let ops = [
+            SpiBatchOp::Write { data: &first },
+            SpiBatchOp::Transfer { data: &second },
+            SpiBatchOp::DelayNs { ns: 1234 },
+        ];
+
+        let encoded = encode_spi_batch_ops(&ops);
+
+        let mut rest: &[u8] = &encoded;
+        for (i, expected) in ops.iter().enumerate() {
+            let (decoded, tail) = postcard::take_from_bytes::<SpiBatchOp>(rest).unwrap();
+            assert_eq!(decoded, *expected, "mismatch at op {i}");
+            rest = tail;
+        }
+        assert!(rest.is_empty());
     }
 
     #[cfg(feature = "use-std")]

@@ -5,6 +5,36 @@ All notable changes to `pico-de-gallo-internal` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `encode_i2c_batch_ops` and `encode_spi_batch_ops` no longer panic when a
+  single batch operation serializes to more than 1024 bytes — in practice a
+  `Write`/`Transfer` op carrying more than 1021 bytes of data, which aborted
+  the caller with `SerializeBufferFull`. Closes #176.
+
+  Both functions serialized each operation through a fixed scratch array and
+  copied the result into the growable output buffer, so the array's size was
+  a hard ceiling on any one operation. It was 128 bytes originally and 1024
+  after `7f33117`, giving cliffs at 125 and 1021 bytes of payload. Neither
+  was documented: the `# Panics` sections mentioned only `MAX_BATCH_OPS`.
+
+  The scratch array served no purpose — both functions are gated on
+  `use-std`, already return `Vec<u8>`, and `use-std` already enables
+  `postcard/alloc`. It existed only because `postcard::to_slice` requires a
+  caller-supplied buffer. Encoding now uses `postcard::to_extend`, writing
+  straight into the accumulating `Vec`, which removes the ceiling and the
+  per-operation copy.
+
+  Reachable from `spi_batch`/`i2c_batch` in `pico-de-gallo-lib` and hence
+  from the HAL, the C FFI, Python and MCP. The FFI and Python paths were the
+  most severe, since a panic there unwinds across an `extern "C"` boundary or
+  takes down the interpreter.
+
+  **No wire-format change.** Output is byte-identical to the previous
+  implementation for every input the previous implementation accepted.
+
 ## [0.8.0] — 2026-09-01
 
 ### Breaking Changes
