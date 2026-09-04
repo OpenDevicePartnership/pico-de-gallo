@@ -54,15 +54,15 @@ use pico_de_gallo_internal::{
     GpioUnsubscribe, GpioUnsubscribeRequest, GpioWaitForAny, GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow,
     GpioWaitForRising, GpioWaitRequest, I2cBatch, I2cBatchRequest, I2cGetConfiguration, I2cRead, I2cReadRequest,
     I2cScan, I2cScanRequest, I2cSetConfiguration, I2cSetConfigurationRequest, I2cWrite, I2cWriteRead,
-    I2cWriteReadRequest, I2cWriteRequest, MICROSOFT_VID, OneWireRead, OneWireReadRequest, OneWireReset, OneWireSearch,
-    OneWireSearchNext, OneWireWrite, OneWireWritePullup, OneWireWritePullupRequest, OneWireWriteRequest,
-    PICO_DE_GALLO_PID, PwmDisable, PwmDisableRequest, PwmEnable, PwmEnableRequest, PwmGetConfiguration,
-    PwmGetConfigurationRequest, PwmGetDutyCycle, PwmGetDutyCycleRequest, PwmSetConfiguration,
+    I2cWriteReadRequest, I2cWriteRequest, MAX_HANDLER_TIMEOUT_MS, MICROSOFT_VID, OneWireRead, OneWireReadRequest,
+    OneWireReset, OneWireSearch, OneWireSearchNext, OneWireWrite, OneWireWritePullup, OneWireWritePullupRequest,
+    OneWireWriteRequest, PICO_DE_GALLO_PID, PwmDisable, PwmDisableRequest, PwmEnable, PwmEnableRequest,
+    PwmGetConfiguration, PwmGetConfigurationRequest, PwmGetDutyCycle, PwmGetDutyCycleRequest, PwmSetConfiguration,
     PwmSetConfigurationRequest, PwmSetDutyCycle, PwmSetDutyCycleRequest, SCHEMA_VERSION_MAJOR, SCHEMA_VERSION_MINOR,
     SpiBatch, SpiBatchRequest, SpiFlush, SpiGetConfiguration, SpiRead, SpiReadRequest, SpiSetConfiguration,
     SpiSetConfigurationRequest, SpiTransfer, SpiTransferRequest, SpiWrite, SpiWriteRequest, SystemResetSubscriptions,
-    UartFlush, UartGetConfiguration, UartRead, UartReadRequest, UartSetConfiguration, UartSetConfigurationRequest,
-    UartWrite, UartWriteRequest, Version,
+    UNDECLARED_DISPATCH_BUDGET_MS, UartFlush, UartGetConfiguration, UartRead, UartReadRequest, UartSetConfiguration,
+    UartSetConfigurationRequest, UartWrite, UartWriteRequest, Version,
 };
 
 pub use pico_de_gallo_internal::{
@@ -83,10 +83,14 @@ pub use postcard_rpc::host_client::HostErr;
 pub use postcard_rpc::host_client::{IoClosed, MultiSubscription};
 pub use postcard_rpc::standard_icd::WireError;
 use postcard_rpc::{
+    Endpoint,
     header::VarSeqKind,
     host_client::HostClient,
+    postcard_schema::Schema,
     standard_icd::{ERROR_PATH, PingEndpoint},
 };
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::convert::Infallible;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -103,10 +107,51 @@ use std::time::Duration;
 /// operators a finite, comprehensible upper bound instead of an
 /// indefinite wait.
 ///
-/// This is deliberately *not* a general RPC timeout: only the validated
-/// metadata fetch is bounded. Every other endpoint keeps its existing
-/// behaviour.
+/// This bound is separate from [`DEFAULT_CALL_TIMEOUT`] and deliberately far
+/// larger, because a queued `device/info` is exactly the case it must not
+/// misdiagnose.
 pub const DEVICE_INFO_TIMEOUT: Duration = Duration::from_secs(300);
+
+/// Default bound applied to every RPC that does not carry its own duration.
+///
+/// Without a bound, a request whose response is never produced parks the
+/// caller forever: there is no lower layer that will give up. That is not
+/// hypothetical — a request frame that exceeds the firmware's receive buffer
+/// is dropped before the dispatcher ever sees it, so the device stays
+/// perfectly healthy while the call waits indefinitely (issue #178).
+///
+/// Five seconds is roughly twice the slowest measured legitimate operation
+/// (a 4096-byte 1-Wire read, ~2.4 s). Calls that can legitimately take longer
+/// are **not** bounded by this value; they derive their own bound instead:
+///
+/// | Call | Bound |
+/// |---|---|
+/// | [`PicoDeGallo::i2c_scan`] | [`UNDECLARED_DISPATCH_BUDGET_MS`] + slack |
+/// | [`PicoDeGallo::uart_read`] | caller's `timeout_ms` + slack |
+/// | [`PicoDeGallo::onewire_write_pullup`] | caller's `pullup_duration_ms` + slack |
+/// | `gpio_wait_*` | [`MAX_HANDLER_TIMEOUT_MS`] + slack |
+/// | [`PicoDeGallo::spi_batch`] | sum of `DelayNs` operations + slack |
+/// | [`PicoDeGallo::device_info`], [`PicoDeGallo::validate`] | [`DEVICE_INFO_TIMEOUT`] |
+///
+/// In every case the slack term is the configured call timeout itself, so
+/// raising it with [`PicoDeGallo::with_call_timeout`] widens the derived
+/// bounds proportionally.
+///
+/// # Concurrency caveat
+///
+/// Firmware dispatch is **serial**: one handler runs at a time. A call issued
+/// while another is in flight waits for that one to finish *before* its own
+/// handler starts, and the host cannot observe when that happens. So if you
+/// share a [`PicoDeGallo`] across tasks and one of them issues a long call — a
+/// `gpio_wait_*`, or an [`spi_batch`](PicoDeGallo::spi_batch) carrying large
+/// `DelayNs` operations — concurrent calls can exceed this default through no
+/// fault of the device.
+///
+/// Sequential use, which is the overwhelmingly common pattern and the one the
+/// `embedded-hal` implementations produce, is unaffected. If you do drive a
+/// board concurrently alongside long-running calls, raise the bound with
+/// [`PicoDeGallo::with_call_timeout`].
+pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Description of a connected Pico de Gallo device.
 #[derive(Debug, Clone)]
@@ -158,6 +203,25 @@ pub enum PicoDeGalloError<E> {
     /// two, and must not assume this variant implies the device was
     /// contacted.
     Endpoint(E),
+    /// The device did not answer within the bound for this call.
+    ///
+    /// The request was transmitted but no response arrived. This is
+    /// **distinct** from [`Comms`](Self::Comms): the transport is healthy and
+    /// the device is very likely healthy too. The known cause is a request
+    /// frame large enough to be dropped before the firmware's dispatcher sees
+    /// it, in which case the board keeps answering every other call normally
+    /// (issue #178).
+    ///
+    /// The handle remains usable. Abandoning the call deregisters its reply
+    /// waiter, and sequence numbers are never reused, so a late reply is
+    /// discarded rather than mismatched to a later call.
+    ///
+    /// See [`DEFAULT_CALL_TIMEOUT`] for how each call's bound is chosen and
+    /// for the concurrency caveat.
+    Timeout {
+        /// How long the call waited before giving up.
+        waited: Duration,
+    },
 }
 
 impl<E: core::fmt::Display> core::fmt::Display for PicoDeGalloError<E> {
@@ -165,6 +229,7 @@ impl<E: core::fmt::Display> core::fmt::Display for PicoDeGalloError<E> {
         match self {
             Self::Comms(e) => write!(f, "communication error: {e:?}"),
             Self::Endpoint(e) => write!(f, "endpoint error: {e}"),
+            Self::Timeout { waited } => write!(f, "device did not respond within {:.3} s", waited.as_secs_f64()),
         }
     }
 }
@@ -382,6 +447,18 @@ pub enum SpiBatchCallError {
     /// A transport-level failure of the `spi/batch` request itself, after
     /// the chip-select was accepted.
     Comms(HostErr<WireError>),
+    /// The device did not answer the `spi/batch` request within its bound.
+    ///
+    /// Disjoint from [`Self::Comms`] for the same reason the other variants
+    /// are: the transport is healthy and the batch's fate is *unknown*. It
+    /// may have executed fully, partially, or not at all, so unlike a local
+    /// refusal it must not be retried blindly.
+    ///
+    /// See [`PicoDeGalloError::Timeout`] and [`DEFAULT_CALL_TIMEOUT`].
+    Timeout {
+        /// How long the call waited before giving up.
+        waited: Duration,
+    },
     /// The firmware executed the batch and refused or failed an operation.
     Endpoint(SpiBatchError),
 }
@@ -396,6 +473,11 @@ impl core::fmt::Display for SpiBatchCallError {
                 "invalid SPI chip-select pin {cs}; device reports {num_gpios} GPIOs (valid 0..{num_gpios})"
             ),
             Self::Comms(e) => write!(f, "communication error: {e:?}"),
+            Self::Timeout { waited } => write!(
+                f,
+                "device did not respond to spi/batch within {:.3} s; the batch may or may not have executed",
+                waited.as_secs_f64()
+            ),
             Self::Endpoint(e) => write!(f, "endpoint error: {e}"),
         }
     }
@@ -403,8 +485,32 @@ impl core::fmt::Display for SpiBatchCallError {
 
 impl std::error::Error for SpiBatchCallError {}
 
-/// Classify a chip-select index against a device-reported GPIO count.
+/// Total firmware-side time a SPI batch's `DelayNs` operations can consume,
+/// in milliseconds, saturating at [`MAX_HANDLER_TIMEOUT_MS`].
 ///
+/// `DelayNs` is caller-supplied, so a legal 64-operation batch of
+/// `DelayNs { ns: u32::MAX }` occupies the dispatcher for roughly 275
+/// seconds. Bounding such a batch by the default call timeout would report a
+/// perfectly healthy device as unresponsive, so the host's bound has to be
+/// derived from the batch itself.
+///
+/// Only `DelayNs` is counted. The bus time of the other operations is bounded
+/// by the transfer size and is negligible beside a caller-chosen delay; the
+/// call's slack term absorbs it.
+fn spi_batch_delay_budget_ms(ops: &[SpiBatchOp<'_>]) -> u32 {
+    let total_ns: u64 = ops
+        .iter()
+        .map(|op| match op {
+            SpiBatchOp::DelayNs { ns } => u64::from(*ns),
+            _ => 0,
+        })
+        .sum();
+    // Round up: a sub-millisecond delay still deserves a non-zero budget.
+    let ms = total_ns.div_ceil(1_000_000);
+    u32::try_from(ms).unwrap_or(u32::MAX).min(MAX_HANDLER_TIMEOUT_MS)
+}
+
+/// Classify a chip-select index against a device-reported GPIO count.///
 /// `num_gpios` must come from an `Ok(_)` metadata read — never from a
 /// default, a cast, or the compile-time [`NUM_GPIOS`]. A count of zero is
 /// [`SpiBatchCallError::NoGpios`] for *every* index, including zero, so a
@@ -453,6 +559,60 @@ pub struct PicoDeGallo {
     /// test constructor uses a short one so the timeout path is
     /// executable without waiting five minutes.
     metadata_timeout: Duration,
+    /// Per-handle bound on every RPC that does not derive its own. Defaults
+    /// to [`DEFAULT_CALL_TIMEOUT`]; override with
+    /// [`with_call_timeout`](Self::with_call_timeout).
+    call_timeout: Duration,
+}
+
+/// A [`HostClient`] paired with the bound to apply to one call.
+///
+/// Exists so every RPC in this crate goes through a single place that can
+/// time out, rather than 50-odd call sites each having to remember to. See
+/// [`PicoDeGallo::bounded`].
+struct Bounded<'a> {
+    client: &'a HostClient<WireError>,
+    bound: Duration,
+}
+
+impl Bounded<'_> {
+    /// Issue an endpoint request, giving up after the bound.
+    ///
+    /// Shadows [`HostClient::send_resp`] deliberately: call sites read
+    /// identically to the unbounded version, so the bound cannot be
+    /// forgotten by writing the call the "obvious" way.
+    ///
+    /// Returns [`CallError`] rather than [`PicoDeGalloError`] so the method
+    /// has exactly one type parameter and call sites can keep writing
+    /// `send_resp::<SomeEndpoint>(..)`. The `?` operator converts it.
+    async fn send_resp<E>(&self, request: &E::Request) -> Result<E::Response, CallError>
+    where
+        E: Endpoint,
+        E::Request: Serialize + Schema,
+        E::Response: DeserializeOwned + Schema,
+    {
+        match tokio::time::timeout(self.bound, self.client.send_resp::<E>(request)).await {
+            Ok(Ok(response)) => Ok(response),
+            Ok(Err(e)) => Err(CallError::Comms(e)),
+            Err(_elapsed) => Err(CallError::Timeout { waited: self.bound }),
+        }
+    }
+}
+
+/// Outcome of a bounded transport call, before it is widened to the
+/// endpoint-specific [`PicoDeGalloError`].
+enum CallError {
+    Comms(HostErr<WireError>),
+    Timeout { waited: Duration },
+}
+
+impl<E> From<CallError> for PicoDeGalloError<E> {
+    fn from(value: CallError) -> Self {
+        match value {
+            CallError::Comms(e) => Self::Comms(e),
+            CallError::Timeout { waited } => Self::Timeout { waited },
+        }
+    }
 }
 
 impl Default for PicoDeGallo {
@@ -507,7 +667,68 @@ impl PicoDeGallo {
             client,
             num_gpios_cache: Arc::new(OnceLock::new()),
             metadata_timeout: DEVICE_INFO_TIMEOUT,
+            call_timeout: DEFAULT_CALL_TIMEOUT,
         })
+    }
+
+    /// Override the bound applied to RPCs that do not derive their own.
+    ///
+    /// Defaults to [`DEFAULT_CALL_TIMEOUT`]. Raising it also widens the
+    /// derived bounds, which all add the configured value as transport slack.
+    ///
+    /// Raise this if you share one handle across tasks while issuing long
+    /// calls — see the concurrency caveat on [`DEFAULT_CALL_TIMEOUT`].
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use pico_de_gallo_lib::PicoDeGallo;
+    /// use std::time::Duration;
+    ///
+    /// let pg = PicoDeGallo::try_new()?.with_call_timeout(Duration::from_secs(30));
+    /// # Ok::<(), String>(())
+    /// ```
+    #[must_use]
+    pub fn with_call_timeout(mut self, timeout: Duration) -> Self {
+        self.call_timeout = timeout;
+        self
+    }
+
+    /// The bound currently applied to undifferentiated RPCs.
+    #[must_use]
+    pub fn call_timeout(&self) -> Duration {
+        self.call_timeout
+    }
+
+    /// Wrap the transport with this handle's default bound.
+    fn bounded(&self) -> Bounded<'_> {
+        Bounded {
+            client: &self.client,
+            bound: self.call_timeout,
+        }
+    }
+
+    /// Wrap the transport with a bound derived from a firmware-side duration.
+    ///
+    /// `firmware_ms` is what the firmware itself will allow the handler, so
+    /// the host must wait at least that long plus transport slack. The slack
+    /// is the configured call timeout, and the firmware-side term is clamped
+    /// exactly as the firmware clamps it, so the two cannot disagree.
+    ///
+    /// A `firmware_ms` of `0` means the firmware's ceiling, not "no time" —
+    /// see [`MAX_HANDLER_TIMEOUT_MS`]. Getting this backwards would bound a
+    /// `gpio/wait-*` at the transport slack alone and fail every edge that
+    /// took longer than a few seconds to arrive.
+    fn bounded_for(&self, firmware_ms: u32) -> Bounded<'_> {
+        let clamped_ms = if firmware_ms == 0 {
+            MAX_HANDLER_TIMEOUT_MS
+        } else {
+            firmware_ms.min(MAX_HANDLER_TIMEOUT_MS)
+        };
+        Bounded {
+            client: &self.client,
+            bound: Duration::from_millis(u64::from(clamped_ms)).saturating_add(self.call_timeout),
+        }
     }
 
     /// Build a handle over a caller-supplied transport with a caller-supplied
@@ -523,6 +744,7 @@ impl PicoDeGallo {
             client,
             num_gpios_cache: Arc::new(OnceLock::new()),
             metadata_timeout,
+            call_timeout: DEFAULT_CALL_TIMEOUT,
         }
     }
 
@@ -540,7 +762,7 @@ impl PicoDeGallo {
     /// Only used for testing purposes. Send a `u32` and get the same
     /// `u32` as a response.
     pub async fn ping(&self, id: u32) -> Result<u32, PicoDeGalloError<Infallible>> {
-        Ok(self.client.send_resp::<PingEndpoint>(&id).await?)
+        Ok(self.bounded().send_resp::<PingEndpoint>(&id).await?)
     }
 
     /// Read `count` bytes from the I2C device at `address`.
@@ -548,7 +770,7 @@ impl PicoDeGallo {
     /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
     /// (4096) bytes. Reads exceeding this limit will be truncated.
     pub async fn i2c_read(&self, address: u8, count: u16) -> Result<Vec<u8>, PicoDeGalloError<I2cError>> {
-        self.client
+        self.bounded()
             .send_resp::<I2cRead>(&I2cReadRequest { address, count })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -557,7 +779,7 @@ impl PicoDeGallo {
     /// Write `contents` to the I2C device at `address`.
     pub async fn i2c_write(&self, address: u8, contents: &[u8]) -> Result<(), PicoDeGalloError<I2cError>> {
         check_i2c_write_payload(contents).map_err(PicoDeGalloError::Endpoint)?;
-        self.client
+        self.bounded()
             .send_resp::<I2cWrite>(&I2cWriteRequest { address, contents })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -573,7 +795,7 @@ impl PicoDeGallo {
         contents: &[u8],
         count: u16,
     ) -> Result<Vec<u8>, PicoDeGalloError<I2cError>> {
-        self.client
+        self.bounded()
             .send_resp::<I2cWriteRead>(&I2cWriteReadRequest {
                 address,
                 contents,
@@ -590,7 +812,9 @@ impl PicoDeGallo {
     /// `include_reserved` is `false`, only the standard range (0x08–0x77) is
     /// probed; when `true`, the full range (0x00–0x7F) is scanned.
     pub async fn i2c_scan(&self, include_reserved: bool) -> Result<Vec<u8>, PicoDeGalloError<I2cError>> {
-        self.client
+        // i2c/scan probes up to 128 addresses; the firmware's own budget
+        // for it is UNDECLARED_DISPATCH_BUDGET_MS, well above the default.
+        self.bounded_for(UNDECLARED_DISPATCH_BUDGET_MS)
             .send_resp::<I2cScan>(&I2cScanRequest { include_reserved })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -638,7 +862,7 @@ impl PicoDeGallo {
     ) -> Result<Vec<u8>, PicoDeGalloError<I2cBatchError>> {
         check_i2c_batch_ops(ops).map_err(PicoDeGalloError::Endpoint)?;
         let encoded = encode_i2c_batch_ops(ops);
-        self.client
+        self.bounded()
             .send_resp::<I2cBatch>(&I2cBatchRequest {
                 address,
                 count: ops.len() as u16,
@@ -653,7 +877,7 @@ impl PicoDeGallo {
     /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
     /// (4096) bytes. Reads exceeding this limit will be truncated.
     pub async fn spi_read(&self, count: u16) -> Result<Vec<u8>, PicoDeGalloError<SpiError>> {
-        self.client
+        self.bounded()
             .send_resp::<SpiRead>(&SpiReadRequest { count })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -661,7 +885,7 @@ impl PicoDeGallo {
 
     /// Write `contents` to the SPI bus.
     pub async fn spi_write(&self, contents: &[u8]) -> Result<(), PicoDeGalloError<SpiError>> {
-        self.client
+        self.bounded()
             .send_resp::<SpiWrite>(&SpiWriteRequest { contents })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -669,7 +893,7 @@ impl PicoDeGallo {
 
     /// Flush the SPI interface.
     pub async fn spi_flush(&self) -> Result<(), PicoDeGalloError<SpiError>> {
-        self.client
+        self.bounded()
             .send_resp::<SpiFlush>(&())
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -681,7 +905,7 @@ impl PicoDeGallo {
     /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
     /// bytes. Transfers exceeding this limit will be rejected.
     pub async fn spi_transfer(&self, write_data: &[u8]) -> Result<Vec<u8>, PicoDeGalloError<SpiError>> {
-        self.client
+        self.bounded()
             .send_resp::<SpiTransfer>(&SpiTransferRequest { contents: write_data })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -727,14 +951,21 @@ impl PicoDeGallo {
         classify_cs(cs_pin, num_gpios)?;
 
         let encoded = encode_spi_batch_ops(ops);
-        self.client
+        // Bound from the batch's own accumulated delays: `DelayNs` operations
+        // are caller-supplied and a legal 64-operation batch can occupy the
+        // firmware dispatcher for minutes. Bounding this by the default would
+        // fail a perfectly healthy long batch.
+        self.bounded_for(spi_batch_delay_budget_ms(ops))
             .send_resp::<SpiBatch>(&SpiBatchRequest {
                 cs_pin,
                 count: ops.len() as u16,
                 ops: &encoded,
             })
             .await
-            .map_err(SpiBatchCallError::Comms)?
+            .map_err(|e| match e {
+                CallError::Comms(e) => SpiBatchCallError::Comms(e),
+                CallError::Timeout { waited } => SpiBatchCallError::Timeout { waited },
+            })?
             .map_err(SpiBatchCallError::Endpoint)
     }
 
@@ -750,7 +981,8 @@ impl PicoDeGallo {
     /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
     /// (4096) bytes.
     pub async fn uart_read(&self, count: u16, timeout_ms: u32) -> Result<Vec<u8>, PicoDeGalloError<UartError>> {
-        self.client
+        // The caller's own read timeout is the firmware-side duration here.
+        self.bounded_for(timeout_ms)
             .send_resp::<UartRead>(&UartReadRequest { count, timeout_ms })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -763,7 +995,7 @@ impl PicoDeGallo {
     /// necessarily transmitted on the wire). Use [`uart_flush`](Self::uart_flush)
     /// to wait for transmission to complete.
     pub async fn uart_write(&self, contents: &[u8]) -> Result<(), PicoDeGalloError<UartError>> {
-        self.client
+        self.bounded()
             .send_resp::<UartWrite>(&UartWriteRequest { contents })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -773,7 +1005,7 @@ impl PicoDeGallo {
     ///
     /// Blocks until all pending bytes have been transmitted on the wire.
     pub async fn uart_flush(&self) -> Result<(), PicoDeGalloError<UartError>> {
-        self.client
+        self.bounded()
             .send_resp::<UartFlush>(&())
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -783,7 +1015,7 @@ impl PicoDeGallo {
     ///
     /// Pico de Gallo offers 4 total GPIOs, numbered 0 through 3.
     pub async fn gpio_get(&self, pin: u8) -> Result<GpioState, PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded()
             .send_resp::<GpioGet>(&GpioGetRequest { pin })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -793,7 +1025,7 @@ impl PicoDeGallo {
     ///
     /// Pico de Gallo offers 4 total GPIOs, numbered 0 through 3.
     pub async fn gpio_put(&self, pin: u8, state: GpioState) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded()
             .send_resp::<GpioPut>(&GpioPutRequest { pin, state })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -807,7 +1039,7 @@ impl PicoDeGallo {
     /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_high_with_timeout`](Self::gpio_wait_for_high_with_timeout).
     pub async fn gpio_wait_for_high(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded_for(0)
             .send_resp::<GpioWaitForHigh>(&GpioWaitRequest { pin, timeout_ms: 0 })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -821,7 +1053,7 @@ impl PicoDeGallo {
     /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_low_with_timeout`](Self::gpio_wait_for_low_with_timeout).
     pub async fn gpio_wait_for_low(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded_for(0)
             .send_resp::<GpioWaitForLow>(&GpioWaitRequest { pin, timeout_ms: 0 })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -835,7 +1067,7 @@ impl PicoDeGallo {
     /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_rising_edge_with_timeout`](Self::gpio_wait_for_rising_edge_with_timeout).
     pub async fn gpio_wait_for_rising_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded_for(0)
             .send_resp::<GpioWaitForRising>(&GpioWaitRequest { pin, timeout_ms: 0 })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -849,7 +1081,7 @@ impl PicoDeGallo {
     /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_falling_edge_with_timeout`](Self::gpio_wait_for_falling_edge_with_timeout).
     pub async fn gpio_wait_for_falling_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded_for(0)
             .send_resp::<GpioWaitForFalling>(&GpioWaitRequest { pin, timeout_ms: 0 })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -864,7 +1096,7 @@ impl PicoDeGallo {
     /// [`GpioError::Timeout`] on expiry. For a shorter wait, use
     /// [`gpio_wait_for_any_edge_with_timeout`](Self::gpio_wait_for_any_edge_with_timeout).
     pub async fn gpio_wait_for_any_edge(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded_for(0)
             .send_resp::<GpioWaitForAny>(&GpioWaitRequest { pin, timeout_ms: 0 })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -887,7 +1119,7 @@ impl PicoDeGallo {
         timeout: std::time::Duration,
     ) -> Result<(), PicoDeGalloError<GpioError>> {
         let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        self.client
+        self.bounded_for(timeout_ms)
             .send_resp::<GpioWaitForHigh>(&GpioWaitRequest { pin, timeout_ms })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -910,7 +1142,7 @@ impl PicoDeGallo {
         timeout: std::time::Duration,
     ) -> Result<(), PicoDeGalloError<GpioError>> {
         let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        self.client
+        self.bounded_for(timeout_ms)
             .send_resp::<GpioWaitForLow>(&GpioWaitRequest { pin, timeout_ms })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -933,7 +1165,7 @@ impl PicoDeGallo {
         timeout: std::time::Duration,
     ) -> Result<(), PicoDeGalloError<GpioError>> {
         let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        self.client
+        self.bounded_for(timeout_ms)
             .send_resp::<GpioWaitForRising>(&GpioWaitRequest { pin, timeout_ms })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -956,7 +1188,7 @@ impl PicoDeGallo {
         timeout: std::time::Duration,
     ) -> Result<(), PicoDeGalloError<GpioError>> {
         let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        self.client
+        self.bounded_for(timeout_ms)
             .send_resp::<GpioWaitForFalling>(&GpioWaitRequest { pin, timeout_ms })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -979,7 +1211,7 @@ impl PicoDeGallo {
         timeout: std::time::Duration,
     ) -> Result<(), PicoDeGalloError<GpioError>> {
         let timeout_ms = u32::try_from(timeout.as_millis()).unwrap_or(u32::MAX);
-        self.client
+        self.bounded_for(timeout_ms)
             .send_resp::<GpioWaitForAny>(&GpioWaitRequest { pin, timeout_ms })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -999,7 +1231,7 @@ impl PicoDeGallo {
         direction: GpioDirection,
         pull: GpioPull,
     ) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded()
             .send_resp::<GpioSetConfiguration>(&GpioSetConfigurationRequest { pin, direction, pull })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1015,7 +1247,7 @@ impl PicoDeGallo {
     /// Call [`subscribe_gpio_events`](Self::subscribe_gpio_events) to receive the
     /// event stream.
     pub async fn gpio_subscribe(&self, pin: u8, edge: GpioEdge) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded()
             .send_resp::<GpioSubscribe>(&GpioSubscribeRequest { pin, edge })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1026,7 +1258,7 @@ impl PicoDeGallo {
     /// Stops monitoring and returns the pin to normal operation. Returns
     /// [`GpioError::PinNotMonitored`] if the pin is not currently subscribed.
     pub async fn gpio_unsubscribe(&self, pin: u8) -> Result<(), PicoDeGalloError<GpioError>> {
-        self.client
+        self.bounded()
             .send_resp::<GpioUnsubscribe>(&GpioUnsubscribeRequest { pin })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1056,7 +1288,7 @@ impl PicoDeGallo {
     /// Changes the I2C bus clock frequency. Takes effect immediately before
     /// the next I2C operation.
     pub async fn i2c_set_config(&self, frequency: I2cFrequency) -> Result<(), PicoDeGalloError<I2cError>> {
-        self.client
+        self.bounded()
             .send_resp::<I2cSetConfiguration>(&I2cSetConfigurationRequest { frequency })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1072,7 +1304,7 @@ impl PicoDeGallo {
         spi_phase: SpiPhase,
         spi_polarity: SpiPolarity,
     ) -> Result<(), PicoDeGalloError<SpiError>> {
-        self.client
+        self.bounded()
             .send_resp::<SpiSetConfiguration>(&SpiSetConfigurationRequest {
                 spi_frequency,
                 spi_phase,
@@ -1084,14 +1316,14 @@ impl PicoDeGallo {
 
     /// Get the firmware version from the Pico de Gallo device.
     pub async fn version(&self) -> Result<VersionInfo, PicoDeGalloError<Infallible>> {
-        Ok(self.client.send_resp::<Version>(&()).await?)
+        Ok(self.bounded().send_resp::<Version>(&()).await?)
     }
 
     /// Get extended device information including firmware version, schema
     /// (wire protocol) version, hardware revision, peripheral capabilities,
     /// and the informational firmware build identity.
     pub async fn device_info(&self) -> Result<DeviceInfo, PicoDeGalloError<Infallible>> {
-        Ok(self.client.send_resp::<GetDeviceInfo>(&()).await?)
+        Ok(self.bounded().send_resp::<GetDeviceInfo>(&()).await?)
     }
 
     /// Fetch `device/info` under [`Self::metadata_timeout`] and check the
@@ -1103,6 +1335,9 @@ impl PicoDeGallo {
     /// response is schema-checked. No caching happens here, so every error
     /// path leaves the cache untouched and therefore retryable.
     async fn fetch_validated_info(&self) -> Result<DeviceInfo, ValidateError> {
+        // Deliberately the raw client, not `bounded()`: this path carries its
+        // own, far longer `metadata_timeout`, and nesting the default call
+        // bound inside it would silently shorten `validate()` to five seconds.
         let fut = self.client.send_resp::<GetDeviceInfo>(&());
         let info = match tokio::time::timeout(self.metadata_timeout, fut).await {
             Err(_elapsed) => return Err(ValidateError::Timeout),
@@ -1255,7 +1490,7 @@ impl PicoDeGallo {
     /// # }
     /// ```
     pub async fn system_reset_subscriptions(&self) -> Result<u8, PicoDeGalloError<Infallible>> {
-        Ok(self.client.send_resp::<SystemResetSubscriptions>(&()).await?)
+        Ok(self.bounded().send_resp::<SystemResetSubscriptions>(&()).await?)
     }
 
     /// Query the current I2C bus configuration.
@@ -1263,7 +1498,7 @@ impl PicoDeGallo {
     /// Returns the [`I2cFrequency`] value that is currently active on the
     /// firmware. The default is [`I2cFrequency::Standard`] (100 kHz).
     pub async fn i2c_get_config(&self) -> Result<I2cFrequency, PicoDeGalloError<Infallible>> {
-        Ok(self.client.send_resp::<I2cGetConfiguration>(&()).await?)
+        Ok(self.bounded().send_resp::<I2cGetConfiguration>(&()).await?)
     }
 
     /// Query the current SPI bus configuration.
@@ -1272,7 +1507,7 @@ impl PicoDeGallo {
     /// frequency, phase, and polarity. The defaults are 1 MHz,
     /// `CaptureOnFirstTransition`, and `IdleLow`.
     pub async fn spi_get_config(&self) -> Result<SpiConfigurationInfo, PicoDeGalloError<Infallible>> {
-        Ok(self.client.send_resp::<SpiGetConfiguration>(&()).await?)
+        Ok(self.bounded().send_resp::<SpiGetConfiguration>(&()).await?)
     }
 
     /// Set UART bus configuration parameters.
@@ -1280,7 +1515,7 @@ impl PicoDeGallo {
     /// Changes the UART baud rate. Takes effect immediately before the next
     /// UART operation. The default baud rate is 115200.
     pub async fn uart_set_config(&self, baud_rate: u32) -> Result<(), PicoDeGalloError<UartError>> {
-        self.client
+        self.bounded()
             .send_resp::<UartSetConfiguration>(&UartSetConfigurationRequest { baud_rate })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1294,7 +1529,7 @@ impl PicoDeGallo {
     /// Returns [`UartError::Unsupported`] if the firmware's hardware revision
     /// does not support UART.
     pub async fn uart_get_config(&self) -> Result<UartConfigurationInfo, PicoDeGalloError<UartError>> {
-        self.client
+        self.bounded()
             .send_resp::<UartGetConfiguration>(&())
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1312,7 +1547,7 @@ impl PicoDeGallo {
     ///
     /// Channels 0–1 share PWM slice 6, channels 2–3 share PWM slice 7.
     pub async fn pwm_set_duty_cycle(&self, channel: u8, duty: u16) -> Result<(), PicoDeGalloError<PwmError>> {
-        self.client
+        self.bounded()
             .send_resp::<PwmSetDutyCycle>(&PwmSetDutyCycleRequest { channel, duty })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1324,7 +1559,7 @@ impl PicoDeGallo {
     /// value) and `max_duty` (the `top` register + 1, i.e., the full-scale
     /// value).
     pub async fn pwm_get_duty_cycle(&self, channel: u8) -> Result<PwmDutyCycleInfo, PicoDeGalloError<PwmError>> {
-        self.client
+        self.bounded()
             .send_resp::<PwmGetDutyCycle>(&PwmGetDutyCycleRequest { channel })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1335,7 +1570,7 @@ impl PicoDeGallo {
     /// Because PWM slices drive two channels, enabling channel 0 also
     /// enables channel 1 (and vice versa). Same for channels 2/3.
     pub async fn pwm_enable(&self, channel: u8) -> Result<(), PicoDeGalloError<PwmError>> {
-        self.client
+        self.bounded()
             .send_resp::<PwmEnable>(&PwmEnableRequest { channel })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1346,7 +1581,7 @@ impl PicoDeGallo {
     /// Because PWM slices drive two channels, disabling channel 0 also
     /// disables channel 1 (and vice versa). Same for channels 2/3.
     pub async fn pwm_disable(&self, channel: u8) -> Result<(), PicoDeGalloError<PwmError>> {
-        self.client
+        self.bounded()
             .send_resp::<PwmDisable>(&PwmDisableRequest { channel })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1366,7 +1601,7 @@ impl PicoDeGallo {
         frequency_hz: u32,
         phase_correct: bool,
     ) -> Result<(), PicoDeGalloError<PwmError>> {
-        self.client
+        self.bounded()
             .send_resp::<PwmSetConfiguration>(&PwmSetConfigurationRequest {
                 channel,
                 frequency_hz,
@@ -1381,7 +1616,7 @@ impl PicoDeGallo {
     /// Returns a [`PwmConfigurationInfo`] with the effective frequency,
     /// phase-correct flag, and enabled state.
     pub async fn pwm_get_config(&self, channel: u8) -> Result<PwmConfigurationInfo, PicoDeGalloError<PwmError>> {
-        self.client
+        self.bounded()
             .send_resp::<PwmGetConfiguration>(&PwmGetConfigurationRequest { channel })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1394,7 +1629,7 @@ impl PicoDeGallo {
     /// Returns a raw 12-bit value (0–4095). Convert to voltage with:
     /// `V ≈ raw × 3.3 / 4096` (approximate — depends on ADC_AVDD).
     pub async fn adc_read(&self, channel: AdcChannel) -> Result<u16, PicoDeGalloError<AdcError>> {
-        self.client
+        self.bounded()
             .send_resp::<AdcRead>(&AdcReadRequest { channel })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1408,7 +1643,7 @@ impl PicoDeGallo {
     /// Returns [`AdcError::Unsupported`] if the firmware's hardware revision
     /// does not support ADC.
     pub async fn adc_get_config(&self) -> Result<AdcConfigurationInfo, PicoDeGalloError<AdcError>> {
-        self.client
+        self.bounded()
             .send_resp::<AdcGetConfiguration>(&())
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1420,7 +1655,7 @@ impl PicoDeGallo {
     ///
     /// Returns `true` if one or more devices responded with a presence pulse.
     pub async fn onewire_reset(&self) -> Result<bool, PicoDeGalloError<OneWireError>> {
-        self.client
+        self.bounded()
             .send_resp::<OneWireReset>(&())
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1430,7 +1665,7 @@ impl PicoDeGallo {
     ///
     /// The firmware sends `0xFF` read slots and captures the device's response bits.
     pub async fn onewire_read(&self, len: u16) -> Result<Vec<u8>, PicoDeGalloError<OneWireError>> {
-        self.client
+        self.bounded()
             .send_resp::<OneWireRead>(&OneWireReadRequest { len })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1438,7 +1673,7 @@ impl PicoDeGallo {
 
     /// Write raw bytes to the 1-Wire bus.
     pub async fn onewire_write(&self, data: &[u8]) -> Result<(), PicoDeGalloError<OneWireError>> {
-        self.client
+        self.bounded()
             .send_resp::<OneWireWrite>(&OneWireWriteRequest { data })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1454,7 +1689,10 @@ impl PicoDeGallo {
         data: &[u8],
         pullup_duration_ms: u16,
     ) -> Result<(), PicoDeGalloError<OneWireError>> {
-        self.client
+        // The caller's strong-pullup hold is firmware-side time on top of the
+        // write itself, so it must widen the bound or a long parasitic-power
+        // conversion would look like an unresponsive device.
+        self.bounded_for(u32::from(pullup_duration_ms))
             .send_resp::<OneWireWritePullup>(&OneWireWritePullupRequest {
                 data,
                 pullup_duration_ms,
@@ -1469,7 +1707,7 @@ impl PicoDeGallo {
     /// are on the bus. Call [`onewire_search_next`](Self::onewire_search_next) to
     /// continue enumerating.
     pub async fn onewire_search(&self) -> Result<Option<u64>, PicoDeGalloError<OneWireError>> {
-        self.client
+        self.bounded()
             .send_resp::<OneWireSearch>(&())
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1480,7 +1718,7 @@ impl PicoDeGallo {
     /// Returns the next device's 64-bit ROM ID, or `None` when all devices have
     /// been enumerated.
     pub async fn onewire_search_next(&self) -> Result<Option<u64>, PicoDeGalloError<OneWireError>> {
-        self.client
+        self.bounded()
             .send_resp::<OneWireSearchNext>(&())
             .await?
             .map_err(PicoDeGalloError::Endpoint)
@@ -1728,6 +1966,7 @@ mod tests {
         match err {
             PicoDeGalloError::Endpoint(e) => assert_eq!(e, "endpoint failed"),
             PicoDeGalloError::Comms(_) => panic!("expected Endpoint, got Comms"),
+            PicoDeGalloError::Timeout { .. } => panic!("expected Endpoint, got Timeout"),
         }
     }
 
@@ -2113,6 +2352,9 @@ mod tests {
             SpiBatchCallError::NoGpios,
             SpiBatchCallError::InvalidCsPin { cs: 255, num_gpios: 4 },
             SpiBatchCallError::Comms(HostErr::Closed),
+            SpiBatchCallError::Timeout {
+                waited: Duration::from_secs(5),
+            },
             SpiBatchCallError::Endpoint(SpiBatchError {
                 failed_op: 0,
                 kind: SpiError::Other,
@@ -2129,10 +2371,11 @@ mod tests {
                 SpiBatchCallError::InvalidCsPin { .. } => 2,
                 SpiBatchCallError::Comms(_) => 3,
                 SpiBatchCallError::Endpoint(_) => 4,
+                SpiBatchCallError::Timeout { .. } => 5,
             }
         }
         let tags: std::collections::HashSet<u8> = all_spi_batch_call_errors().iter().map(witness).collect();
-        assert_eq!(tags.len(), 5);
+        assert_eq!(tags.len(), 6);
     }
 
     #[test]
@@ -2361,6 +2604,168 @@ mod tests {
             other => panic!("expected DeviceInfo(SchemaMismatch), got {other:?}"),
         }
         assert_eq!(script.count("spi/batch"), 0);
+    }
+
+    // --- issue #178: no RPC may block indefinitely ---
+
+    /// The headline guarantee: a device that never answers produces an error
+    /// rather than parking the caller forever.
+    ///
+    /// `Reply::Silent` is exactly the observed failure — an oversized request
+    /// frame is dropped before the dispatcher sees it, so the board stays
+    /// healthy and simply never replies.
+    #[tokio::test]
+    async fn silent_device_times_out_instead_of_hanging() {
+        let (pg, _script) = scripted(vec![Reply::Silent], DEVICE_INFO_TIMEOUT);
+        let pg = pg.with_call_timeout(Duration::from_millis(50));
+
+        match pg.ping(0xABCD).await {
+            Err(PicoDeGalloError::Timeout { waited }) => {
+                assert_eq!(waited, Duration::from_millis(50));
+            }
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    /// A timed-out call must not poison the handle.
+    ///
+    /// Abandoning the future drops its reply waiter, and sequence numbers are
+    /// never reused, so a late reply is discarded rather than mismatched onto
+    /// the next call. If that were wrong, the second call here would receive
+    /// the first call's answer or fail outright.
+    #[tokio::test]
+    async fn handle_stays_usable_after_a_timeout() {
+        let (pg, script) = scripted(
+            vec![Reply::Silent, Reply::DeviceInfo(good_info(4))],
+            DEVICE_INFO_TIMEOUT,
+        );
+        let pg = pg.with_call_timeout(Duration::from_millis(50));
+
+        assert!(matches!(pg.ping(1).await, Err(PicoDeGalloError::Timeout { .. })));
+
+        let info = pg.device_info().await.expect("second call must still work");
+        assert_eq!(info.num_gpios, 4);
+        assert_eq!(script.count("device/info"), 1);
+    }
+
+    /// The default must not be so tight that a legitimately slow call fails.
+    /// The slowest measured operation is a 4096-byte 1-Wire read at ~2.4 s.
+    #[test]
+    fn default_call_timeout_clears_the_slowest_measured_operation() {
+        assert_eq!(DEFAULT_CALL_TIMEOUT, Duration::from_secs(5));
+        assert!(DEFAULT_CALL_TIMEOUT >= Duration::from_millis(2400) * 2);
+    }
+
+    /// `0` means the firmware's ceiling, not "no time". Reversing this would
+    /// bound every `gpio_wait_*` at the transport slack alone.
+    #[tokio::test]
+    async fn bounded_for_zero_selects_the_handler_ceiling() {
+        let (pg, _script) = scripted(vec![], DEVICE_INFO_TIMEOUT);
+        let pg = pg.with_call_timeout(Duration::from_secs(5));
+
+        let ceiling = Duration::from_millis(u64::from(MAX_HANDLER_TIMEOUT_MS));
+        assert_eq!(pg.bounded_for(0).bound, ceiling + Duration::from_secs(5));
+    }
+
+    /// A caller-supplied duration widens the bound, and is clamped exactly
+    /// where the firmware clamps it.
+    #[tokio::test]
+    async fn bounded_for_adds_slack_and_clamps_like_the_firmware() {
+        let (pg, _script) = scripted(vec![], DEVICE_INFO_TIMEOUT);
+        let pg = pg.with_call_timeout(Duration::from_secs(5));
+
+        assert_eq!(
+            pg.bounded_for(1_000).bound,
+            Duration::from_secs(1) + Duration::from_secs(5)
+        );
+
+        let ceiling = Duration::from_millis(u64::from(MAX_HANDLER_TIMEOUT_MS));
+        assert_eq!(
+            pg.bounded_for(u32::MAX).bound,
+            ceiling + Duration::from_secs(5),
+            "an oversized request must clamp, not overflow"
+        );
+    }
+
+    #[tokio::test]
+    async fn with_call_timeout_overrides_the_default() {
+        let (pg, _script) = scripted(vec![], DEVICE_INFO_TIMEOUT);
+        assert_eq!(pg.call_timeout(), DEFAULT_CALL_TIMEOUT);
+
+        let pg = pg.with_call_timeout(Duration::from_secs(30));
+        assert_eq!(pg.call_timeout(), Duration::from_secs(30));
+        assert_eq!(pg.bounded().bound, Duration::from_secs(30));
+    }
+
+    #[test]
+    fn spi_batch_delay_budget_counts_only_delays() {
+        let data = [0u8; 8];
+        let ops = [
+            SpiBatchOp::Write { data: &data },
+            SpiBatchOp::DelayNs { ns: 3_000_000 },
+            SpiBatchOp::Read { len: 16 },
+            SpiBatchOp::DelayNs { ns: 2_000_000 },
+        ];
+        assert_eq!(spi_batch_delay_budget_ms(&ops), 5);
+    }
+
+    /// A sub-millisecond delay must still produce a non-zero budget, because
+    /// `bounded_for(0)` means "the ceiling" — rounding down to zero here would
+    /// silently turn a 100 µs batch into a 30-minute bound.
+    #[test]
+    fn spi_batch_delay_budget_rounds_sub_millisecond_up() {
+        let ops = [SpiBatchOp::DelayNs { ns: 1 }];
+        assert_eq!(spi_batch_delay_budget_ms(&ops), 1);
+    }
+
+    /// The documented worst case: 64 operations of `DelayNs { ns: u32::MAX }`
+    /// is roughly 275 s, which must be represented rather than overflowing.
+    #[test]
+    fn spi_batch_delay_budget_handles_the_worst_legal_batch() {
+        let ops = vec![SpiBatchOp::DelayNs { ns: u32::MAX }; MAX_BATCH_OPS];
+        let ms = spi_batch_delay_budget_ms(&ops);
+        assert_eq!(ms, 274_878);
+        assert!(ms < MAX_HANDLER_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn spi_batch_delay_budget_saturates_at_the_handler_ceiling() {
+        // Not reachable through the public API (MAX_BATCH_OPS bounds it), but
+        // the saturation must be correct rather than wrapping.
+        let ops = vec![SpiBatchOp::DelayNs { ns: u32::MAX }; 100_000];
+        assert_eq!(spi_batch_delay_budget_ms(&ops), MAX_HANDLER_TIMEOUT_MS);
+    }
+
+    #[test]
+    fn timeout_display_names_the_bound() {
+        let e: PicoDeGalloError<Infallible> = PicoDeGalloError::Timeout {
+            waited: Duration::from_millis(1500),
+        };
+        assert_eq!(e.to_string(), "device did not respond within 1.500 s");
+    }
+
+    #[test]
+    fn spi_batch_timeout_display_admits_the_batch_may_have_run() {
+        let e = SpiBatchCallError::Timeout {
+            waited: Duration::from_secs(5),
+        };
+        let text = e.to_string();
+        assert!(text.contains("may or may not have executed"), "got: {text}");
+    }
+
+    #[test]
+    fn call_error_widens_to_pico_de_gallo_error() {
+        let e: PicoDeGalloError<Infallible> = CallError::Timeout {
+            waited: Duration::from_secs(2),
+        }
+        .into();
+        assert!(matches!(
+            e,
+            PicoDeGalloError::Timeout { waited } if waited == Duration::from_secs(2)
+        ));
+
+        let e: PicoDeGalloError<Infallible> = CallError::Comms(HostErr::Closed).into();
+        assert!(matches!(e, PicoDeGalloError::Comms(_)));
     }
 
     #[tokio::test]

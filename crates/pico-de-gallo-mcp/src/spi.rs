@@ -149,6 +149,16 @@ fn map_spi_batch_call_err(e: pico_de_gallo_lib::SpiBatchCallError) -> ErrorData 
              GPIOs (valid 0..{num_gpios})"
         )),
         E::Comms(c) => ErrorData::internal_error(format!("communication error: {c:?}"), None),
+        // Internal, not invalid-params, and the message must say the batch may
+        // already have run: a caller that retries blindly repeats its writes.
+        E::Timeout { waited } => ErrorData::internal_error(
+            format!(
+                "device did not respond to spi/batch within {:.3} s; the batch \
+                 may or may not have executed, so do not retry blindly",
+                waited.as_secs_f64()
+            ),
+            None,
+        ),
         E::Endpoint(be) => ErrorData::invalid_params(format!("device error: {be}"), None),
     }
 }
@@ -521,6 +531,7 @@ mod tests {
                 SpiBatchCallError::InvalidCsPin { .. } => 2,
                 SpiBatchCallError::Comms(_) => 3,
                 SpiBatchCallError::Endpoint(_) => 4,
+                SpiBatchCallError::Timeout { .. } => 5,
             }
         }
         let cases = vec![

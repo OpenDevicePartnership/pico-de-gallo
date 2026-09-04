@@ -34,6 +34,19 @@ pub fn map_pdg_err<E: core::fmt::Display>(err: PicoDeGalloError<E>) -> ErrorData
         PicoDeGalloError::Endpoint(e) => {
             ErrorData::invalid_params(format!("device error: {e}"), None)
         }
+        // Internal, not invalid-params: the request was well formed and the
+        // device is very likely healthy — it simply never answered. Telling
+        // an agent its arguments were wrong would send it rewriting a
+        // perfectly good call.
+        PicoDeGalloError::Timeout { waited } => ErrorData::internal_error(
+            format!(
+                "device did not respond within {:.3} s; the request was sent \
+                 but no reply arrived. The board is likely still healthy — retry, \
+                 and if it persists reduce the payload size",
+                waited.as_secs_f64()
+            ),
+            None,
+        ),
     }
 }
 

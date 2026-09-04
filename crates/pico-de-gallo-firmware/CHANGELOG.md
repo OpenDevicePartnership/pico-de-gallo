@@ -5,6 +5,16 @@ All notable changes to `pico-de-gallo-firmware` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `MAX_HANDLER_TIMEOUT` and `DEFAULT_DISPATCH_BUDGET` are now derived from
+  `MAX_HANDLER_TIMEOUT_MS` and `UNDECLARED_DISPATCH_BUDGET_MS` in
+  `pico-de-gallo-internal`, so the host cannot drift from the firmware's
+  actual guarantees. Refs #178.
+
+  Same values, no behavioural change, no wire or schema change.
 ## [0.12.0] — 2026-09-01
 
 ### Added

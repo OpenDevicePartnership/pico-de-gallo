@@ -5,6 +5,50 @@ All notable changes to `pico-de-gallo-lib` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `DEFAULT_CALL_TIMEOUT` (5 s), `PicoDeGallo::with_call_timeout` and
+  `PicoDeGallo::call_timeout`. Every RPC is now bounded; previously only the
+  validated `device/info` fetch was. Closes #178.
+
+### Changed
+
+- **Breaking:** `PicoDeGalloError` gained a `Timeout { waited }` variant and
+  `SpiBatchCallError` gained `Timeout { waited }`. Neither enum is
+  `#[non_exhaustive]`, deliberately, so every downstream match had to make a
+  decision about the new case rather than absorbing it into a wildcard.
+
+- Calls that can legitimately outlast the default derive their own bound
+  instead: `i2c_scan` from `UNDECLARED_DISPATCH_BUDGET_MS`, `uart_read`
+  and the `gpio_wait_*_with_timeout` family from the caller's `timeout_ms`,
+  `onewire_write_pullup` from `pullup_duration_ms`, the plain
+  `gpio_wait_*` family from `MAX_HANDLER_TIMEOUT_MS`, and `spi_batch`
+  from the sum of its `DelayNs` operations. In each case the configured call
+  timeout is added as transport slack, so raising it widens the derived bounds
+  too. `device_info`/`validate` keep `DEVICE_INFO_TIMEOUT` unchanged.
+
+### Fixed
+
+- A request whose response is never produced no longer parks the caller
+  forever. The known trigger is a request frame larger than the firmware's
+  receive buffer: it is dropped before the dispatcher sees it, so the board
+  stays completely healthy — measured answering 40/40 concurrent pings — while
+  the call waits indefinitely.
+
+  A timed-out call leaves the handle usable. Abandoning it drops the reply
+  waiter, and sequence numbers are never reused, so a late reply is discarded
+  rather than mismatched onto a later call.
+
+  Note that firmware dispatch is serial, so a call issued while another is in
+  flight also waits for that one. Sequential use is unaffected; sharing a
+  handle across tasks alongside long calls may need `with_call_timeout`.
+
+### Dependencies
+
+- Added a direct `serde` dependency (already present transitively) for the
+  trait bounds on the bounded-transport wrapper.
 ## [0.9.0] — 2026-09-01
 
 ### Breaking Changes

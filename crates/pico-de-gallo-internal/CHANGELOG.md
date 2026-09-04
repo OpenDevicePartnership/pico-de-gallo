@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `MAX_HANDLER_TIMEOUT_MS` (30 minutes) and `UNDECLARED_DISPATCH_BUDGET_MS`
+  (10 seconds), the two firmware-side timing guarantees hosts need in order
+  to bound their own waits. Refs #178.
+
+  Both were previously private to the firmware's `progress` module, which
+  meant a host wanting to bound a call had to hard-code a copy and hope it
+  stayed in step. The firmware now *derives* its `MAX_HANDLER_TIMEOUT` and
+  `DEFAULT_DISPATCH_BUDGET` from these, so there is exactly one definition of
+  each.
+
+  `MAX_HANDLER_TIMEOUT_MS` is also the clamp applied to a caller-supplied
+  `timeout_ms`, including the rule that `0` selects the ceiling rather than
+  meaning "wait forever".
+
+  Constants only — no wire-format or schema change.
+
 ### Fixed
 
 - `encode_i2c_batch_ops` and `encode_spi_batch_ops` no longer panic when a
