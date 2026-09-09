@@ -5,7 +5,7 @@
 //! returned as a [`Bytes`] struct carrying both a hex string and the decoded
 //! array.
 
-use pico_de_gallo_lib::{MAX_RESPONSE_PAYLOAD, MAX_TRANSFER_SIZE};
+use pico_de_gallo_lib::{MAX_REQUEST_FRAME, MAX_RESPONSE_PAYLOAD, MAX_TRANSFER_SIZE};
 use serde::Serialize;
 
 /// A byte payload rendered both as a hex string and a decoded array.
@@ -195,6 +195,37 @@ pub fn validate_write_payload(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate that a batch's whole request fits one frame.
+///
+/// The send-direction counterpart of [`validate_response_len`], and the
+/// only ceiling that bounds a batch's *outgoing* bytes: no single batch
+/// operation is capped at [`MAX_TRANSFER_SIZE`], so the aggregate is all
+/// there is (issue #186). `frame_len` comes from
+/// `pico_de_gallo_lib::i2c_batch_request_frame_len` or its SPI twin, which
+/// account for the postcard-rpc header and every byte of encoding overhead.
+///
+/// `pico-de-gallo-lib` refuses this too, but its refusal reaches an agent
+/// through `map_pdg_err` as a *device* error reading "buffer exceeds
+/// firmware limit" — which is wrong twice over here: the device never
+/// received the request, and the limit is the transport's, not the
+/// firmware buffer's. Refusing locally names the actual overrun and the
+/// remedy.
+///
+/// Reports the overshoot rather than a target payload size, because the
+/// mapping from payload bytes to frame bytes depends on how many
+/// operations carry them.
+pub fn validate_request_frame_len(frame_len: usize) -> Result<(), String> {
+    if frame_len > MAX_REQUEST_FRAME {
+        return Err(format!(
+            "the batch encodes to a {frame_len}-byte request, {} bytes over the \
+             {MAX_REQUEST_FRAME}-byte limit for a single request; split it into \
+             several batches",
+            frame_len - MAX_REQUEST_FRAME
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -321,5 +352,36 @@ mod tests {
         let e = validate_write_payload(&vec![0u8; over]).unwrap_err();
         assert!(e.contains(&over.to_string()), "{e}");
         assert!(e.contains(&MAX_TRANSFER_SIZE.to_string()), "{e}");
+    }
+
+    #[test]
+    fn validate_request_frame_len_accepts_the_limit() {
+        assert!(validate_request_frame_len(0).is_ok());
+        assert!(validate_request_frame_len(MAX_REQUEST_FRAME).is_ok());
+    }
+
+    #[test]
+    fn validate_request_frame_len_refuses_one_past_the_limit() {
+        let over = MAX_REQUEST_FRAME + 1;
+        let e = validate_request_frame_len(over).unwrap_err();
+        // The whole reason this exists rather than letting the library's
+        // `BufferTooLong` surface: the message has to name the size, the
+        // limit, the overshoot and the remedy (issue #186).
+        assert!(e.contains(&over.to_string()), "{e}");
+        assert!(e.contains(&MAX_REQUEST_FRAME.to_string()), "{e}");
+        assert!(e.contains(" 1 bytes over"), "{e}");
+        assert!(e.contains("split"), "{e}");
+    }
+
+    #[test]
+    fn the_two_aggregate_limits_are_distinguishable_in_their_messages() {
+        // Both refusals reach the library as an indistinguishable
+        // `BufferTooLong`; the point of validating here is that an agent
+        // can tell which direction overflowed.
+        let resp = validate_response_len(MAX_RESPONSE_PAYLOAD + 1).unwrap_err();
+        let req = validate_request_frame_len(MAX_REQUEST_FRAME + 1).unwrap_err();
+        assert!(resp.contains("returned"), "{resp}");
+        assert!(req.contains("request"), "{req}");
+        assert_ne!(resp, req);
     }
 }

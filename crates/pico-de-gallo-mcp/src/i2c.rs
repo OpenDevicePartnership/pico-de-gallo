@@ -6,7 +6,7 @@ use rmcp::{ErrorData, tool, tool_router};
 
 use crate::encoding::{
     Bytes, parse_bytes, validate_i2c_address, validate_i2c_write_payload, validate_read_count,
-    validate_response_len, validate_write_payload,
+    validate_request_frame_len, validate_response_len, validate_write_payload,
 };
 use crate::error::{invalid_arg, map_pdg_err};
 use crate::select::TargetParams;
@@ -238,7 +238,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<I2cBatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        use pico_de_gallo_lib::I2cBatchOp;
+        use pico_de_gallo_lib::{I2cBatchOp, i2c_batch_request_frame_len};
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
         // Parse all write payloads into owned buffers FIRST so the borrowed
         // ops below can reference them (I2cBatchOp::Write borrows &[u8]).
@@ -248,14 +248,14 @@ impl GalloMcp {
                 let buf = parse_bytes(data).map_err(invalid_arg)?;
                 validate_i2c_write_payload(&buf)
                     .map_err(|e| invalid_arg(format!("op {i}: {e}")))?;
-                // Deliberately NOT size-checked. A batch `Write` payload is
-                // bounded by neither `pico-de-gallo-lib` nor the firmware
-                // batch handler -- only by the request frame, which is far
-                // larger than MAX_TRANSFER_SIZE. Refusing at 4096 here would
-                // make this tool stricter than every other host surface and
-                // reject calls that currently succeed. Batch write payloads
-                // are out of scope for issue #158; see the plain `i2c_write`
-                // tool above, which is bounded.
+                // Deliberately NOT bounded at MAX_TRANSFER_SIZE. A batch
+                // `Write` payload streams straight out of the request frame
+                // and never enters the firmware's scratch buffer, so
+                // neither `pico-de-gallo-lib` nor the batch handler caps an
+                // individual operation. Refusing at 4096 here would make
+                // this tool stricter than every other host surface and
+                // reject calls that currently succeed. What *does* bound
+                // them is the aggregate request frame, checked below.
                 write_bufs.push(buf);
             }
         }
@@ -284,6 +284,10 @@ impl GalloMcp {
                 }
             }
         }
+        // The send direction, once the operations are built and their
+        // encoded size is knowable. Still before `connect`, so an
+        // over-ceiling batch costs no device access (issue #186).
+        validate_request_frame_len(i2c_batch_request_frame_len(&ops)).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         let out = dev.i2c_batch(addr, &ops).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &Bytes::from_slice(&out))

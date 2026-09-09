@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `BufStorage` is now declared in terms of
+  `pico_de_gallo_internal::FIRMWARE_PACKET_BUFFER` rather than restating
+  `MAX_TRANSFER_SIZE + 1024`. Part of #186.
+
+  The host derives `MAX_REQUEST_FRAME` from that constant, and it must apply
+  the resulting bound itself: an over-ceiling request frame is discarded by
+  postcard-rpc's `receive()` before any handler runs, so the firmware cannot
+  refuse it. Sharing the constant is what stops the host's bound and the
+  buffer it describes from drifting apart. No behavioural change — the
+  compiled `.text` is byte-identical.
+
 ### Fixed
 
 - `spi/write` and `i2c/write` now bound their payload against

@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MAX_REQUEST_FRAME` (5119), the largest request frame the firmware will
+  accept, and `i2c_batch_request_frame_len` / `spi_batch_request_frame_len`
+  to size a batch against it. Closes #186.
+
+  Derived, not fitted: `FIRMWARE_PACKET_BUFFER` (5120) less the one byte an
+  exactly-filling frame cannot use, because postcard-rpc's `receive()` ends a
+  frame on a short USB packet and a frame that fills the window never sees
+  one. The two frame-length helpers account for the widest request header
+  (13 bytes: 1 discriminant + 8 key + 4 sequence), the request's `u8`
+  selector, and the three postcard varints around the operation stream.
+
+  The arithmetic is pinned against real `postcard::to_allocvec` encodings of
+  `I2cBatchRequest` and `SpiBatchRequest` across the varint width boundaries,
+  the header width is pinned against `VarHeader::write_to_slice`, and the
+  result is pinned against the hardware edge.
+
+- `FIRMWARE_PACKET_BUFFER` (5120), the size of each postcard-rpc packet
+  buffer on the firmware. Part of #186.
+
+  Exported so the firmware's `BufStorage` is declared in terms of it rather
+  than restating `MAX_TRANSFER_SIZE + 1024`. The host derives
+  `MAX_REQUEST_FRAME` from the same constant, so the two cannot drift.
+
+### Added
+
 - `MAX_RESPONSE_PAYLOAD` (1014), the largest byte payload a single response
   frame can actually deliver to the host. Closes #179.
 

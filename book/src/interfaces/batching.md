@@ -276,12 +276,12 @@ from the request, so no framing is needed in the response.
 | Maximum operations per batch | 64 (`MAX_BATCH_OPS`) |
 | Maximum size of an individual operation | None — bounded only by the totals below |
 | **Total bytes a batch may return** | **1014 (`MAX_RESPONSE_PAYLOAD`)** |
-| **Total bytes a batch may send** | **Unenforced. The whole request frame must stay at or below 5119 bytes or it is dropped without an error — see [The request-frame ceiling](#the-request-frame-ceiling)** |
+| **Total bytes a batch may send** | **Bounded by the whole request frame: 5119 bytes (`MAX_REQUEST_FRAME`), header and encoding overhead included — see [The request-frame ceiling](#the-request-frame-ceiling)** |
 | Protocol packet-buffer/argument bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
 | Plain read/duplex endpoint bound | 1014 bytes (`MAX_RESPONSE_PAYLOAD`) |
 | Plain write endpoint bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
 | Direct I²C RPC measurements | Read: 1014 bytes after a 1-byte write; write: no failure through 4096 bytes |
-| Batch measurements | Reads totalling 1014 bytes return in full; 1015 is refused with `BufferTooLong`, on both `i2c/batch` and `spi/batch` |
+| Batch measurements | Reads totalling 1014 bytes return in full; 1015 is refused with `BufferTooLong`, on both `i2c/batch` and `spi/batch`. A request frame of 5119 bytes is executed; 5120 is refused with `BufferTooLong` |
 | Demonstrated SPI payload (send direction) | Shape-dependent and below 4096; no general ceiling is published |
 | Zero-length I²C writes | Rejected with `ZeroLengthWrite` before bus access |
 
@@ -302,8 +302,9 @@ through `i2c/batch` and `spi/batch`. See the measured I²C and SPI evidence in
 Issue #179 introduced the aggregate returned-data bound for batches. Issue
 #158 applies the same directional rule to the plain endpoints and every host
 surface: reads and full-duplex transfers use `MAX_RESPONSE_PAYLOAD`, while
-send-only writes use `MAX_TRANSFER_SIZE`. In both cases an over-ceiling call is
-refused before transmission.
+send-only writes use `MAX_TRANSFER_SIZE`. Issue #186 completed the pair by
+bounding a batch's aggregate *outgoing* bytes against `MAX_REQUEST_FRAME`. In
+every case an over-ceiling call is refused before transmission.
 
 #### The response ceiling
 
@@ -329,37 +330,76 @@ caller can actually see. Split larger reads across several batches.
 
 #### The request-frame ceiling
 
-The response ceiling has a mirror image that **is not enforced anywhere**.
+`MAX_REQUEST_FRAME` (5119) bounds what a batch may send **out**, and it is the
+only thing that does. A batch's `Write` (and SPI `Transfer`) bytes all travel
+in one request frame, and that frame has to fit in the firmware's 5120-byte
+receive buffer, less one byte that an exactly-filling frame cannot use.
+[Wire Protocol](../internals/wire-protocol.md#the-request-frame-ceiling)
+derives both numbers term by term.
 
-A batch's `Write` (and SPI `Transfer`) bytes all travel out in one request
-frame, and that frame has to fit in the firmware's 5120-byte receive buffer.
-The usable maximum is 5119 bytes, header included; a longer frame is discarded
-with no reply at all, so the call fails with `Timeout` rather than
-`BufferTooLong`. [Wire Protocol](../internals/wire-protocol.md#the-request-frame-ceiling)
-derives the number term by term and explains why the last byte is unusable.
+Unlike the response ceiling, this one is **not** the firmware's to enforce. An
+over-ceiling frame is discarded by postcard-rpc's receiver before any handler
+runs, so the device cannot refuse what it never sees. The bound is applied
+host-side, before transmission, in `check_i2c_batch_ops` and
+`check_spi_batch_ops`; an over-ceiling batch is rejected with
+`BufferTooLong` and `failed_op = 0`, the same aggregate-overflow convention the
+response ceiling uses.
 
-Nothing checks this. `check_i2c_batch_ops` validates per-operation emptiness
-and the read aggregate; the firmware's `i2c_batch_handler` does the same; and
-`encode_i2c_batch_ops` says so in its own documentation — *"Callers remain
-responsible for keeping the total request within the transport's framing
-budget; this function does not police that."* Batches are therefore the one
-remaining way to build an over-ceiling request from a supported host surface,
-because #158 capped every single-argument write at `MAX_TRANSFER_SIZE`.
+It bounds the **aggregate**, not any single operation. Two consequences worth
+stating plainly:
+
+- A batch of individually modest writes can still overrun it. The hardware
+  measurement below tripped it with eight 635-byte writes, none of them
+  anywhere near `MAX_TRANSFER_SIZE`.
+- Conversely, a single batch `Write` *is* allowed past `MAX_TRANSFER_SIZE`,
+  which a plain `i2c_write` would refuse. That is deliberate: a batch write
+  streams straight out of the received frame and never enters the firmware's
+  4096-byte scratch buffer, so the argument bound does not apply to it. The
+  frame is its real limit.
+
+Sizing a batch exactly means accounting for postcard overhead — a variant byte
+and a length varint per operation, plus a header, a selector byte and two more
+varints for the request. `pico-de-gallo-lib` exports
+`i2c_batch_request_frame_len` and `spi_batch_request_frame_len` so callers can
+compute it rather than model it. Callers who would rather not: keep a batch's
+total payload comfortably under 5000 bytes, or split it.
+
+##### Why the bound is slightly conservative
+
+The frame's header is 13 bytes until the client has received its first reply
+and 7 bytes afterwards, because postcard-rpc narrows the key width only once a
+reply comes back (see
+[Wire Protocol](../internals/wire-protocol.md#the-request-frame-ceiling)). The
+host cannot ask which state it is in — the field is private to postcard-rpc —
+so the bound assumes the wider header. On a connection that has already
+received a reply, six more payload bytes would in fact have fitted.
+
+That is the price of an answer that does not depend on connection state. The
+alternative is worse: a bound computed from the narrow header would accept a
+batch that is silently dropped whenever it happens to be the first request a
+process sends.
+
+##### Measurements
 
 Measured through `pico-de-gallo-lib`'s `i2c_batch` on board
-`49742081C885AC69` (hw-rev2, firmware `firmware-v0.11.0-79-gc3c6a3e07bec`),
-one `Write` operation against a non-responding address:
+`49742081C885AC69` (hw-rev2), one `Write` operation against a non-responding
+address, from a fresh process so the header is the wide one:
 
-| Payload | Encoded ops | Request frame | Result |
-|--------:|------------:|--------------:|---|
-| 5099 | 5102 | 5119 | `NoAcknowledge` — the batch ran |
-| 5100 | 5103 | 5120 | `Timeout` after 5 s — the frame never arrived |
+| Payload | Encoded ops | Request frame | Result before #186 | Result now |
+|--------:|------------:|--------------:|---|---|
+| 5099 | 5102 | 5119 | `NoAcknowledge` — the batch ran | unchanged |
+| 5100 | 5103 | 5120 | `Timeout` after 5 s — the frame never arrived | `BufferTooLong`, immediately |
 
-The same measurement after a `validate()` call shifts both rows up by six
-bytes, for the key-width reason described in
-[Wire Protocol](../internals/wire-protocol.md#the-request-frame-ceiling).
-Note also that the 5099-byte row is a single batch `Write` well past
-`MAX_TRANSFER_SIZE`, which a plain `i2c_write` would have refused.
+Re-measured on firmware `firmware-v0.11.0-88-gfcb38de3a1ff` for issue #186,
+with the host guard deliberately stubbed out to exercise the device alone; the
+edge was identical to the original `-79-gc3c6a3e07bec` run. The multi-operation
+arm, eight writes against the same address, tripped at 635 bytes each and
+passed at 634.
 
-Until this is bounded, keep a batch's total outgoing bytes comfortably below
-5000, or split it.
+The pre-#186 failure was worse on SPI than on I²C. A batch carrying no
+`DelayNs` operation is bounded by the firmware's 30-minute handler ceiling
+rather than the ordinary call timeout, so an over-ceiling `spi/batch` left the
+caller waiting over half an hour — confirmed still running after 90 seconds in
+the same control arm — for a request the device had never received. Nothing was
+driven in either case: the bus stayed idle and chip-select never moved, which
+is why this is a diagnosability defect rather than a corruption one.

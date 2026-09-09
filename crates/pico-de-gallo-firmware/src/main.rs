@@ -77,12 +77,12 @@ use embassy_time::{Duration, Instant, Timer};
 use embassy_usb::class::web_usb::{Config as WebUsbConfig, State as WebUsbState, Url, WebUsb};
 use embassy_usb::{Config, UsbDevice};
 use pico_de_gallo_internal::{
-    AdcGetConfiguration, AdcRead, ENDPOINT_LIST, GetDeviceInfo, GpioEdge, GpioEvent, GpioEventTopic, GpioGet, GpioPut,
-    GpioSetConfiguration, GpioState, GpioSubscribe, GpioUnsubscribe, GpioWaitForAny, GpioWaitForFalling,
-    GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising, I2cBatch, I2cGetConfiguration, I2cRead, I2cScan,
-    I2cSetConfiguration, I2cWrite, I2cWriteRead, MAX_TRANSFER_SIZE, MICROSOFT_VID, OneWireRead, OneWireReset,
-    OneWireSearch, OneWireSearchNext, OneWireWrite, OneWireWritePullup, PICO_DE_GALLO_PID, PingEndpoint, PwmDisable,
-    PwmEnable, PwmGetConfiguration, PwmGetDutyCycle, PwmSetConfiguration, PwmSetDutyCycle, SpiBatch, SpiFlush,
+    AdcGetConfiguration, AdcRead, ENDPOINT_LIST, FIRMWARE_PACKET_BUFFER, GetDeviceInfo, GpioEdge, GpioEvent,
+    GpioEventTopic, GpioGet, GpioPut, GpioSetConfiguration, GpioState, GpioSubscribe, GpioUnsubscribe, GpioWaitForAny,
+    GpioWaitForFalling, GpioWaitForHigh, GpioWaitForLow, GpioWaitForRising, I2cBatch, I2cGetConfiguration, I2cRead,
+    I2cScan, I2cSetConfiguration, I2cWrite, I2cWriteRead, MICROSOFT_VID, OneWireRead, OneWireReset, OneWireSearch,
+    OneWireSearchNext, OneWireWrite, OneWireWritePullup, PICO_DE_GALLO_PID, PingEndpoint, PwmDisable, PwmEnable,
+    PwmGetConfiguration, PwmGetDutyCycle, PwmSetConfiguration, PwmSetDutyCycle, SpiBatch, SpiFlush,
     SpiGetConfiguration, SpiRead, SpiSetConfiguration, SpiTransfer, SpiWrite, SystemResetSubscriptions, TOPICS_IN_LIST,
     TOPICS_OUT_LIST, UartFlush, UartGetConfiguration, UartRead, UartSetConfiguration, UartWrite, Version,
 };
@@ -166,8 +166,17 @@ const WEBUSB_VENDOR_CODE: u8 = 0x01;
 type AppDriver = Driver<'static, embassy_rp::peripherals::USB>;
 /// postcard-rpc wire storage with ThreadMode mutex.
 type AppStorage = WireStorage<ThreadModeRawMutex, AppDriver, 256, 256, 64, 256>;
-/// Packet buffer storage sized for [`MAX_TRANSFER_SIZE`] plus protocol overhead.
-type BufStorage = PacketBuffers<{ MAX_TRANSFER_SIZE + 1024 }, { MAX_TRANSFER_SIZE + 1024 }>;
+/// Packet buffer storage, sized by
+/// [`FIRMWARE_PACKET_BUFFER`](pico_de_gallo_internal::FIRMWARE_PACKET_BUFFER).
+///
+/// The constant lives in `pico-de-gallo-internal` rather than here because
+/// the host derives [`MAX_REQUEST_FRAME`](pico_de_gallo_internal::MAX_REQUEST_FRAME)
+/// from it: an over-ceiling request frame is discarded by `receive()`
+/// before any handler runs, so the firmware cannot refuse it and the bound
+/// has to be applied host-side. Using the constant here rather than
+/// restating the arithmetic is what stops the two from drifting (issue
+/// #186).
+type BufStorage = PacketBuffers<{ FIRMWARE_PACKET_BUFFER }, { FIRMWARE_PACKET_BUFFER }>;
 /// postcard-rpc transmit implementation.
 type AppTx = progress::WatchedTx<WireTxImpl<ThreadModeRawMutex, AppDriver>>;
 /// postcard-rpc receive implementation.

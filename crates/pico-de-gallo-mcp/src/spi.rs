@@ -5,7 +5,8 @@ use rmcp::model::CallToolResult;
 use rmcp::{ErrorData, tool, tool_router};
 
 use crate::encoding::{
-    Bytes, parse_bytes, validate_read_count, validate_response_len, validate_write_payload,
+    Bytes, parse_bytes, validate_read_count, validate_request_frame_len, validate_response_len,
+    validate_write_payload,
 };
 use crate::error::{invalid_arg, map_pdg_err, map_validate_err};
 use crate::select::TargetParams;
@@ -274,16 +275,19 @@ impl GalloMcp {
 
     /// Execute a batch of SPI operations under chip-select.
     ///
-    /// Order is fixed and load-bearing: parse every payload, connect
-    /// exactly once, read the GPIO count from the `DeviceInfo` that
-    /// connection already validated, classify the chip-select, only then
-    /// build the borrowed operations and call the library once.
+    /// Order is fixed and load-bearing: parse every payload, build the
+    /// borrowed operations, bound them in both directions, connect exactly
+    /// once, read the GPIO count from the `DeviceInfo` that connection
+    /// already validated, classify the chip-select, and call the library
+    /// once.
     ///
     /// Parsing precedes `connect` because `connect` tears down every GPIO
-    /// subscription on the board; a malformed request must not do that.
-    /// Classification precedes the library call because a refused
-    /// chip-select must drive no pin (issue #104). No second metadata query
-    /// is issued.
+    /// subscription on the board; a malformed request must not do that. The
+    /// two size bounds precede it for the same reason and because neither
+    /// needs device metadata — a batch that cannot fit through the
+    /// transport should cost no device access at all. Classification
+    /// precedes the library call because a refused chip-select must drive
+    /// no pin (issue #104). No second metadata query is issued.
     #[tool(
         description = "Execute a batch of SPI operations under chip-select",
         annotations(destructive_hint = true, read_only_hint = false)
@@ -292,15 +296,17 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<SpiBatchParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        use pico_de_gallo_lib::SpiBatchOp;
+        use pico_de_gallo_lib::{SpiBatchOp, spi_batch_request_frame_len};
 
         // 1. Parse all write/transfer payloads into owned buffers first (the
         //    ops borrow &[u8]), with no device access.
         let bufs = parse_batch_payloads(&p.ops)?;
-        // Write and Transfer payloads are deliberately NOT size-checked
-        // here; see the matching note in `i2c_batch`. Transfer lengths still
-        // count towards the response aggregate below, because those bytes
-        // come back.
+        // Write and Transfer payloads are deliberately NOT bounded
+        // individually at MAX_TRANSFER_SIZE; see the matching note in
+        // `i2c_batch`. What bounds them is the aggregate request frame,
+        // checked in step 3. Transfer lengths additionally count towards
+        // the response aggregate, because those bytes come back.
+        //
         // `Read` and `Transfer` both come back; the response ceiling binds
         // their AGGREGATE. Mirrors `check_spi_batch_ops` in the library.
         let mut b0 = 0usize;
@@ -318,14 +324,8 @@ impl GalloMcp {
         }
         validate_response_len(total_read).map_err(invalid_arg)?;
 
-        // 2. Connect exactly once. Do NOT hoist this above the parse: see
-        //    `parse_batch_payloads`.
-        let dev = self.connect(p.serial_number.as_deref()).await?;
-
-        // 3. Read the retained, already-validated count; 4. classify.
-        classify_cs(p.cs, dev.info().num_gpios)?;
-
-        // 5. Build the borrowed operations.
+        // 2. Build the borrowed operations. Hoisted above `connect` so the
+        //    request-frame bound below can be applied without device access.
         let mut ops: Vec<SpiBatchOp<'_>> = Vec::with_capacity(p.ops.len());
         let mut b = 0usize;
         for op in &p.ops {
@@ -343,7 +343,17 @@ impl GalloMcp {
             }
         }
 
-        // 6. One library call.
+        // 3. The send direction (issue #186).
+        validate_request_frame_len(spi_batch_request_frame_len(&ops)).map_err(invalid_arg)?;
+
+        // 4. Connect exactly once. Do NOT hoist this above the parse: see
+        //    `parse_batch_payloads`.
+        let dev = self.connect(p.serial_number.as_deref()).await?;
+
+        // 5. Read the retained, already-validated count; 6. classify.
+        classify_cs(p.cs, dev.info().num_gpios)?;
+
+        // 7. One library call.
         let out = dev
             .spi_batch(p.cs, &ops)
             .await

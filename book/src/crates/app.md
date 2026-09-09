@@ -181,7 +181,9 @@ See the [I<sup>2</sup>C chapter](../interfaces/i2c.md) and
 > returned by the device is limited to `MAX_RESPONSE_PAYLOAD` (1014 bytes),
 > while data sent to it is limited to `MAX_TRANSFER_SIZE` (4096 bytes).
 > Full-duplex `spi transfer` is therefore limited to 1014 bytes even though
-> `spi write` accepts 4096. The command reports `BufferTooLong`; see
+> `spi write` accepts 4096. A `batch` is bounded a third way: its aggregate
+> outgoing bytes must fit one `MAX_REQUEST_FRAME` (5119-byte) request frame.
+> The command reports `BufferTooLong`; see
 > [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 
 The read counts accepted by `i2c read -c`, `i2c write-read -c`, `spi read -c`,

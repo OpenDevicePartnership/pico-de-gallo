@@ -317,6 +317,33 @@ pub const GALLO_MAX_TRANSFER_SIZE: usize = 4096;
 /// Mirrors `pico_de_gallo_internal::MAX_RESPONSE_PAYLOAD`.
 pub const GALLO_MAX_RESPONSE_PAYLOAD: usize = 1014;
 
+/// Maximum size of a single request frame, in bytes.
+///
+/// Bounds a whole [`gallo_i2c_batch`] or [`gallo_spi_batch`] call, header
+/// and encoding overhead included — not any one operation. It is the only
+/// ceiling on a batch's **outgoing** bytes: an individual batch `Write` (or
+/// SPI `Transfer`) is deliberately *not* bounded by
+/// [`GALLO_MAX_TRANSFER_SIZE`], because its payload streams straight out of
+/// the request frame rather than through the firmware's transfer buffer.
+///
+/// Every other endpoint is far below this: since issue #158 a single write
+/// argument is capped at [`GALLO_MAX_TRANSFER_SIZE`], leaving the worst
+/// non-batch frame about a kilobyte clear. So a C caller only needs this
+/// constant when assembling a batch, and only a large one.
+///
+/// Sizing a batch against it means accounting for postcard overhead, which
+/// is fiddly: each operation costs a variant byte plus a length varint, and
+/// the request adds a header, a selector byte and two more varints. A
+/// caller that would rather not model that should keep a batch's total
+/// payload comfortably under 5000 bytes, or split it. An over-ceiling batch
+/// is rejected with [`Status::BufferTooLong`] and `failed_op = 0` before
+/// anything is transmitted; before issue #186 it was discarded by the
+/// firmware's receiver with no reply at all, so the call could only time
+/// out.
+///
+/// Mirrors `pico_de_gallo_internal::MAX_REQUEST_FRAME`.
+pub const GALLO_MAX_REQUEST_FRAME: usize = 5119;
+
 /// Maximum number of operations in a single [`gallo_i2c_batch`] or
 /// [`gallo_spi_batch`] call.
 ///
@@ -352,12 +379,18 @@ pub const GALLO_BUILD_ID_LEN: usize = 65;
 
 const _: () = assert!(GALLO_MAX_TRANSFER_SIZE == lib::MAX_TRANSFER_SIZE);
 const _: () = assert!(GALLO_MAX_RESPONSE_PAYLOAD == lib::MAX_RESPONSE_PAYLOAD);
+const _: () = assert!(GALLO_MAX_REQUEST_FRAME == lib::MAX_REQUEST_FRAME);
 // Every `usize` length parameter is narrowed to `u16` before reaching the
 // library. Both ceilings sit far below `u16::MAX`, so refusing above them
 // makes that narrowing provably lossless and removes the need for a
 // separate truncation guard.
 const _: () = assert!(GALLO_MAX_TRANSFER_SIZE <= u16::MAX as usize);
 const _: () = assert!(GALLO_MAX_RESPONSE_PAYLOAD < GALLO_MAX_TRANSFER_SIZE);
+// The frame ceiling is the loosest of the three, and must stay clear of a
+// maximal single write argument or every plain endpoint would need a frame
+// check too. `pico-de-gallo-internal` asserts the same ordering against its
+// own header term; this is the C-surface restatement.
+const _: () = assert!(GALLO_MAX_TRANSFER_SIZE < GALLO_MAX_REQUEST_FRAME);
 const _: () = assert!(GALLO_MAX_BATCH_OPS == lib::MAX_BATCH_OPS);
 const _: () = assert!(GALLO_NUM_GPIOS == lib::NUM_GPIOS);
 const _: () = assert!(GALLO_BUILD_ID_LEN == lib::BUILD_ID_CAPACITY + 1);
@@ -4384,9 +4417,12 @@ mod tests {
     fn exported_ceilings_mirror_the_library_constants() {
         // The `const _` asserts beside the definitions already make drift a
         // build failure, including the ordering a C caller depends on when
-        // sizing a duplex buffer. This pins the mirroring itself.
+        // sizing a duplex buffer or a batch. This pins the mirroring
+        // itself; restating the ordering here would only be a constant
+        // assertion clippy rejects.
         assert_eq!(GALLO_MAX_RESPONSE_PAYLOAD, lib::MAX_RESPONSE_PAYLOAD);
         assert_eq!(GALLO_MAX_TRANSFER_SIZE, lib::MAX_TRANSFER_SIZE);
+        assert_eq!(GALLO_MAX_REQUEST_FRAME, lib::MAX_REQUEST_FRAME);
     }
 
     // The `u16`-typed entry points cannot truncate, so the library guard

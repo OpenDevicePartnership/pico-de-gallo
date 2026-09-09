@@ -188,6 +188,124 @@ const _: () = {
     assert!(MAX_RESPONSE_PAYLOAD < MAX_TRANSFER_SIZE);
 };
 
+/// Size of each postcard-rpc packet buffer on the firmware, in bytes.
+///
+/// The firmware's `BufStorage` is
+/// `PacketBuffers<{FIRMWARE_PACKET_BUFFER}, {FIRMWARE_PACKET_BUFFER}>`, so
+/// this constant *is* the buffer rather than a copy of it and the two
+/// cannot drift. Both directions are sized the same; only the receive side
+/// enters [`MAX_REQUEST_FRAME`]'s derivation, because the transmit side is
+/// bounded far earlier by [`MAX_RESPONSE_PAYLOAD`].
+///
+/// The `+ 1024` is protocol overhead room around a maximal
+/// [`MAX_TRANSFER_SIZE`] argument. It is *not* a second payload allowance:
+/// a batch can spend all of it on operation data, which is how issue #186
+/// reached the frame ceiling.
+pub const FIRMWARE_PACKET_BUFFER: usize = MAX_TRANSFER_SIZE + 1024;
+
+/// The one byte of the firmware's receive buffer that a frame may not use.
+///
+/// A mechanism, not a safety margin. postcard-rpc's `EUsbWireRx::receive`
+/// ends a frame when a **short** USB packet arrives, and loops
+/// `while !window.is_empty()`. A frame whose length equals the buffer size
+/// fills the window with full 64-byte packets, so the loop runs out of
+/// window before it ever sees a short packet, falls into its "ran out of
+/// space" branch, reads the transfer-terminating zero-length packet there,
+/// and reports `WireRxErrorKind::ReceivedMessageTooLarge`. Frames that are
+/// a multiple of 64 but *smaller* than the buffer are unaffected, because
+/// window remains and the zero-length packet ends the frame normally.
+///
+/// Derived by reading `receive()`'s control flow, not by measurement:
+/// telling "exact fill refused" apart from "window one byte short" needs a
+/// firmware whose receive buffer is not a multiple of 64. Issue #180.
+const REQUEST_FRAME_EXACT_FILL_PENALTY: usize = 1;
+
+/// Widest postcard-rpc header a *request* frame can carry, in bytes.
+///
+/// One discriminant byte, then the key, then the sequence number:
+///
+/// * **Key — 8 bytes.** Unlike the response header, this is not a constant
+///   property of the protocol but of the connection's age.
+///   `HostClient` starts at `VarKeyKind::Key8` and adopts the server's
+///   narrower `Key2` only after it has **received a reply**
+///   (`host_client/mod.rs:202`, `:424`, `:431` are the only sites that
+///   touch `kkind`). So a process's first request carries 13 bytes of
+///   header and every request after the first reply carries 7.
+/// * **Sequence number — 4 bytes.** `VarSeq::Seq4` always, for the reason
+///   given on [`RESPONSE_HEADER_LEN`].
+///
+/// The widest — "cold" — value is the one used to bound a request, because
+/// `kkind` is private to postcard-rpc and a caller cannot ask which state
+/// its client is in. Bounding against the narrow value would accept a frame
+/// that is dropped whenever it happens to be the first one a process sends.
+/// The cost is six bytes of headroom on a warm connection, which is the
+/// right trade for an answer that does not depend on connection state.
+/// Pinned by `request_header_encodes_to_thirteen_bytes`.
+const REQUEST_HEADER_LEN_MAX: usize = 1 + 8 + 4;
+
+/// Largest request frame the firmware will accept, in bytes, header
+/// included.
+///
+/// # Derivation
+///
+/// | Bytes | Term |
+/// |------:|------|
+/// | `5120` | [`FIRMWARE_PACKET_BUFFER`] |
+/// | `-1` | [`REQUEST_FRAME_EXACT_FILL_PENALTY`] |
+/// | **`= 5119`** | |
+///
+/// # Why it needs enforcing
+///
+/// A frame that does not fit is discarded **silently**. postcard-rpc's
+/// server maps `WireRxErrorKind::ReceivedMessageTooLarge` to `continue`, so
+/// nothing is sent back and the caller sees only its own timeout. Nothing
+/// names the argument at fault and no size is suggested that would work.
+/// The firmware cannot help: the request never arrives, so the bound has to
+/// be applied host-side, before transmission.
+///
+/// Since issue #158 every host surface caps a single write argument at
+/// [`MAX_TRANSFER_SIZE`], which puts the worst-case frame a little over
+/// 4110 bytes — a kilobyte clear of this. Batches were the exception:
+/// nothing bounded their aggregate outgoing bytes, so `i2c/batch` and
+/// `spi/batch` were the one remaining door from a supported host surface
+/// into this ceiling (issue #186).
+///
+/// # Measurement
+///
+/// Confirmed on board `49742081C885AC69` (hw-rev2, firmware
+/// `firmware-v0.11.0-88-gfcb38de3a1ff`) under Linux/nusb, and previously on
+/// the same board under firmware `-79-gc3c6a3e07bec` across sixteen
+/// boundaries spanning four key widths (issue #180). Driven through
+/// `pico-de-gallo-lib`'s `i2c_batch`, a frame of `5119` bytes is executed
+/// and answers; `5120` is dropped and the call times out. The edge sits at
+/// the same frame length cold and warm, six payload bytes apart, which is
+/// what identifies it as a *frame* ceiling rather than a payload one.
+///
+/// # When this moves
+///
+/// It tracks the firmware's receive buffer, which is why that buffer is
+/// [`FIRMWARE_PACKET_BUFFER`] rather than a literal. Unlike
+/// [`MAX_RESPONSE_PAYLOAD`] this is a property of the *device*, so a host
+/// built against a firmware with a different buffer would be wrong — the
+/// two travel together in the same release (§6.5).
+pub const MAX_REQUEST_FRAME: usize = FIRMWARE_PACKET_BUFFER - REQUEST_FRAME_EXACT_FILL_PENALTY;
+
+// Compile-time invariants on the derivation above, matching the treatment
+// `MAX_RESPONSE_PAYLOAD` gets.
+const _: () = {
+    // The header has to leave room for a payload at all. Anything near this
+    // means a term is wrong by orders of magnitude.
+    assert!(MAX_REQUEST_FRAME > REQUEST_HEADER_LEN_MAX);
+    // The request budget is the looser of the two directions. Every
+    // send-direction bound in `pico-de-gallo-lib` relies on this ordering,
+    // and #179 is what conflating them looks like.
+    assert!(MAX_RESPONSE_PAYLOAD < MAX_REQUEST_FRAME);
+    // A single maximal write argument must stay clear of the frame ceiling,
+    // or #158's per-argument bounds would themselves be reachable here and
+    // every plain endpoint would need this check too.
+    assert!(MAX_TRANSFER_SIZE + REQUEST_HEADER_LEN_MAX < MAX_REQUEST_FRAME);
+};
+
 /// Ceiling the firmware applies to any caller-supplied handler timeout.
 ///
 /// A `timeout_ms` of `0` does **not** mean "wait forever": both `0` and
@@ -496,11 +614,14 @@ pub enum I2cError {
     Overrun,
     /// A length bound was exceeded.
     ///
-    /// Either a request exceeds the firmware buffer limit
-    /// ([`MAX_TRANSFER_SIZE`]), or a batch's `Read` operations would return
-    /// more than [`MAX_RESPONSE_PAYLOAD`] bytes in total — more than one
-    /// response frame can carry (issue #179). In a batch the two are told
-    /// apart by nothing on the wire, so consult both bounds.
+    /// One of three bounds was exceeded: a request argument past the
+    /// firmware buffer limit ([`MAX_TRANSFER_SIZE`]); a batch whose `Read`
+    /// operations would return more than [`MAX_RESPONSE_PAYLOAD`] bytes in
+    /// total, more than one response frame can carry (issue #179); or a
+    /// batch whose whole request frame would exceed [`MAX_REQUEST_FRAME`]
+    /// (issue #186). Nothing on the wire tells them apart, so consult all
+    /// three. The last is refused host-side only — the device never
+    /// receives such a frame and so can never report it.
     BufferTooLong,
     /// I2C address is outside the valid 7-bit range (0x00–0x7F).
     AddressOutOfRange,
@@ -578,12 +699,15 @@ pub struct I2cScanRequest {
 pub enum SpiError {
     /// A length bound was exceeded.
     ///
-    /// Either a request exceeds the firmware buffer limit
-    /// ([`MAX_TRANSFER_SIZE`]), or a batch's `Read` and `Transfer`
-    /// operations would return more than [`MAX_RESPONSE_PAYLOAD`] bytes in
-    /// total — more than one response frame can carry (issue #179). In a
-    /// batch the two are told apart by nothing on the wire, so consult both
-    /// bounds.
+    /// One of three bounds was exceeded: a request argument past the
+    /// firmware buffer limit ([`MAX_TRANSFER_SIZE`]); a batch whose `Read`
+    /// and `Transfer` operations would return more than
+    /// [`MAX_RESPONSE_PAYLOAD`] bytes in total, more than one response
+    /// frame can carry (issue #179); or a batch whose whole request frame
+    /// would exceed [`MAX_REQUEST_FRAME`] (issue #186). Nothing on the wire
+    /// tells them apart, so consult all three. The last is refused
+    /// host-side only — the device never receives such a frame and so can
+    /// never report it.
     BufferTooLong,
     /// An unspecified error occurred in the firmware.
     Other,
@@ -1477,7 +1601,12 @@ pub enum SpiBatchOp<'a> {
 ///   tighter than [`MAX_TRANSFER_SIZE`]. A batch reading more than a single
 ///   response frame can carry would otherwise execute in full — including
 ///   every `Write` — and only then lose its reply (issue #179).
-/// - Total write data is limited by USB packet size
+/// - The whole request frame, header and encoding overhead included, must
+///   not exceed [`MAX_REQUEST_FRAME`]. This is the only bound on a batch's
+///   outgoing bytes, and it bounds the aggregate rather than any one
+///   operation. A longer frame is discarded by the firmware's receiver
+///   before any handler runs, so it would otherwise produce no reply at all
+///   (issue #186). Size a batch with [`i2c_batch_request_frame_len`].
 /// - Maximum [`MAX_BATCH_OPS`] operations per batch
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct I2cBatchRequest<'a> {
@@ -1590,9 +1719,15 @@ impl core::fmt::Display for SpiBatchError {
 /// Returns the serialized byte stream suitable for [`I2cBatchRequest::ops`].
 ///
 /// There is no limit on the size of an individual operation: each one is
-/// serialized straight into the growable output buffer. Callers remain
-/// responsible for keeping the *total* request within the transport's framing
-/// budget; this function does not police that.
+/// serialized straight into the growable output buffer, and unlike a plain
+/// write it is not bounded by [`MAX_TRANSFER_SIZE`], because the firmware
+/// streams it out of the received frame rather than through its scratch
+/// buffer.
+///
+/// The *total* request is bounded, by [`MAX_REQUEST_FRAME`]. This function
+/// still does not police that — it has no view of the header — but
+/// [`i2c_batch_request_frame_len`] and [`spi_batch_request_frame_len`] do,
+/// and `pico-de-gallo-lib` applies them before transmission (issue #186).
 ///
 /// # Panics
 ///
@@ -1614,9 +1749,15 @@ pub fn encode_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Vec<u8> {
 /// Returns the serialized byte stream suitable for [`SpiBatchRequest::ops`].
 ///
 /// There is no limit on the size of an individual operation: each one is
-/// serialized straight into the growable output buffer. Callers remain
-/// responsible for keeping the *total* request within the transport's framing
-/// budget; this function does not police that.
+/// serialized straight into the growable output buffer, and unlike a plain
+/// write it is not bounded by [`MAX_TRANSFER_SIZE`], because the firmware
+/// streams it out of the received frame rather than through its scratch
+/// buffer.
+///
+/// The *total* request is bounded, by [`MAX_REQUEST_FRAME`]. This function
+/// still does not police that — it has no view of the header — but
+/// [`i2c_batch_request_frame_len`] and [`spi_batch_request_frame_len`] do,
+/// and `pico-de-gallo-lib` applies them before transmission (issue #186).
 ///
 /// # Panics
 ///
@@ -1654,6 +1795,86 @@ pub fn spi_batch_response_len(ops: &[SpiBatchOp<'_>]) -> usize {
             _ => 0,
         })
         .sum()
+}
+
+/// Encoded length of `n` as a postcard varint, in bytes.
+///
+/// postcard writes an unsigned integer as LEB128: seven payload bits per
+/// byte, high bit set on every byte but the last. Used to size the
+/// `count` field and the two length prefixes that a batch request carries,
+/// none of which are a fixed width.
+const fn varint_len(mut n: usize) -> usize {
+    let mut len = 1;
+    while n >= 0x80 {
+        n >>= 7;
+        len += 1;
+    }
+    len
+}
+
+/// Encoded length of one [`I2cBatchOp`] in the `ops` byte stream.
+///
+/// One byte of variant index — both variants are below `0x80`, so the index
+/// varint is always one byte — then the operation's own fields.
+fn i2c_batch_op_len(op: &I2cBatchOp<'_>) -> usize {
+    1 + match op {
+        I2cBatchOp::Read { len } => varint_len(*len as usize),
+        I2cBatchOp::Write { data } => varint_len(data.len()) + data.len(),
+    }
+}
+
+/// Encoded length of one [`SpiBatchOp`] in the `ops` byte stream.
+fn spi_batch_op_len(op: &SpiBatchOp<'_>) -> usize {
+    1 + match op {
+        SpiBatchOp::Read { len } => varint_len(*len as usize),
+        SpiBatchOp::Write { data } | SpiBatchOp::Transfer { data } => {
+            varint_len(data.len()) + data.len()
+        }
+        SpiBatchOp::DelayNs { ns } => varint_len(*ns as usize),
+    }
+}
+
+/// Bytes a batch request occupies around its encoded operation stream.
+///
+/// The shared shape of [`I2cBatchRequest`] and [`SpiBatchRequest`]: a `u8`
+/// selector (`address` or `cs_pin`, one plain byte — postcard does not
+/// varint a `u8`), the `u16` operation `count`, and the `ops` slice's own
+/// varint length prefix.
+fn batch_request_frame_len(count: usize, encoded_ops_len: usize) -> usize {
+    REQUEST_HEADER_LEN_MAX + 1 + varint_len(count) + varint_len(encoded_ops_len) + encoded_ops_len
+}
+
+/// Compute the number of bytes an I2C batch occupies as a request frame on
+/// the wire, header included.
+///
+/// The mirror of [`i2c_batch_response_len`], and the quantity to compare
+/// against [`MAX_REQUEST_FRAME`]. A batch is the only supported way to
+/// build an over-ceiling request, because its aggregate outgoing bytes are
+/// bounded by nothing else (issue #186).
+///
+/// Assumes the widest header, so the answer does not depend on whether the
+/// caller's client has received a reply yet — see [`REQUEST_HEADER_LEN_MAX`].
+/// On a warm connection the real frame is six bytes shorter than this.
+///
+/// Computed rather than measured so it costs no second encoding pass; the
+/// arithmetic is pinned against [`encode_i2c_batch_ops`] and against
+/// [`postcard::to_allocvec`] of a real [`I2cBatchRequest`] by
+/// `i2c_batch_request_frame_len_matches_a_real_encoding`.
+pub fn i2c_batch_request_frame_len(ops: &[I2cBatchOp<'_>]) -> usize {
+    let encoded: usize = ops.iter().map(i2c_batch_op_len).sum();
+    batch_request_frame_len(ops.len(), encoded)
+}
+
+/// Compute the number of bytes an SPI batch occupies as a request frame on
+/// the wire, header included.
+///
+/// The send-direction counterpart of [`spi_batch_response_len`]. `Write`
+/// and `Transfer` payloads both travel out; `Read` and `DelayNs` cost only
+/// their operation encoding. See [`i2c_batch_request_frame_len`] for why
+/// the widest header is assumed.
+pub fn spi_batch_request_frame_len(ops: &[SpiBatchOp<'_>]) -> usize {
+    let encoded: usize = ops.iter().map(spi_batch_op_len).sum();
+    batch_request_frame_len(ops.len(), encoded)
 }
 
 // --- Version
@@ -4314,5 +4535,232 @@ mod tests {
              read was 1014 bytes and 1015 failed with \
              Comms(Postcard(DeserializeUnexpectedEnd))."
         );
+    }
+
+    // --- Request frame ceiling (issue #186) ---
+    //
+    // The send-direction mirror of the block above. Where the response
+    // terms are all properties of the *host* transport, these are split:
+    // the buffer is the firmware's and the header width is the host
+    // client's, so both sides get pinned here.
+
+    /// Pins the widest request header postcard-rpc actually emits.
+    ///
+    /// The counterpart of `response_header_encodes_to_seven_bytes`, but
+    /// with the key left at its initial `Key8` rather than shrunk: that is
+    /// the state `HostClient` is in until it has received a reply, and the
+    /// state a bound has to assume because it cannot observe `kkind`.
+    #[test]
+    fn request_header_encodes_to_thirteen_bytes() {
+        use postcard_rpc::header::{VarHeader, VarKey, VarSeq};
+
+        let hdr = VarHeader {
+            // No `shrink_to`: this is `HostClient`'s starting width.
+            key: VarKey::Key8(Version::REQ_KEY),
+            seq_no: VarSeq::Seq4(0x1234_5678),
+        };
+        let mut buf = [0u8; 32];
+        let (used, _) = hdr.write_to_slice(&mut buf).expect("header must encode");
+        assert_eq!(
+            used.len(),
+            REQUEST_HEADER_LEN_MAX,
+            "the postcard-rpc request header encoding changed; \
+             MAX_REQUEST_FRAME's derivation is stale"
+        );
+    }
+
+    /// A warm request header is six bytes narrower, which is the whole
+    /// reason the bound assumes the cold one.
+    ///
+    /// If this difference ever went to zero the conservatism would be free
+    /// and the doc comments explaining the trade would be wrong.
+    #[test]
+    fn a_warm_request_header_is_six_bytes_narrower() {
+        use postcard_rpc::header::{VarHeader, VarKey, VarKeyKind, VarSeq};
+
+        let mut key = VarKey::Key8(Version::REQ_KEY);
+        key.shrink_to(VarKeyKind::Key2);
+        let hdr = VarHeader {
+            key,
+            seq_no: VarSeq::Seq4(0x1234_5678),
+        };
+        let mut buf = [0u8; 32];
+        let (used, _) = hdr.write_to_slice(&mut buf).expect("header must encode");
+        assert_eq!(REQUEST_HEADER_LEN_MAX - used.len(), 6);
+    }
+
+    /// Pins `varint_len` against postcard itself, at every width boundary
+    /// a batch can reach.
+    ///
+    /// The arithmetic in `i2c_batch_request_frame_len` is only sound while
+    /// this helper agrees with the encoder it is modelling.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn varint_len_matches_postcard() {
+        for n in [
+            0usize,
+            1,
+            127,
+            128,
+            129,
+            16383,
+            16384,
+            65535,
+            MAX_TRANSFER_SIZE,
+        ] {
+            assert_eq!(
+                varint_len(n),
+                to_allocvec(&(n as u32)).unwrap().len(),
+                "varint_len disagrees with postcard at {n}"
+            );
+        }
+    }
+
+    /// The load-bearing test: the computed frame length must equal what a
+    /// real `I2cBatchRequest` actually encodes to, plus the header.
+    ///
+    /// Computing rather than encoding avoids a second pass over a
+    /// five-kilobyte payload, but only if the arithmetic is right. Sweeping
+    /// shapes across the varint boundaries is what makes this more than a
+    /// restatement of the formula: a wrong length-prefix width shows up at
+    /// 127/128 and a wrong `count` width at 64 operations.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn i2c_batch_request_frame_len_matches_a_real_encoding() {
+        let big = vec![0xA5u8; 5000];
+        let small = vec![0xA5u8; 127];
+        let boundary = vec![0xA5u8; 128];
+        let cases: Vec<Vec<I2cBatchOp<'_>>> = vec![
+            vec![],
+            vec![I2cBatchOp::Read { len: 1 }],
+            vec![I2cBatchOp::Read { len: 127 }],
+            vec![I2cBatchOp::Read { len: 128 }],
+            vec![I2cBatchOp::Read { len: u16::MAX }],
+            vec![I2cBatchOp::Write { data: &small }],
+            vec![I2cBatchOp::Write { data: &boundary }],
+            vec![I2cBatchOp::Write { data: &big }],
+            vec![I2cBatchOp::Write { data: &[] }],
+            vec![
+                I2cBatchOp::Write { data: &boundary },
+                I2cBatchOp::Read { len: 300 },
+                I2cBatchOp::Write { data: &small },
+            ],
+            // A maximal operation count, to exercise the `count` varint.
+            (0..MAX_BATCH_OPS)
+                .map(|_| I2cBatchOp::Read { len: 8 })
+                .collect(),
+        ];
+
+        for ops in &cases {
+            let encoded = encode_i2c_batch_ops(ops);
+            let req = I2cBatchRequest {
+                address: 0x48,
+                count: ops.len() as u16,
+                ops: &encoded,
+            };
+            let actual = REQUEST_HEADER_LEN_MAX + to_allocvec(&req).unwrap().len();
+            assert_eq!(
+                i2c_batch_request_frame_len(ops),
+                actual,
+                "frame length mismatch for {} ops, {} encoded bytes",
+                ops.len(),
+                encoded.len()
+            );
+        }
+    }
+
+    /// The SPI half of the test above, including the two variants I2C does
+    /// not have.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn spi_batch_request_frame_len_matches_a_real_encoding() {
+        let big = vec![0xA5u8; 5000];
+        let boundary = vec![0xA5u8; 128];
+        let cases: Vec<Vec<SpiBatchOp<'_>>> = vec![
+            vec![],
+            vec![SpiBatchOp::Read { len: 128 }],
+            vec![SpiBatchOp::Write { data: &big }],
+            vec![SpiBatchOp::Transfer { data: &boundary }],
+            // `DelayNs` is a u32: sweep it across three varint widths, since
+            // it is the only field wide enough to need more than two bytes.
+            vec![SpiBatchOp::DelayNs { ns: 0 }],
+            vec![SpiBatchOp::DelayNs { ns: 127 }],
+            vec![SpiBatchOp::DelayNs { ns: 16_384 }],
+            vec![SpiBatchOp::DelayNs { ns: u32::MAX }],
+            vec![
+                SpiBatchOp::Write { data: &boundary },
+                SpiBatchOp::DelayNs { ns: 1_000_000 },
+                SpiBatchOp::Transfer { data: &boundary },
+                SpiBatchOp::Read { len: 16 },
+            ],
+            (0..MAX_BATCH_OPS)
+                .map(|_| SpiBatchOp::Read { len: 8 })
+                .collect(),
+        ];
+
+        for ops in &cases {
+            let encoded = encode_spi_batch_ops(ops);
+            let req = SpiBatchRequest {
+                cs_pin: 0,
+                count: ops.len() as u16,
+                ops: &encoded,
+            };
+            let actual = REQUEST_HEADER_LEN_MAX + to_allocvec(&req).unwrap().len();
+            assert_eq!(
+                spi_batch_request_frame_len(ops),
+                actual,
+                "frame length mismatch for {} ops, {} encoded bytes",
+                ops.len(),
+                encoded.len()
+            );
+        }
+    }
+
+    /// Ties the derivation to the hardware measurement, exactly as
+    /// `max_response_payload_matches_the_measured_edge` does.
+    #[test]
+    fn max_request_frame_matches_the_measured_edge() {
+        assert_eq!(
+            MAX_REQUEST_FRAME, 5119,
+            "the derived ceiling no longer matches the edge measured on \
+             hardware. Re-measure before changing this number: a 5119-byte \
+             i2c/batch frame was executed and answered, and 5120 was dropped \
+             with no reply at all."
+        );
+    }
+
+    /// Reproduces the exact hardware boundary from issue #186 through the
+    /// public helper, in the same units the measurement was taken in.
+    ///
+    /// A 5099-byte single `Write` was accepted on board `49742081C885AC69`
+    /// and 5100 was dropped. That is a payload figure; this asserts the
+    /// helper turns those two payloads into 5119 and 5120, which is what
+    /// makes the constant and the measurement the same claim.
+    #[test]
+    fn the_measured_i2c_payload_edge_lands_on_the_frame_ceiling() {
+        let accepted = [0xA5u8; 5099];
+        let dropped = [0xA5u8; 5100];
+        assert_eq!(
+            i2c_batch_request_frame_len(&[I2cBatchOp::Write { data: &accepted }]),
+            MAX_REQUEST_FRAME
+        );
+        assert_eq!(
+            i2c_batch_request_frame_len(&[I2cBatchOp::Write { data: &dropped }]),
+            MAX_REQUEST_FRAME + 1
+        );
+    }
+
+    /// The multi-operation arm of the same measurement: eight writes of 634
+    /// bytes were accepted and 635 dropped, which is a different point on
+    /// the same ceiling rather than a per-operation limit.
+    #[test]
+    fn the_measured_multi_op_edge_lands_on_the_same_ceiling() {
+        let accepted = [0xA5u8; 634];
+        let dropped = [0xA5u8; 635];
+        fn eight<'a>(d: &'a [u8]) -> Vec<I2cBatchOp<'a>> {
+            (0..8).map(|_| I2cBatchOp::Write { data: d }).collect()
+        }
+        assert!(i2c_batch_request_frame_len(&eight(&accepted)) <= MAX_REQUEST_FRAME);
+        assert!(i2c_batch_request_frame_len(&eight(&dropped)) > MAX_REQUEST_FRAME);
     }
 }

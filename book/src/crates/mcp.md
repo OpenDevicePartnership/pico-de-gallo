@@ -322,7 +322,9 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 > board. Data returned by the device is limited to `MAX_RESPONSE_PAYLOAD`
 > (1014 bytes), while data sent to it is limited to `MAX_TRANSFER_SIZE`
 > (4096 bytes). Full-duplex `spi_transfer` is therefore limited to 1014
-> bytes even though `spi_write` accepts 4096. The refusal is an
+> bytes even though `spi_write` accepts 4096. `i2c_batch` and `spi_batch` are
+> bounded a third way: their aggregate outgoing bytes must fit one
+> `MAX_REQUEST_FRAME` (5119-byte) request frame. The refusal is an
 > `invalid_params` error naming the offending size, the limit and the
 > remedy — not the bare `BufferTooLong` a device-side refusal would
 > produce. See

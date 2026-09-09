@@ -366,7 +366,10 @@ The library exposes one typed async method per firmware capability.
 > Data returned by the device is limited to `MAX_RESPONSE_PAYLOAD` (1014
 > bytes); data sent to it is limited to `MAX_TRANSFER_SIZE` (4096 bytes).
 > Full-duplex `spi_transfer` is limited to 1014 bytes because the same length
-> must fit in both directions. A refusal is
+> must fit in both directions. `i2c_batch` and `spi_batch` are bounded a third
+> way: their aggregate outgoing bytes must fit one `MAX_REQUEST_FRAME`
+> (5119-byte) request frame, which `i2c_batch_request_frame_len` and
+> `spi_batch_request_frame_len` compute. A refusal is
 > `PicoDeGalloError::Endpoint(...::BufferTooLong)`; see
 > [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 

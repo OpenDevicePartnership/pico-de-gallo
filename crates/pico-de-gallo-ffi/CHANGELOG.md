@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `GALLO_MAX_REQUEST_FRAME` (5119), mirroring
+  `pico_de_gallo_internal::MAX_REQUEST_FRAME` and emitted into
+  `pico_de_gallo.h` as a `#define`. Part of #186.
+
+  It bounds a whole `gallo_i2c_batch` or `gallo_spi_batch` request frame and
+  is the only ceiling on a batch's outgoing bytes; an individual batch
+  `Write` is deliberately not capped at `GALLO_MAX_TRANSFER_SIZE`. Written
+  as a literal with a `const` assertion tying it to the wire crate, because
+  cbindgen folds const initializers syntactically and silently emits nothing
+  for a computed value. Verified present in the generated header.
+
+  No new `Status` value: an over-ceiling batch returns the existing
+  `Status::BufferTooLong` with `failed_op = 0`.
+
+### Added
+
 - `GALLO_MAX_RESPONSE_PAYLOAD` (1014), mirroring
   `pico_de_gallo_internal::MAX_RESPONSE_PAYLOAD` and emitted into
   `pico_de_gallo.h` as a `#define`. Part of #158.

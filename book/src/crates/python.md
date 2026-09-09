@@ -161,8 +161,10 @@ pg.spi_set_config(
 > returned by the device is limited to `MAX_RESPONSE_PAYLOAD` (1014 bytes),
 > while data sent to it is limited to `MAX_TRANSFER_SIZE` (4096 bytes).
 > Full-duplex `spi_transfer` is therefore limited to 1014 bytes even though
-> `spi_write` accepts 4096. An over-ceiling call raises `RuntimeError` with the
-> `BufferTooLong` message; see
+> `spi_write` accepts 4096. `i2c_batch` and `spi_batch` are bounded a third
+> way: their aggregate outgoing bytes must fit one `MAX_REQUEST_FRAME`
+> (5119-byte) request frame. An over-ceiling call raises `RuntimeError` with
+> the `BufferTooLong` message; see
 > [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 
 ```python
