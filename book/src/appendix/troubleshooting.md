@@ -196,6 +196,33 @@ reconnect the cable or use USB unbind/rebind, and power-cycle if
 re-enumeration is unavailable or ineffective. `system/reset-subscriptions`
 cannot run while dispatch is blocked, so it is not a way out.
 
+### A large request times out instead of returning `BufferTooLong`
+
+There is a third ceiling, and crossing it produces silence rather than an
+error. The whole request **frame** — postcard-rpc header plus encoded body —
+must fit in the firmware's 5120-byte receive buffer, and the usable maximum is
+5119 bytes. A longer frame is discarded by the server with no reply, so the
+call ends in `Timeout` (or, on firmware older than the #178 host-side bounds,
+hangs). The board stays fully responsive; this is not a wedge.
+
+`MAX_TRANSFER_SIZE` keeps every single-argument call clear of it: 4096 bytes of
+payload plus a header and the request struct's own encoding lands a little over
+4110 bytes. **Batches are the exception** — nothing bounds a batch's aggregate
+outgoing bytes, so a batch of writes can build an over-ceiling frame and lose
+it. See
+[Transaction Batching](../interfaces/batching.md#the-request-frame-ceiling).
+
+Two details are worth knowing if you are measuring this yourself, because both
+have produced wrong answers before:
+
+- The usable payload is **six bytes smaller until the connection has received
+  its first reply**. postcard-rpc's `HostClient` starts with an 8-byte key in
+  the request header and narrows to the server's 2-byte key only after a reply
+  arrives. A request that is itself dropped narrows nothing.
+- A probe that does not reproduce the real client's header measures a
+  different protocol. See
+  [Wire Protocol](../internals/wire-protocol.md#the-request-frame-ceiling).
+
 ### GPIO `WrongDirection` (−28)
 
 You read from a pin configured as output (or vice versa). Call

@@ -276,6 +276,7 @@ from the request, so no framing is needed in the response.
 | Maximum operations per batch | 64 (`MAX_BATCH_OPS`) |
 | Maximum size of an individual operation | None — bounded only by the totals below |
 | **Total bytes a batch may return** | **1014 (`MAX_RESPONSE_PAYLOAD`)** |
+| **Total bytes a batch may send** | **Unenforced. The whole request frame must stay at or below 5119 bytes or it is dropped without an error — see [The request-frame ceiling](#the-request-frame-ceiling)** |
 | Protocol packet-buffer/argument bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
 | Plain read/duplex endpoint bound | 1014 bytes (`MAX_RESPONSE_PAYLOAD`) |
 | Plain write endpoint bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
@@ -325,3 +326,40 @@ fault and invites a retry that repeats every write.
 Refusing up front costs the 1015–4096 range, which never worked anyway, and
 buys the guarantee that a batch the device accepts is a batch whose result the
 caller can actually see. Split larger reads across several batches.
+
+#### The request-frame ceiling
+
+The response ceiling has a mirror image that **is not enforced anywhere**.
+
+A batch's `Write` (and SPI `Transfer`) bytes all travel out in one request
+frame, and that frame has to fit in the firmware's 5120-byte receive buffer.
+The usable maximum is 5119 bytes, header included; a longer frame is discarded
+with no reply at all, so the call fails with `Timeout` rather than
+`BufferTooLong`. [Wire Protocol](../internals/wire-protocol.md#the-request-frame-ceiling)
+derives the number term by term and explains why the last byte is unusable.
+
+Nothing checks this. `check_i2c_batch_ops` validates per-operation emptiness
+and the read aggregate; the firmware's `i2c_batch_handler` does the same; and
+`encode_i2c_batch_ops` says so in its own documentation — *"Callers remain
+responsible for keeping the total request within the transport's framing
+budget; this function does not police that."* Batches are therefore the one
+remaining way to build an over-ceiling request from a supported host surface,
+because #158 capped every single-argument write at `MAX_TRANSFER_SIZE`.
+
+Measured through `pico-de-gallo-lib`'s `i2c_batch` on board
+`49742081C885AC69` (hw-rev2, firmware `firmware-v0.11.0-79-gc3c6a3e07bec`),
+one `Write` operation against a non-responding address:
+
+| Payload | Encoded ops | Request frame | Result |
+|--------:|------------:|--------------:|---|
+| 5099 | 5102 | 5119 | `NoAcknowledge` — the batch ran |
+| 5100 | 5103 | 5120 | `Timeout` after 5 s — the frame never arrived |
+
+The same measurement after a `validate()` call shifts both rows up by six
+bytes, for the key-width reason described in
+[Wire Protocol](../internals/wire-protocol.md#the-request-frame-ceiling).
+Note also that the 5099-byte row is a single batch `Write` well past
+`MAX_TRANSFER_SIZE`, which a plain `i2c_write` would have refused.
+
+Until this is bounded, keep a batch's total outgoing bytes comfortably below
+5000, or split it.
