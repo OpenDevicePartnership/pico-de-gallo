@@ -1205,7 +1205,11 @@ pub unsafe extern "C" fn gallo_spi_flush(gallo: *const PicoDeGallo) -> Status {
 /// returns a fresh response buffer that is then copied into `read_buf`).
 ///
 /// Returns [`Status::Ok`] on success. Returns [`Status::BufferTooLong`] if
-/// `len` exceeds the firmware transfer limit ([`lib::MAX_TRANSFER_SIZE`]),
+/// `len` exceeds [`GALLO_MAX_RESPONSE_PAYLOAD`] — **not**
+/// [`GALLO_MAX_TRANSFER_SIZE`]. This transfer is full duplex, so `len` is
+/// simultaneously the payload sent and the payload returned, and the tighter
+/// of the two ceilings binds. [`gallo_spi_write`], which asks for nothing
+/// back, accepts four times as much. Also returns
 /// [`Status::SpiTransferFailed`] if the firmware reports a generic SPI
 /// error, or [`Status::CommsFailed`] on a USB error.
 ///
@@ -2519,6 +2523,12 @@ pub unsafe extern "C" fn gallo_uart_read(
         return Status::InvalidArgument;
     }
 
+    if usize::from(count) > GALLO_MAX_RESPONSE_PAYLOAD {
+        eprintln!(
+            "Read count {count} exceeds the deliverable response ceiling {GALLO_MAX_RESPONSE_PAYLOAD}"
+        );
+        return Status::BufferTooLong;
+    }
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
     let gallo = unsafe { &*gallo };
@@ -2569,6 +2579,10 @@ pub unsafe extern "C" fn gallo_uart_write(
         return Status::InvalidArgument;
     }
 
+    if usize::from(len) > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {len} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
+    }
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
     let gallo = unsafe { &*gallo };
@@ -3040,6 +3054,12 @@ pub unsafe extern "C" fn gallo_onewire_read(
         return Status::InvalidArgument;
     }
 
+    if usize::from(len) > GALLO_MAX_RESPONSE_PAYLOAD {
+        eprintln!(
+            "Read count {len} exceeds the deliverable response ceiling {GALLO_MAX_RESPONSE_PAYLOAD}"
+        );
+        return Status::BufferTooLong;
+    }
     let gallo = unsafe { &*gallo };
     match block_on(gallo.0.onewire_read(len)) {
         Ok(data) => {
@@ -3075,6 +3095,10 @@ pub unsafe extern "C" fn gallo_onewire_write(
         return Status::InvalidArgument;
     }
 
+    if usize::from(len) > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {len} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
+    }
     let gallo = unsafe { &*gallo };
     let data = if len > 0 {
         unsafe { std::slice::from_raw_parts(buf, len as usize) }
@@ -3113,6 +3137,10 @@ pub unsafe extern "C" fn gallo_onewire_write_pullup(
         return Status::InvalidArgument;
     }
 
+    if usize::from(len) > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {len} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
+    }
     let gallo = unsafe { &*gallo };
     let data = if len > 0 {
         unsafe { std::slice::from_raw_parts(buf, len as usize) }
@@ -4359,6 +4387,86 @@ mod tests {
         // sizing a duplex buffer. This pins the mirroring itself.
         assert_eq!(GALLO_MAX_RESPONSE_PAYLOAD, lib::MAX_RESPONSE_PAYLOAD);
         assert_eq!(GALLO_MAX_TRANSFER_SIZE, lib::MAX_TRANSFER_SIZE);
+    }
+
+    // The `u16`-typed entry points cannot truncate, so the library guard
+    // alone would produce the right `Status`. They check locally anyway, so
+    // that every sized entry point refuses *before* dereferencing the opaque
+    // handle rather than only before touching the bus. Without that, the
+    // five below would be the only sized functions whose refusal required a
+    // valid device, which is an asymmetry a C caller cannot see from the
+    // header. Each test passes a deliberately invalid pointer and therefore
+    // asserts the ordering as much as the value.
+
+    #[test]
+    fn uart_read_above_the_response_ceiling_returns_buffer_too_long() {
+        let mut buf = [0u8; 1];
+        let mut out_len: u16 = 0;
+        let status = unsafe {
+            gallo_uart_read(
+                bad_device(),
+                buf.as_mut_ptr(),
+                GALLO_MAX_RESPONSE_PAYLOAD as u16 + 1,
+                10,
+                &mut out_len,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn uart_write_above_the_transfer_ceiling_returns_buffer_too_long() {
+        let buf = [0u8; 1];
+        let status = unsafe {
+            gallo_uart_write(
+                bad_device(),
+                buf.as_ptr(),
+                GALLO_MAX_TRANSFER_SIZE as u16 + 1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn onewire_read_above_the_response_ceiling_returns_buffer_too_long() {
+        let mut buf = [0u8; 1];
+        let mut out_len: u16 = 0;
+        let status = unsafe {
+            gallo_onewire_read(
+                bad_device(),
+                buf.as_mut_ptr(),
+                GALLO_MAX_RESPONSE_PAYLOAD as u16 + 1,
+                &mut out_len,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn onewire_write_above_the_transfer_ceiling_returns_buffer_too_long() {
+        let buf = [0u8; 1];
+        let status = unsafe {
+            gallo_onewire_write(
+                bad_device(),
+                buf.as_ptr(),
+                GALLO_MAX_TRANSFER_SIZE as u16 + 1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn onewire_write_pullup_above_the_transfer_ceiling_returns_buffer_too_long() {
+        let buf = [0u8; 1];
+        let status = unsafe {
+            gallo_onewire_write_pullup(
+                bad_device(),
+                buf.as_ptr(),
+                GALLO_MAX_TRANSFER_SIZE as u16 + 1,
+                1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
     }
 
     // --- gallo_spi_batch (P1-2) ---

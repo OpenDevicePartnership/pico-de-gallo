@@ -478,7 +478,7 @@ enum GpioCommands {
 enum UartCommands {
     /// Read bytes from the UART bus
     Read {
-        /// Number of bytes to read (up to 4096)
+        /// Number of bytes to read (up to 1014, the response-frame ceiling)
         #[arg(short, long)]
         count: u16,
 

@@ -297,9 +297,10 @@ impl GalloMcp {
         // 1. Parse all write/transfer payloads into owned buffers first (the
         //    ops borrow &[u8]), with no device access.
         let bufs = parse_batch_payloads(&p.ops)?;
-        for buf in &bufs {
-            validate_write_payload(buf).map_err(invalid_arg)?;
-        }
+        // Write and Transfer payloads are deliberately NOT size-checked
+        // here; see the matching note in `i2c_batch`. Transfer lengths still
+        // count towards the response aggregate below, because those bytes
+        // come back.
         // `Read` and `Transfer` both come back; the response ceiling binds
         // their AGGREGATE. Mirrors `check_spi_batch_ops` in the library.
         let mut b0 = 0usize;

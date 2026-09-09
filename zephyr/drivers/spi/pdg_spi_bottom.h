@@ -49,9 +49,14 @@ extern "C" {
  * the M5 acceptance run, which probed 1013 (worked) and 1015 (hung) but
  * never 1014, and which therefore could not narrow the boundary without
  * stepping into the hang. Issues #158 and #179 closed both gaps: 1014
- * returns normally and 1015 fails cleanly, measured directly on
- * `spi/transfer`, `spi/read`, `i2c/read` and `onewire/read` across two
- * boards.
+ * returns normally and 1015 fails cleanly, measured on `spi/transfer`,
+ * `spi/read`, `i2c/read` and `onewire/read` across boards
+ * 5256657D8A5D7F03 and 49742081C885AC69.
+ *
+ * Those figures are INHERITED from that earlier triage. The change that
+ * moved this constant to 1014 was not itself run against a board; it was
+ * verified statically, including a standalone compile of pdg_spi_bottom.c
+ * against the generated header to confirm the assertion below holds.
  *
  * Three further claims attached to the old constant are also superseded:
  *

@@ -62,8 +62,8 @@
 //! Disable both to remove these dependencies.
 
 use pico_de_gallo_lib::{
-    AdcError, GpioError, GpioState, I2cError, OneWireError, PicoDeGallo, PicoDeGalloError,
-    PwmError, SpiError, UartError, ValidateError,
+    AdcError, GpioError, GpioState, I2cError, MAX_RESPONSE_PAYLOAD, OneWireError, PicoDeGallo,
+    PicoDeGalloError, PwmError, SpiError, UartError, ValidateError,
 };
 use std::sync::Arc;
 use std::time::Duration;
@@ -75,6 +75,32 @@ pub use pico_de_gallo_lib::{
     AdcChannel, AdcConfigurationInfo, GpioDirection, GpioEdge, GpioEvent, GpioPull, I2cFrequency,
     SpiConfigurationInfo, SpiPhase, SpiPolarity, UartConfigurationInfo,
 };
+
+/// Narrow a caller-supplied buffer length to the `u16` every wire read
+/// length uses, refusing anything a single response frame cannot carry.
+///
+/// `embedded-hal` and `embedded-io` hand us slices, so every read length
+/// arrives as a `usize`, while the wire types are `u16`. A bare
+/// `buf.len() as u16` silently wraps: 65536 becomes 0 and 65537 becomes 1.
+/// The device is then asked for the wrong number of bytes and the
+/// `copy_from_slice` that follows panics on the length mismatch -- after the
+/// RPC has gone out, and after any bus activity it caused.
+///
+/// `pico-de-gallo-lib` cannot defend against this, because by the time it
+/// sees the value the truncation has happened and the result is a legal
+/// count. A guard placed below a narrowing cast cannot see what the caller
+/// actually asked for; the `gallo` CLI carried the same defect. Issue #158.
+///
+/// Returning `None` rather than a specific error keeps this usable from all
+/// four peripheral error types, each of which wraps it in its own
+/// `BufferTooLong`.
+fn readable_len(len: usize) -> Option<u16> {
+    if len > MAX_RESPONSE_PAYLOAD {
+        return None;
+    }
+    // Infallible given the check above, which is far below `u16::MAX`.
+    u16::try_from(len).ok()
+}
 
 /// Top-level HAL context for a Pico de Gallo device.
 ///
@@ -1331,12 +1357,15 @@ impl I2c {
         let batch_ops: Vec<I2cBatchOp<'_>> = operations
             .iter()
             .map(|op| match op {
-                embedded_hal::i2c::Operation::Read(buf) => I2cBatchOp::Read {
-                    len: buf.len() as u16,
-                },
-                embedded_hal::i2c::Operation::Write(data) => I2cBatchOp::Write { data },
+                // `readable_len` rather than `as u16`: a >64 KiB read buffer
+                // would otherwise wrap to a small legal count, and the
+                // `copy_from_slice` below would panic after the bus ran.
+                embedded_hal::i2c::Operation::Read(buf) => readable_len(buf.len())
+                    .map(|len| I2cBatchOp::Read { len })
+                    .ok_or(I2cHalError::I2c(I2cError::BufferTooLong)),
+                embedded_hal::i2c::Operation::Write(data) => Ok(I2cBatchOp::Write { data }),
             })
-            .collect();
+            .collect::<std::result::Result<_, I2cHalError>>()?;
 
         let result = handle
             .block_on(gallo.i2c_batch(address, &batch_ops))
@@ -1454,12 +1483,15 @@ impl embedded_hal_async::i2c::I2c<embedded_hal_async::i2c::SevenBitAddress> for 
         let batch_ops: Vec<I2cBatchOp<'_>> = operations
             .iter()
             .map(|op| match op {
-                embedded_hal_async::i2c::Operation::Read(buf) => I2cBatchOp::Read {
-                    len: buf.len() as u16,
-                },
-                embedded_hal_async::i2c::Operation::Write(data) => I2cBatchOp::Write { data },
+                // `readable_len` rather than `as u16`: a >64 KiB read buffer
+                // would otherwise wrap to a small legal count, and the
+                // `copy_from_slice` below would panic after the bus ran.
+                embedded_hal_async::i2c::Operation::Read(buf) => readable_len(buf.len())
+                    .map(|len| I2cBatchOp::Read { len })
+                    .ok_or(I2cHalError::I2c(I2cError::BufferTooLong)),
+                embedded_hal_async::i2c::Operation::Write(data) => Ok(I2cBatchOp::Write { data }),
             })
-            .collect();
+            .collect::<std::result::Result<_, I2cHalError>>()?;
 
         let result = gallo
             .i2c_batch(address, &batch_ops)
@@ -1496,7 +1528,9 @@ impl Spi {
         let handle = &self.handle;
         let gallo = handle.block_on(self.gallo.lock());
         let contents = handle
-            .block_on(gallo.spi_read(words.len() as u16))
+            .block_on(gallo.spi_read(
+                readable_len(words.len()).ok_or(SpiHalError::Spi(SpiError::BufferTooLong))?,
+            ))
             .map_err(SpiHalError::from)?;
         words.copy_from_slice(&contents);
         Ok(())
@@ -1588,7 +1622,7 @@ impl embedded_hal_async::spi::SpiBus for Spi {
     async fn read(&mut self, words: &mut [u8]) -> std::result::Result<(), Self::Error> {
         let gallo = self.gallo.lock().await;
         let contents = gallo
-            .spi_read(words.len() as u16)
+            .spi_read(readable_len(words.len()).ok_or(SpiHalError::Spi(SpiError::BufferTooLong))?)
             .await
             .map_err(SpiHalError::from)?;
         words.copy_from_slice(&contents);
@@ -1681,20 +1715,21 @@ impl SpiDev {
             .iter()
             .enumerate()
             .map(|(i, op)| match op {
-                embedded_hal::spi::Operation::Read(buf) => SpiBatchOp::Read {
-                    len: buf.len() as u16,
-                },
-                embedded_hal::spi::Operation::Write(data) => SpiBatchOp::Write { data },
+                // `readable_len` rather than `as u16`: see the I2C builder.
+                embedded_hal::spi::Operation::Read(buf) => readable_len(buf.len())
+                    .map(|len| SpiBatchOp::Read { len })
+                    .ok_or(SpiHalError::Spi(SpiError::BufferTooLong)),
+                embedded_hal::spi::Operation::Write(data) => Ok(SpiBatchOp::Write { data }),
                 embedded_hal::spi::Operation::Transfer(_read, write) => {
-                    SpiBatchOp::Transfer { data: write }
+                    Ok(SpiBatchOp::Transfer { data: write })
                 }
                 embedded_hal::spi::Operation::TransferInPlace(buf) => {
                     in_place_bufs.push((i, buf.to_vec()));
-                    SpiBatchOp::Transfer { data: &[] }
+                    Ok(SpiBatchOp::Transfer { data: &[] })
                 }
-                embedded_hal::spi::Operation::DelayNs(ns) => SpiBatchOp::DelayNs { ns: *ns },
+                embedded_hal::spi::Operation::DelayNs(ns) => Ok(SpiBatchOp::DelayNs { ns: *ns }),
             })
-            .collect();
+            .collect::<std::result::Result<_, SpiHalError>>()?;
 
         // Fix up TransferInPlace references to point at the saved copies
         for (idx, buf) in &in_place_bufs {
@@ -1764,20 +1799,23 @@ impl embedded_hal_async::spi::SpiDevice for SpiDev {
             .iter()
             .enumerate()
             .map(|(i, op)| match op {
-                embedded_hal_async::spi::Operation::Read(buf) => SpiBatchOp::Read {
-                    len: buf.len() as u16,
-                },
-                embedded_hal_async::spi::Operation::Write(data) => SpiBatchOp::Write { data },
+                // `readable_len` rather than `as u16`: see the I2C builder.
+                embedded_hal_async::spi::Operation::Read(buf) => readable_len(buf.len())
+                    .map(|len| SpiBatchOp::Read { len })
+                    .ok_or(SpiHalError::Spi(SpiError::BufferTooLong)),
+                embedded_hal_async::spi::Operation::Write(data) => Ok(SpiBatchOp::Write { data }),
                 embedded_hal_async::spi::Operation::Transfer(_read, write) => {
-                    SpiBatchOp::Transfer { data: write }
+                    Ok(SpiBatchOp::Transfer { data: write })
                 }
                 embedded_hal_async::spi::Operation::TransferInPlace(buf) => {
                     in_place_bufs.push((i, buf.to_vec()));
-                    SpiBatchOp::Transfer { data: &[] }
+                    Ok(SpiBatchOp::Transfer { data: &[] })
                 }
-                embedded_hal_async::spi::Operation::DelayNs(ns) => SpiBatchOp::DelayNs { ns: *ns },
+                embedded_hal_async::spi::Operation::DelayNs(ns) => {
+                    Ok(SpiBatchOp::DelayNs { ns: *ns })
+                }
             })
-            .collect();
+            .collect::<std::result::Result<_, SpiHalError>>()?;
 
         // Fix up TransferInPlace references to point at the saved copies
         for (idx, buf) in &in_place_bufs {
@@ -1880,7 +1918,10 @@ impl Uart {
         let handle = &self.handle;
         let gallo = handle.block_on(self.gallo.lock());
         let contents = handle
-            .block_on(gallo.uart_read(buf.len() as u16, self.timeout_ms))
+            .block_on(gallo.uart_read(
+                readable_len(buf.len()).ok_or(UartHalError::Uart(UartError::BufferTooLong))?,
+                self.timeout_ms,
+            ))
             .map_err(UartHalError::from)?;
         let n = contents.len().min(buf.len());
         buf[..n].copy_from_slice(&contents[..n]);
@@ -1934,7 +1975,10 @@ impl Uart {
     ) -> std::result::Result<usize, UartHalError> {
         let gallo = self.gallo.lock().await;
         let contents = gallo
-            .uart_read(buf.len() as u16, self.timeout_ms)
+            .uart_read(
+                readable_len(buf.len()).ok_or(UartHalError::Uart(UartError::BufferTooLong))?,
+                self.timeout_ms,
+            )
             .await
             .map_err(UartHalError::from)?;
         let n = contents.len().min(buf.len());
@@ -2472,6 +2516,30 @@ mod tests {
         use embedded_hal::spi::Error as _;
         let err = SpiHalError::Comms("CS assert failed".into());
         assert_eq!(err.kind(), embedded_hal::spi::ErrorKind::Other);
+    }
+
+    #[test]
+    fn readable_len_refuses_lengths_that_would_truncate() {
+        // The defect this guards. Every wire read length is a `u16`, but an
+        // `embedded-hal` or `embedded-io` caller hands us a slice whose
+        // length is a `usize`. A bare `buf.len() as u16` turns 65536 into 0
+        // and 65537 into 1, so the device is asked for the wrong number of
+        // bytes and the subsequent `copy_from_slice` panics on the length
+        // mismatch -- after the RPC, and after any bus activity it caused.
+        //
+        // `pico-de-gallo-lib` cannot catch this: by the time it sees the
+        // value the truncation has already happened and 1 is a legal count.
+        // A guard below a narrowing cast cannot see what the caller asked
+        // for. The same defect was fixed in the `gallo` CLI. Issue #158.
+        assert_eq!(readable_len(0), Some(0));
+        assert_eq!(
+            readable_len(MAX_RESPONSE_PAYLOAD),
+            Some(MAX_RESPONSE_PAYLOAD as u16)
+        );
+        assert_eq!(readable_len(MAX_RESPONSE_PAYLOAD + 1), None);
+        // The two values that truncate to something plausible.
+        assert_eq!(readable_len(u16::MAX as usize + 1), None);
+        assert_eq!(readable_len(u16::MAX as usize + 2), None);
     }
 
     #[cfg(feature = "embedded-io-06")]

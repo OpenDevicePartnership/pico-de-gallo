@@ -40,9 +40,11 @@ pub(crate) async fn spi_read_handler<'a>(
 /// every other handler's check exists to protect that shared buffer. But
 /// `MAX_TRANSFER_SIZE` is documented as *the* per-transaction limit and is
 /// exported to every host surface as `GALLO_MAX_TRANSFER_SIZE`, so an
-/// endpoint that quietly accepts more makes that contract a lie. Measured
-/// on hardware in issue #158: 4097 and 5000 bytes were both accepted here
-/// and driven onto the bus. Issue #158.
+/// endpoint that quietly accepts more makes that contract a lie.
+///
+/// Inherited from the #158 triage on board 5256657D8A5D7F03: 4097 and 5000
+/// bytes were both accepted here and driven onto the bus. This guard has
+/// not itself been re-measured on hardware. Issue #158.
 pub(crate) async fn spi_write_handler<'a>(
     context: &mut Context,
     _header: VarHeader,

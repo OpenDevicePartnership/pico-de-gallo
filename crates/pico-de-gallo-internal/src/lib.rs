@@ -1473,7 +1473,10 @@ pub enum SpiBatchOp<'a> {
 ///
 /// ## Limitations
 ///
-/// - Total read data must not exceed [`MAX_TRANSFER_SIZE`]
+/// - Total read data must not exceed [`MAX_RESPONSE_PAYLOAD`], which is far
+///   tighter than [`MAX_TRANSFER_SIZE`]. A batch reading more than a single
+///   response frame can carry would otherwise execute in full — including
+///   every `Write` — and only then lose its reply (issue #179).
 /// - Total write data is limited by USB packet size
 /// - Maximum [`MAX_BATCH_OPS`] operations per batch
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]

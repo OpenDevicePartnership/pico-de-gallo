@@ -248,7 +248,14 @@ impl GalloMcp {
                 let buf = parse_bytes(data).map_err(invalid_arg)?;
                 validate_i2c_write_payload(&buf)
                     .map_err(|e| invalid_arg(format!("op {i}: {e}")))?;
-                validate_write_payload(&buf).map_err(|e| invalid_arg(format!("op {i}: {e}")))?;
+                // Deliberately NOT size-checked. A batch `Write` payload is
+                // bounded by neither `pico-de-gallo-lib` nor the firmware
+                // batch handler -- only by the request frame, which is far
+                // larger than MAX_TRANSFER_SIZE. Refusing at 4096 here would
+                // make this tool stricter than every other host surface and
+                // reject calls that currently succeed. Batch write payloads
+                // are out of scope for issue #158; see the plain `i2c_write`
+                // tool above, which is bounded.
                 write_bufs.push(buf);
             }
         }

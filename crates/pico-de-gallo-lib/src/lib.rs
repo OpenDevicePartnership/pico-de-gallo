@@ -415,8 +415,9 @@ fn response_len_is_undeliverable(len: usize) -> bool {
 ///
 /// [`MAX_TRANSFER_SIZE`] bounds the *outbound* direction and is far looser
 /// than [`response_len_is_undeliverable`]'s ceiling; the two budgets are
-/// independent, which #158 measured directly by showing that a 1021-byte
-/// request payload did not move the response ceiling by a single byte.
+/// independent, which the #158 triage established by showing that a
+/// 1021-byte request payload did not move the response ceiling by a single
+/// byte. That figure is inherited; nothing here was re-measured.
 /// Applies to every payload the caller *sends*: `i2c/write`, `spi/write`,
 /// `uart/write`, both 1-Wire writes, and the write half of
 /// `i2c/write-read`.
@@ -1039,9 +1040,9 @@ impl PicoDeGallo {
     ///
     /// Note this is the *looser* of the two ceilings, deliberately. A write
     /// returns no payload, so the response budget does not apply — #158
-    /// measured `spi/write` completing normally at 1015 bytes, the size at
-    /// which [`Self::spi_transfer`] fails. The two endpoints cannot share
-    /// one bound.
+    /// triage recorded `spi/write` completing normally at 1015 bytes, the
+    /// size at which [`Self::spi_transfer`] fails, so the two endpoints
+    /// cannot share one bound. That figure is inherited from that run.
     pub async fn spi_write(&self, contents: &[u8]) -> Result<(), PicoDeGalloError<SpiError>> {
         if request_payload_is_too_long(contents.len()) {
             return Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong));

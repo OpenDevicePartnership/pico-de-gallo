@@ -59,9 +59,11 @@ pub(crate) async fn i2c_read_handler<'a>(
 /// protect that shared buffer. But `MAX_TRANSFER_SIZE` is documented as
 /// *the* per-transaction limit and is exported to every host surface as
 /// `GALLO_MAX_TRANSFER_SIZE`, so an endpoint that quietly accepts more
-/// makes that contract a lie. Measured on hardware in issue #158: 4097
-/// bytes reached the bus and came back as a NAK rather than
-/// `BufferTooLong`. Issue #158.
+/// makes that contract a lie.
+///
+/// Inherited from the #158 triage on board 5256657D8A5D7F03: 4097 bytes
+/// reached the bus and came back as a NAK rather than `BufferTooLong`.
+/// This guard has not itself been re-measured on hardware. Issue #158.
 pub(crate) async fn i2c_write_handler<'a>(
     context: &mut Context,
     _header: VarHeader,
