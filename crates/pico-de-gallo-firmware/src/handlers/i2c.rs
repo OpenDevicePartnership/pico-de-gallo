@@ -10,7 +10,7 @@ use pico_de_gallo_internal::{
     I2cBatchError, I2cBatchOp, I2cBatchRequest, I2cBatchResponse, I2cError, I2cFrequency, I2cGetConfigurationResponse,
     I2cReadRequest, I2cReadResponse, I2cScanRequest, I2cScanResponse, I2cSetConfigurationRequest,
     I2cSetConfigurationResponse, I2cWriteReadRequest, I2cWriteReadResponse, I2cWriteRequest, I2cWriteResponse,
-    MAX_BATCH_OPS, MAX_TRANSFER_SIZE,
+    MAX_BATCH_OPS, MAX_RESPONSE_PAYLOAD, MAX_TRANSFER_SIZE,
 };
 use postcard_rpc::header::VarHeader;
 
@@ -206,7 +206,22 @@ pub(crate) async fn i2c_batch_handler<'a>(
             kind: I2cError::Other,
         });
     }
-    if total_read > MAX_TRANSFER_SIZE {
+    // Bounded by what can be *delivered*, not by what `buf` can hold. Since
+    // #128 the batch is a single `I2c::transaction()`, so a batch reading
+    // more than MAX_RESPONSE_PAYLOAD would run to completion — every Write
+    // already on the wire — and only then lose its response to transport
+    // truncation, leaving the caller a `DeserializeUnexpectedEnd` that looks
+    // like a comms fault and invites a retry which repeats those writes.
+    // Refuse here, before the transaction starts. Issue #179.
+    //
+    // `failed_op = 0` because an aggregate overflow is not attributable to
+    // any single operation, matching how a bus error reports an atomic
+    // transaction that failed as a unit.
+    if total_read > MAX_RESPONSE_PAYLOAD {
+        warn!(
+            "i2c batch: total read {} exceeds deliverable response {}",
+            total_read, MAX_RESPONSE_PAYLOAD
+        );
         return Err(I2cBatchError {
             failed_op: 0,
             kind: I2cError::BufferTooLong,

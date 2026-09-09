@@ -5,10 +5,10 @@ use embassy_rp::peripherals::SPI0;
 use embassy_rp::spi::{self, Phase, Polarity, Spi};
 use embassy_time::Duration;
 use pico_de_gallo_internal::{
-    MAX_BATCH_OPS, MAX_TRANSFER_SIZE, SpiBatchError, SpiBatchOp, SpiBatchRequest, SpiBatchResponse,
-    SpiConfigurationInfo, SpiError, SpiFlushResponse, SpiGetConfigurationResponse, SpiPhase, SpiPolarity,
-    SpiReadRequest, SpiReadResponse, SpiSetConfigurationRequest, SpiSetConfigurationResponse, SpiTransferRequest,
-    SpiTransferResponse, SpiWriteRequest, SpiWriteResponse,
+    MAX_BATCH_OPS, MAX_RESPONSE_PAYLOAD, MAX_TRANSFER_SIZE, SpiBatchError, SpiBatchOp, SpiBatchRequest,
+    SpiBatchResponse, SpiConfigurationInfo, SpiError, SpiFlushResponse, SpiGetConfigurationResponse, SpiPhase,
+    SpiPolarity, SpiReadRequest, SpiReadResponse, SpiSetConfigurationRequest, SpiSetConfigurationResponse,
+    SpiTransferRequest, SpiTransferResponse, SpiWriteRequest, SpiWriteResponse,
 };
 use postcard_rpc::header::VarHeader;
 
@@ -122,7 +122,22 @@ pub(crate) async fn spi_batch_handler<'a>(
             kind: SpiError::Other,
         });
     }
-    if total_read > MAX_TRANSFER_SIZE {
+    // Bounded by what can be *delivered*, not by what `context.buf` can
+    // hold. A batch reading more than MAX_RESPONSE_PAYLOAD would run in
+    // full — chip-select asserted and deasserted, clocks driven, every
+    // Write committed — and only then lose its response to transport
+    // truncation, leaving the caller a `DeserializeUnexpectedEnd` that
+    // looks like a comms fault and invites a retry which repeats the
+    // writes. Refuse here, before any of that happens. Issue #179.
+    //
+    // `failed_op = 0` because an aggregate overflow is not attributable to
+    // any single operation, matching how a bus error reports an atomic
+    // transaction that failed as a unit.
+    if total_read > MAX_RESPONSE_PAYLOAD {
+        warn!(
+            "spi batch: total read {} exceeds deliverable response {}",
+            total_read, MAX_RESPONSE_PAYLOAD
+        );
         return Err(SpiBatchError {
             failed_op: 0,
             kind: SpiError::BufferTooLong,

@@ -9,6 +9,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `MAX_RESPONSE_PAYLOAD` (1014), the largest byte payload a single response
+  frame can actually deliver to the host. Closes #179.
+
+  Derived, not fitted: 1024 bytes of postcard-rpc inbound transfer buffer,
+  less a 7-byte header (1 discriminant + 2 key + 4 sequence), less the
+  `Result` discriminant, less the payload's 2-byte length prefix. Each term
+  is pinned by a test; the result matches the edge measured on two boards
+  across four endpoints.
+
+  This is a *deliverable-response* ceiling, distinct from
+  `MAX_TRANSFER_SIZE`, which bounds a request argument and the firmware's
+  scratch buffer. Conflating the two is the defect in #179.
+
+  Constant only — no wire-format or schema change.
+
 - `MAX_HANDLER_TIMEOUT_MS` (30 minutes) and `UNDECLARED_DISPATCH_BUDGET_MS`
   (10 seconds), the two firmware-side timing guarantees hosts need in order
   to bound their own waits. Refs #178.

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- `i2c/batch` and `spi/batch` now bound their aggregate read length against
+  `MAX_RESPONSE_PAYLOAD` (1014) instead of `MAX_TRANSFER_SIZE` (4096).
+  Closes #179.
+
+  The old bound let a batch reading 1015..=4096 bytes run to completion — for
+  I²C the whole `I2c::transaction()`, including every `Write`; for SPI a full
+  chip-select assert/deassert cycle with the clock driven — and only then
+  lose its response, which the host transport cannot carry. The caller was
+  handed a transport deserialization failure with no indication that the
+  device state had already changed. The refusal happens during
+  pre-validation, before any bus activity or chip-select edge, and reports
+  `BufferTooLong` with `failed_op: 0`.
+
+  No wire-format or schema change: `BufferTooLong` already existed on both
+  error types and only the bound moved.
+
 ### Changed
 
 - `MAX_HANDLER_TIMEOUT` and `DEFAULT_DISPATCH_BUDGET` are now derived from

@@ -19,7 +19,8 @@
 //!
 //! # Crate Organization
 //!
-//! - **Constants**: [`MICROSOFT_VID`], [`PICO_DE_GALLO_PID`], [`MAX_TRANSFER_SIZE`]
+//! - **Constants**: [`MICROSOFT_VID`], [`PICO_DE_GALLO_PID`], [`MAX_TRANSFER_SIZE`],
+//!   [`MAX_RESPONSE_PAYLOAD`]
 //! - **Endpoints**: Defined via the [`postcard_rpc::endpoints!`] macro — see
 //!   [`ENDPOINT_LIST`] for the full table.
 //! - **I2C types**: [`I2cReadRequest`], [`I2cWriteRequest`], [`I2cWriteReadRequest`],
@@ -71,7 +72,121 @@ pub const PICO_DE_GALLO_PID: u16 = 0x067d;
 /// Maximum number of bytes the firmware can handle in a single I2C or SPI
 /// transaction. Requests exceeding this limit will be rejected by the
 /// firmware with an error.
+///
+/// This bounds a *request* argument and the firmware's scratch buffer. It
+/// is **not** the bound on how much data can come back: see
+/// [`MAX_RESPONSE_PAYLOAD`], which is far tighter.
 pub const MAX_TRANSFER_SIZE: usize = 4096;
+
+/// The size of the buffer every inbound USB transfer is read into on the
+/// host, in bytes.
+///
+/// `postcard-rpc-0.12.1/src/host_client/raw_nusb.rs:20`:
+///
+/// ```text
+/// // TODO: These should all be configurable, PRs welcome
+/// /// The size in bytes of the largest possible IN transfer
+/// pub(crate) const MAX_TRANSFER_SIZE: usize = 1024;
+/// ```
+///
+/// Private and non-configurable upstream, hence the copy. A response frame
+/// longer than this fills the buffer, the transfer completes, and the
+/// remaining bytes land in the *next* transfer as an unparseable fragment.
+const HOST_IN_TRANSFER_BUDGET: usize = 1024;
+
+/// Encoded length of the postcard-rpc header on a response frame, in bytes.
+///
+/// One discriminant byte (`0bNNMM_VVVV`), then a two-byte key, then a
+/// four-byte sequence number:
+///
+/// * **Key — 2 bytes.** The server shrinks every reply key to
+///   `Dispatch::min_key_len()`, which `define_dispatch!` derives from
+///   `postcard_rpc::server::min_key_needed` over [`ENDPOINT_LIST`],
+///   [`TOPICS_IN_LIST`] and [`TOPICS_OUT_LIST`]. For this protocol that is
+///   `VarKeyKind::Key2`, pinned by `reply_key_length_is_two_bytes`.
+/// * **Sequence number — 4 bytes.** `HostClient::send_resp` builds every
+///   request with `VarSeq::Seq4` and the server echoes the request's
+///   `seq_no` verbatim. The `VarSeqKind` handed to `try_new_raw_nusb` never
+///   takes effect: `VarSeq::resize` is defined in postcard-rpc 0.12.1 and
+///   called nowhere in it. Passing `Seq2` therefore buys no header bytes,
+///   which is why a hand-rolled `Seq2` probe measures a 5-byte header while
+///   the real client gets 7.
+const RESPONSE_HEADER_LEN: usize = 1 + 2 + 4;
+
+/// The postcard variant index of a `Result`, in bytes.
+///
+/// Every response-bearing endpoint answers with `Result<_, E>`, whose `Ok`
+/// arm costs one leading byte before the payload.
+const RESPONSE_RESULT_TAG_LEN: usize = 1;
+
+/// The postcard varint length prefix on the returned byte sequence, in
+/// bytes.
+///
+/// Two bytes for any length in `128..=16383`, which
+/// [`MAX_RESPONSE_PAYLOAD`] is — asserted by
+/// `max_response_payload_needs_a_two_byte_length_prefix`.
+const RESPONSE_LEN_PREFIX_LEN: usize = 2;
+
+/// Largest byte payload a single response frame can actually deliver to the
+/// host.
+///
+/// This is a *deliverable-response* ceiling, not a firmware buffer bound.
+/// The firmware can produce up to [`MAX_TRANSFER_SIZE`] bytes and drive the
+/// bus to obtain them, but a response frame larger than the host
+/// transport's inbound buffer is truncated in transit and the caller sees a
+/// `Postcard(DeserializeUnexpectedEnd)` that looks like a comms fault.
+/// Everything the request already did to the bus has still happened.
+///
+/// # Derivation
+///
+/// Every byte is accounted for. Nothing here is fitted to the measurement.
+///
+/// | Bytes | Term |
+/// |------:|------|
+/// | `1024` | [`HOST_IN_TRANSFER_BUDGET`] |
+/// | `-7` | [`RESPONSE_HEADER_LEN`] — 1 discriminant + 2 key + 4 sequence |
+/// | `-1` | [`RESPONSE_RESULT_TAG_LEN`] — the `Result` variant index |
+/// | `-2` | [`RESPONSE_LEN_PREFIX_LEN`] — the sequence length varint |
+/// | **`= 1014`** | |
+///
+/// # Measurement
+///
+/// Confirmed on hardware on two separate boards
+/// (`5256657D8A5D7F03` in issue #158, `49742081C885AC69` in issue #179) and
+/// across `spi/read`, `spi/transfer`, `i2c/read` and `onewire/read`: `1014`
+/// bytes return normally, `1015` fails with
+/// `Comms(Postcard(DeserializeUnexpectedEnd))`, and the board stays alive.
+/// Reading raw USB transfers off `49742081C885AC69` shows the frame for a
+/// 1014-byte `spi/read` is exactly 1024 bytes, and 1015 arrives as
+/// `1024 + 1`.
+///
+/// # When this moves
+///
+/// The value is a property of the *host* transport, which the firmware
+/// cannot observe. It is defined here, rather than host-side only, because
+/// the firmware is the only place that can decline to begin irreversible
+/// bus side effects for a response it will not be able to deliver — see the
+/// batch handlers, and issue #179. It moves if postcard-rpc's inbound
+/// transfer size changes, or if this protocol grows enough endpoints to
+/// need a four-byte key, in which case it drops to 1012 and
+/// `reply_key_length_is_two_bytes` fails first.
+pub const MAX_RESPONSE_PAYLOAD: usize = HOST_IN_TRANSFER_BUDGET
+    - RESPONSE_HEADER_LEN
+    - RESPONSE_RESULT_TAG_LEN
+    - RESPONSE_LEN_PREFIX_LEN;
+
+// Compile-time invariants on the derivation above. These are assertions,
+// not tests, so drift is a build failure rather than something CI has to
+// catch.
+const _: () = {
+    // `RESPONSE_LEN_PREFIX_LEN` assumes a two-byte postcard varint, which
+    // is only right while the ceiling lands in `128..=16383`.
+    assert!(MAX_RESPONSE_PAYLOAD >= 128);
+    assert!(MAX_RESPONSE_PAYLOAD <= 16383);
+    // A response bound, and strictly tighter than the request/buffer bound.
+    // Conflating the two is the defect in #179.
+    assert!(MAX_RESPONSE_PAYLOAD < MAX_TRANSFER_SIZE);
+};
 
 /// Ceiling the firmware applies to any caller-supplied handler timeout.
 ///
@@ -379,7 +494,13 @@ pub enum I2cError {
     ArbitrationLoss,
     /// Data overrun — firmware could not keep up with the bus clock.
     Overrun,
-    /// Request exceeds the firmware buffer limit ([`MAX_TRANSFER_SIZE`]).
+    /// A length bound was exceeded.
+    ///
+    /// Either a request exceeds the firmware buffer limit
+    /// ([`MAX_TRANSFER_SIZE`]), or a batch's `Read` operations would return
+    /// more than [`MAX_RESPONSE_PAYLOAD`] bytes in total — more than one
+    /// response frame can carry (issue #179). In a batch the two are told
+    /// apart by nothing on the wire, so consult both bounds.
     BufferTooLong,
     /// I2C address is outside the valid 7-bit range (0x00–0x7F).
     AddressOutOfRange,
@@ -455,7 +576,14 @@ pub struct I2cScanRequest {
 /// variants in the middle — only append at the end.
 #[derive(Serialize, Deserialize, Schema, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpiError {
-    /// Request exceeds the firmware buffer limit ([`MAX_TRANSFER_SIZE`]).
+    /// A length bound was exceeded.
+    ///
+    /// Either a request exceeds the firmware buffer limit
+    /// ([`MAX_TRANSFER_SIZE`]), or a batch's `Read` and `Transfer`
+    /// operations would return more than [`MAX_RESPONSE_PAYLOAD`] bytes in
+    /// total — more than one response frame can carry (issue #179). In a
+    /// batch the two are told apart by nothing on the wire, so consult both
+    /// bounds.
     BufferTooLong,
     /// An unspecified error occurred in the firmware.
     Other,
@@ -4069,5 +4197,119 @@ mod tests {
             let decoded: DeviceInfo = from_bytes(&bytes).unwrap();
             assert_eq!(decoded.num_gpios, n);
         }
+    }
+
+    // --- Deliverable response ceiling (issue #179) ---
+    //
+    // These pin the two inputs to `MAX_RESPONSE_PAYLOAD`'s derivation that
+    // live in *this* crate's own protocol shape, so a future endpoint
+    // addition or response-type change cannot move the ceiling silently.
+
+    /// Pins the reply key length the firmware dispatcher will choose.
+    ///
+    /// `define_dispatch!` sets `Dispatch::min_key_len()` from
+    /// `min_key_needed` over this crate's endpoint and topic lists, and
+    /// `Sender::reply` shrinks every reply key to it. Two bytes is one of
+    /// the terms in [`MAX_RESPONSE_PAYLOAD`]; adding endpoints until the
+    /// hash space needs four bytes would cost two payload bytes.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn reply_key_length_is_two_bytes() {
+        use postcard_rpc::Key;
+        use postcard_rpc::server::min_key_needed;
+
+        let ep_in: Vec<Key> = ENDPOINT_LIST.endpoints.iter().map(|e| e.1).collect();
+        let ep_out: Vec<Key> = ENDPOINT_LIST.endpoints.iter().map(|e| e.2).collect();
+        let tp_in: Vec<Key> = TOPICS_IN_LIST.topics.iter().map(|t| t.1).collect();
+        let tp_out: Vec<Key> = TOPICS_OUT_LIST.topics.iter().map(|t| t.1).collect();
+
+        // `define_dispatch!` takes the larger of the two directions.
+        let needed = min_key_needed(&[&ep_in, &tp_in]).max(min_key_needed(&[&ep_out, &tp_out]));
+        assert_eq!(
+            needed, 2,
+            "the dispatcher's minimum key length changed, so the response \
+             header is no longer 7 bytes and MAX_RESPONSE_PAYLOAD's \
+             derivation is stale. Re-derive it (see the constant's docs) \
+             rather than adjusting this number."
+        );
+    }
+
+    /// Pins the encoded size of the response header postcard-rpc actually
+    /// emits: one discriminant byte, a two-byte key, and a four-byte
+    /// sequence number.
+    #[test]
+    fn response_header_encodes_to_seven_bytes() {
+        use postcard_rpc::header::{VarHeader, VarKey, VarKeyKind, VarSeq};
+
+        // Exactly what `Sender::reply` does: start from the 8-byte key and
+        // shrink to the dispatcher's minimum.
+        let mut key = VarKey::Key8(Version::RESP_KEY);
+        key.shrink_to(VarKeyKind::Key2);
+        let hdr = VarHeader {
+            key,
+            // What `HostClient::send_resp` emits and the server echoes back.
+            seq_no: VarSeq::Seq4(0x1234_5678),
+        };
+        let mut buf = [0u8; 32];
+        let (used, _) = hdr.write_to_slice(&mut buf).expect("header must encode");
+        assert_eq!(
+            used.len(),
+            RESPONSE_HEADER_LEN,
+            "the postcard-rpc header encoding changed; MAX_RESPONSE_PAYLOAD's \
+             derivation is stale"
+        );
+    }
+
+    /// The whole point of the constant: a maximal `Ok` payload must encode
+    /// to *exactly* the transport's IN-transfer budget, and one more byte
+    /// must overflow it.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn max_response_payload_exactly_fills_the_transport_budget() {
+        let ok: Result<Vec<u8>, I2cError> = Ok(vec![0u8; MAX_RESPONSE_PAYLOAD]);
+        assert_eq!(
+            RESPONSE_HEADER_LEN + to_allocvec(&ok).unwrap().len(),
+            HOST_IN_TRANSFER_BUDGET,
+            "a maximal response no longer fills the transport budget exactly"
+        );
+
+        let over: Result<Vec<u8>, I2cError> = Ok(vec![0u8; MAX_RESPONSE_PAYLOAD + 1]);
+        assert_eq!(
+            RESPONSE_HEADER_LEN + to_allocvec(&over).unwrap().len(),
+            HOST_IN_TRANSFER_BUDGET + 1,
+            "one byte over the ceiling must overflow the budget by exactly one"
+        );
+    }
+
+    /// The batch response types share the `Result<_, E>` shape the ceiling
+    /// is derived from, so the same number bounds them.
+    #[cfg(feature = "use-std")]
+    #[test]
+    fn batch_responses_share_the_read_response_framing() {
+        let payload = vec![0u8; MAX_RESPONSE_PAYLOAD];
+        let spi: SpiBatchResponse = Ok(payload.clone());
+        let i2c: I2cBatchResponse = Ok(payload.clone());
+        let read: SpiReadResponse = Ok(payload);
+        let n = to_allocvec(&read).unwrap().len();
+        assert_eq!(to_allocvec(&spi).unwrap().len(), n);
+        assert_eq!(to_allocvec(&i2c).unwrap().len(), n);
+    }
+
+    /// Ties the derivation to the hardware measurement.
+    ///
+    /// The empirical edge is solid — 1014 good / 1015 bad, reproduced on two
+    /// boards across four endpoints (issues #158 and #179) — so if the
+    /// arithmetic above ever stops landing on it, the model is wrong, not
+    /// the measurement. Fail loudly rather than quietly shipping a ceiling
+    /// nobody checked against a bus.
+    #[test]
+    fn max_response_payload_matches_the_measured_edge() {
+        assert_eq!(
+            MAX_RESPONSE_PAYLOAD, 1014,
+            "the derived ceiling no longer matches the edge measured on \
+             hardware. Re-measure before changing this number: the last good \
+             read was 1014 bytes and 1015 failed with \
+             Comms(Postcard(DeserializeUnexpectedEnd))."
+        );
     }
 }
