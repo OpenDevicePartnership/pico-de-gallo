@@ -274,20 +274,46 @@ from the request, so no framing is needed in the response.
 | Parameter | Value |
 |-----------|-------|
 | Maximum operations per batch | 64 (`MAX_BATCH_OPS`) |
-| Maximum size of an individual operation | None — bounded only by the total request |
+| Maximum size of an individual operation | None — bounded only by the totals below |
+| **Total bytes a batch may return** | **1014 (`MAX_RESPONSE_PAYLOAD`)** |
 | Protocol packet-buffer/argument bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
 | Direct I²C RPC measurements | Read: 1014 bytes after a 1-byte write; write: no failure through 4096 bytes |
-| Demonstrated SPI payload | Shape-dependent and below 4096; no general ceiling is published |
+| Batch measurements | Reads totalling 1014 bytes return in full; 1015 is refused with `BufferTooLong`, on both `i2c/batch` and `spi/batch` |
+| Demonstrated SPI payload (send direction) | Shape-dependent and below 4096; no general ceiling is published |
 | Zero-length I²C writes | Rejected with `ZeroLengthWrite` before bus access |
 
 If a batch violates these constraints, the firmware returns an error
 indicating which constraint was violated. Validation failures report the
 exact zero-indexed operation; an I<sup>2</sup>C bus failure applies to the
-atomic transaction as a whole and reports operation index 0.
+atomic transaction as a whole and reports operation index 0. An
+aggregate-length overflow is not attributable to any single operation, so it
+reports index 0 as well.
 
 `MAX_TRANSFER_SIZE` is a buffer and argument bound, not a guarantee that 4096
 bytes of application data fit through postcard-rpc and COBS framing. Request
-shape and response size both matter. The I²C measurements used the direct
-`i2c/write` and `i2c/write-read` RPCs; `i2c/batch` was not measured. See the
-measured I²C and SPI evidence in
+shape and response size both matter. The direct-RPC I²C measurements used
+`i2c/write` and `i2c/write-read`; the batch row was measured separately,
+through `i2c/batch` and `spi/batch`. See the measured I²C and SPI evidence in
 [Troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
+#### The response ceiling
+
+`MAX_RESPONSE_PAYLOAD` bounds what a batch may send **back**, not what the
+firmware can buffer. For I<sup>2</sup>C only `Read` counts towards it; for SPI,
+`Read` and `Transfer` both do, because a transfer returns as many bytes as it
+sends. `Write` and `DelayNs` contribute nothing.
+
+The number is a property of the host transport rather than of the device: a
+postcard-rpc response frame is read into a 1024-byte buffer, of which 7 bytes
+are the header, 1 is the `Result` discriminant, and 2 are the payload's length
+prefix. The firmware enforces it anyway. Until this was fixed, a batch whose
+reads totalled between 1015 and 4096 bytes was accepted and **executed** — for
+I<sup>2</sup>C the whole transaction ran, including every `Write`; for SPI
+chip-select was asserted and deasserted and the clock was driven — and only
+*then* lost its response to truncation. The caller received
+`Comms(Postcard(DeserializeUnexpectedEnd))`, which looks like a transport
+fault and invites a retry that repeats every write.
+
+Refusing up front costs the 1015–4096 range, which never worked anyway, and
+buys the guarantee that a batch the device accepts is a batch whose result the
+caller can actually see. Split larger reads across several batches.

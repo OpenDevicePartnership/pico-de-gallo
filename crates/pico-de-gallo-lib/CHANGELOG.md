@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Re-export of `MAX_RESPONSE_PAYLOAD` from `pico-de-gallo-internal`.
+
 - `DEFAULT_CALL_TIMEOUT` (5 s), `PicoDeGallo::with_call_timeout` and
   `PicoDeGallo::call_timeout`. Every RPC is now bounded; previously only the
   validated `device/info` fetch was. Closes #178.
@@ -30,6 +32,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   too. `device_info`/`validate` keep `DEVICE_INFO_TIMEOUT` unchanged.
 
 ### Fixed
+
+- `i2c_batch` and `spi_batch` now refuse, locally and before transmitting
+  anything, a batch whose operations would return more than
+  `MAX_RESPONSE_PAYLOAD` (1014) bytes in total. Closes #179.
+
+  Such a batch used to be accepted by both the host and the firmware,
+  *executed on the bus*, and only then lose its response to transport
+  truncation — surfacing as `Comms(Postcard(DeserializeUnexpectedEnd))`,
+  which reads like a transport fault and invites a retry that repeats every
+  write. The refusal is `BufferTooLong` with `failed_op: 0`, matching the
+  firmware, because an aggregate overflow names no single operation.
+
+  For `spi_batch` the check runs *before* the chip-select preflight, so an
+  undeliverable batch no longer costs a `device/info` round-trip and reports
+  `BufferTooLong` rather than `InvalidCsPin` when both are wrong — the same
+  precedence the firmware uses.
+
+  Reads totalling exactly 1014 bytes are unaffected. Only `Read` counts for
+  I²C; `Read` and `Transfer` count for SPI.
 
 - A request whose response is never produced no longer parks the caller
   forever. The known trigger is a request frame larger than the firmware's

@@ -73,7 +73,9 @@ pub use pico_de_gallo_internal::{
 pub use pico_de_gallo_internal::{
     AdcError, GpioError, I2cBatchError, I2cError, OneWireError, PwmError, SpiBatchError, SpiError, UartError,
 };
-pub use pico_de_gallo_internal::{BUILD_ID_CAPACITY, MAX_BATCH_OPS, MAX_TRANSFER_SIZE, NUM_GPIOS};
+pub use pico_de_gallo_internal::{
+    BUILD_ID_CAPACITY, MAX_BATCH_OPS, MAX_RESPONSE_PAYLOAD, MAX_TRANSFER_SIZE, NUM_GPIOS,
+};
 pub use pico_de_gallo_internal::{
     encode_i2c_batch_ops, encode_spi_batch_ops, i2c_batch_response_len, spi_batch_response_len,
 };
@@ -387,6 +389,20 @@ fn check_i2c_write_payload(contents: &[u8]) -> Result<(), I2cError> {
     Ok(())
 }
 
+/// `true` when a batch that returns `total` bytes cannot have its response
+/// delivered.
+///
+/// Both batch endpoints answer with `Result<Vec<u8>, _>` and so share one
+/// ceiling; only their error types differ, which is why the policy lives
+/// here and each caller wraps it. See [`MAX_RESPONSE_PAYLOAD`] for the
+/// derivation and issue #179 for what accepting such a batch costs: the
+/// operations run, the response is truncated in transport, and the caller
+/// is handed a `DeserializeUnexpectedEnd` that reads like a comms fault and
+/// invites a retry which repeats every write.
+fn batch_read_total_is_undeliverable(total: usize) -> bool {
+    total > MAX_RESPONSE_PAYLOAD
+}
+
 /// Returns `Err` naming the first [`I2cBatchOp::Write`] in `ops` that
 /// carries an empty payload.
 ///
@@ -399,6 +415,13 @@ fn check_i2c_write_payload(contents: &[u8]) -> Result<(), I2cError> {
 /// collapse to `failed_op = 0`, because an atomic transaction fails as a
 /// unit (issue #128).
 ///
+/// Also refuses a batch whose reads total more than
+/// [`MAX_RESPONSE_PAYLOAD`], with `failed_op = 0`: an aggregate overflow is
+/// not attributable to any one operation, and the firmware reports it the
+/// same way (`handlers/i2c.rs`). The aggregate is checked *after* the
+/// per-operation walk so that a batch which is wrong in both ways reports
+/// the same error here as it would on the device.
+///
 /// Extracted so the policy is independently testable (issue #136).
 fn check_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Result<(), I2cBatchError> {
     for (i, op) in ops.iter().enumerate() {
@@ -410,6 +433,31 @@ fn check_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Result<(), I2cBatchError> {
                 kind,
             });
         }
+    }
+    if batch_read_total_is_undeliverable(i2c_batch_response_len(ops)) {
+        return Err(I2cBatchError {
+            failed_op: 0,
+            kind: I2cError::BufferTooLong,
+        });
+    }
+    Ok(())
+}
+
+/// Returns `Err` if the bytes `ops` will return exceed
+/// [`MAX_RESPONSE_PAYLOAD`].
+///
+/// `Read` and `Transfer` both come back; `Write` and `DelayNs` do not, so
+/// only the former two count. `failed_op` is `0` because an aggregate
+/// overflow is not attributable to any one operation — the same convention
+/// the firmware uses at the matching check in `handlers/spi.rs`.
+///
+/// Extracted so the policy is independently testable (issue #179).
+fn check_spi_batch_ops(ops: &[SpiBatchOp<'_>]) -> Result<(), SpiBatchError> {
+    if batch_read_total_is_undeliverable(spi_batch_response_len(ops)) {
+        return Err(SpiBatchError {
+            failed_op: 0,
+            kind: SpiError::BufferTooLong,
+        });
     }
     Ok(())
 }
@@ -854,6 +902,20 @@ impl PicoDeGallo {
     /// The batch travels as a single request, so it is also one USB
     /// round-trip instead of one per operation.
     ///
+    /// # Response ceiling
+    ///
+    /// The `Read` operations may total at most [`MAX_RESPONSE_PAYLOAD`]
+    /// bytes. A larger batch is refused locally, before anything is
+    /// transmitted, with `I2cBatchError { failed_op: 0, kind: BufferTooLong }`.
+    /// `Write` payloads are not counted — nothing comes back from them.
+    ///
+    /// The bound is on what the transport can deliver, not on what the
+    /// firmware can buffer, so it is far below
+    /// [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]. Before issue #179 such
+    /// a batch was accepted and *executed*, and only then lost its response
+    /// to transport truncation, which surfaced as
+    /// `Comms(Postcard(DeserializeUnexpectedEnd))`.
+    ///
     /// [`I2c::transaction`]: https://docs.rs/embedded-hal/1.0.0/embedded_hal/i2c/trait.I2c.html#tymethod.transaction
     pub async fn i2c_batch(
         &self,
@@ -919,6 +981,27 @@ impl PicoDeGallo {
     /// returns concatenated data from all Read and Transfer operations
     /// in order.
     ///
+    /// # Response ceiling
+    ///
+    /// The `Read` and `Transfer` operations may return at most
+    /// [`MAX_RESPONSE_PAYLOAD`] bytes in total. A larger batch is refused
+    /// locally with `SpiBatchError { failed_op: 0, kind: BufferTooLong }`.
+    /// `Write` and `DelayNs` do not count — nothing comes back from them.
+    ///
+    /// This is checked **first**, before the chip-select preflight, because
+    /// it needs no device metadata: a batch that can never deliver its
+    /// response should not cost a `device/info` round-trip to refuse. It
+    /// also matches the firmware, which walks and bounds the operations
+    /// before it looks at `cs_pin`, so a batch that is wrong in both ways
+    /// reports the same error whichever side refuses it.
+    ///
+    /// The bound is on what the transport can deliver, not on what the
+    /// firmware can buffer, so it is far below
+    /// [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]. Before issue #179 such
+    /// a batch was accepted and *executed* — chip-select asserted and
+    /// deasserted, clocks driven — and only then lost its response to
+    /// transport truncation.
+    ///
     /// # Chip-select preflight
     ///
     /// `cs_pin` is checked against the device-reported GPIO count *before*
@@ -927,8 +1010,8 @@ impl PicoDeGallo {
     /// read locally from the clone-shared cache and no extra round-trip
     /// occurs.
     ///
-    /// The order is: obtain the bound; zero count is
-    /// [`SpiBatchCallError::NoGpios`]; `cs_pin >= bound` is
+    /// The order is: refuse an undeliverable response; obtain the bound;
+    /// zero count is [`SpiBatchCallError::NoGpios`]; `cs_pin >= bound` is
     /// [`SpiBatchCallError::InvalidCsPin`]; only then encode and send
     /// exactly one `spi/batch` RPC. A local refusal transmits nothing and
     /// never fabricates a failed-operation index. This is defence in depth
@@ -947,6 +1030,7 @@ impl PicoDeGallo {
     /// with [`SpiBatchCallError::Comms`]; the client never rebinds itself
     /// to a different board. A freshly constructed handle starts cold.
     pub async fn spi_batch(&self, cs_pin: u8, ops: &[SpiBatchOp<'_>]) -> Result<Vec<u8>, SpiBatchCallError> {
+        check_spi_batch_ops(ops).map_err(SpiBatchCallError::Endpoint)?;
         let num_gpios = self.num_gpios().await.map_err(SpiBatchCallError::DeviceInfo)?;
         classify_cs(cs_pin, num_gpios)?;
 
@@ -2998,6 +3082,207 @@ mod tests {
         assert_eq!(script.count("i2c/batch"), 1, "a valid batch must still be sent");
     }
 
+    // --- Aggregate batch-read ceiling (issue #179) ---
+    //
+    // A batch whose reads total more than `MAX_RESPONSE_PAYLOAD` used to be
+    // accepted, executed on the bus, and only then lose its response to
+    // transport truncation. The caller saw `DeserializeUnexpectedEnd`, which
+    // reads like a comms fault and invites a retry that repeats every write.
+    //
+    // As with the zero-length guards above, the firmware refuses this too,
+    // so the `count(...) == 0` assertions are the load-bearing ones: they
+    // are what proves the refusal is local and costs no round-trip.
+
+    #[tokio::test]
+    async fn i2c_batch_read_total_at_the_ceiling_reaches_the_wire() {
+        // Positive control. Without it, a guard that refused *every* batch
+        // would pass the refusal tests below.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![I2cBatchOp::Read {
+            len: MAX_RESPONSE_PAYLOAD as u16,
+        }];
+        let _ = pg.i2c_batch(0x48, &ops).await;
+        assert_eq!(
+            script.count("i2c/batch"),
+            1,
+            "a batch reading exactly the ceiling is deliverable and must be sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn i2c_batch_read_total_above_the_ceiling_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![I2cBatchOp::Read {
+            len: MAX_RESPONSE_PAYLOAD as u16 + 1,
+        }];
+        match pg.i2c_batch(0x48, &ops).await {
+            Err(PicoDeGalloError::Endpoint(I2cBatchError {
+                failed_op,
+                kind: I2cError::BufferTooLong,
+            })) => assert_eq!(
+                failed_op, 0,
+                "an aggregate overflow is not attributable to one operation"
+            ),
+            other => panic!("expected Endpoint(I2cBatchError{{BufferTooLong}}), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/batch"), 0, "a local refusal must transmit nothing");
+    }
+
+    #[tokio::test]
+    async fn i2c_batch_read_ceiling_is_aggregate_not_per_operation() {
+        // Two individually legal reads that together exceed the ceiling.
+        // A per-operation check would wave this through.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let half = MAX_RESPONSE_PAYLOAD as u16 / 2;
+        let ops = vec![
+            I2cBatchOp::Read { len: half },
+            I2cBatchOp::Read {
+                len: MAX_RESPONSE_PAYLOAD as u16 + 1 - half,
+            },
+        ];
+        match pg.i2c_batch(0x48, &ops).await {
+            Err(PicoDeGalloError::Endpoint(I2cBatchError {
+                failed_op: 0,
+                kind: I2cError::BufferTooLong,
+            })) => {}
+            other => panic!("expected Endpoint(I2cBatchError{{BufferTooLong}}), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn i2c_batch_writes_do_not_count_towards_the_read_ceiling() {
+        // Only Read data comes back, so a large write must not trip the
+        // response guard. Getting this wrong would break gather writes.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let payload = vec![0xA5u8; MAX_RESPONSE_PAYLOAD];
+        let ops = vec![
+            I2cBatchOp::Write { data: &payload },
+            I2cBatchOp::Read {
+                len: MAX_RESPONSE_PAYLOAD as u16,
+            },
+        ];
+        let _ = pg.i2c_batch(0x48, &ops).await;
+        assert_eq!(script.count("i2c/batch"), 1);
+    }
+
+    #[tokio::test]
+    async fn i2c_batch_zero_length_write_outranks_an_oversized_read() {
+        // Both guards fire; the firmware walks the operations in order and
+        // reports the zero-length write with its exact index, checking the
+        // aggregate only after the walk. The host must agree, or the same
+        // batch reports two different errors depending on which side refused
+        // it.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![
+            I2cBatchOp::Read {
+                len: MAX_RESPONSE_PAYLOAD as u16 + 1,
+            },
+            I2cBatchOp::Write { data: &[] },
+        ];
+        match pg.i2c_batch(0x48, &ops).await {
+            Err(PicoDeGalloError::Endpoint(I2cBatchError {
+                failed_op: 1,
+                kind: I2cError::ZeroLengthWrite,
+            })) => {}
+            other => panic!("expected Endpoint(I2cBatchError{{ZeroLengthWrite}}) at op 1, got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_read_total_at_the_ceiling_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::DeviceInfo(good_info(4)), Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![SpiBatchOp::Read {
+            len: MAX_RESPONSE_PAYLOAD as u16,
+        }];
+        let _ = pg.spi_batch(0, &ops).await;
+        assert_eq!(
+            script.count("spi/batch"),
+            1,
+            "a batch reading exactly the ceiling is deliverable and must be sent"
+        );
+    }
+
+    #[tokio::test]
+    async fn spi_batch_read_total_above_the_ceiling_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![SpiBatchOp::Read {
+            len: MAX_RESPONSE_PAYLOAD as u16 + 1,
+        }];
+        match pg.spi_batch(0, &ops).await {
+            Err(SpiBatchCallError::Endpoint(SpiBatchError {
+                failed_op,
+                kind: SpiError::BufferTooLong,
+            })) => assert_eq!(
+                failed_op, 0,
+                "an aggregate overflow is not attributable to one operation"
+            ),
+            other => panic!("expected Endpoint(SpiBatchError{{BufferTooLong}}), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/batch"), 0, "a local refusal must transmit nothing");
+        assert_eq!(
+            script.count("device/info"),
+            0,
+            "the read ceiling needs no device metadata, so it must be checked \
+             before the chip-select preflight spends a round-trip"
+        );
+    }
+
+    #[tokio::test]
+    async fn spi_batch_counts_transfer_towards_the_read_ceiling() {
+        // `Transfer` returns as many bytes as it sends, so it consumes the
+        // response budget exactly like `Read`. `Write` and `DelayNs` do not.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let payload = vec![0xA5u8; MAX_RESPONSE_PAYLOAD + 1];
+        let ops = vec![SpiBatchOp::Transfer { data: &payload }];
+        match pg.spi_batch(0, &ops).await {
+            Err(SpiBatchCallError::Endpoint(SpiBatchError {
+                failed_op: 0,
+                kind: SpiError::BufferTooLong,
+            })) => {}
+            other => panic!("expected Endpoint(SpiBatchError{{BufferTooLong}}), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/batch"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_write_and_delay_do_not_count_towards_the_read_ceiling() {
+        let (pg, script) = scripted(vec![Reply::DeviceInfo(good_info(4)), Reply::CloseWire], TEST_TIMEOUT);
+        let payload = vec![0xA5u8; MAX_RESPONSE_PAYLOAD];
+        let ops = vec![
+            SpiBatchOp::Write { data: &payload },
+            SpiBatchOp::DelayNs { ns: 1_000 },
+            SpiBatchOp::Read {
+                len: MAX_RESPONSE_PAYLOAD as u16,
+            },
+        ];
+        let _ = pg.spi_batch(0, &ops).await;
+        assert_eq!(script.count("spi/batch"), 1);
+    }
+
+    #[tokio::test]
+    async fn spi_batch_read_ceiling_outranks_an_invalid_chip_select() {
+        // The firmware walks and bounds the operations before it looks at
+        // `cs_pin`, so a batch that is wrong in both ways must report
+        // `BufferTooLong`, not `InvalidCsPin`. Checking locally also means
+        // no `device/info` round-trip is spent on a batch that can never
+        // work.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let ops = vec![SpiBatchOp::Read {
+            len: MAX_RESPONSE_PAYLOAD as u16 + 1,
+        }];
+        match pg.spi_batch(200, &ops).await {
+            Err(SpiBatchCallError::Endpoint(SpiBatchError {
+                failed_op: 0,
+                kind: SpiError::BufferTooLong,
+            })) => {}
+            other => panic!("expected Endpoint(SpiBatchError{{BufferTooLong}}), got {other:?}"),
+        }
+        assert_eq!(script.count("device/info"), 0);
+        assert_eq!(script.count("spi/batch"), 0);
+    }
+
     #[tokio::test]
     async fn i2c_write_read_still_accepts_empty_contents() {
         // `i2c/write-read` with an empty payload is legal and must stay that
@@ -3015,8 +3300,8 @@ mod tests {
     }
 }
 
-/// Hardware-in-the-loop checks for the zero-length I2C write guards
-/// (issue #136).
+/// Hardware-in-the-loop checks for the batch guards: the zero-length I2C
+/// write (issue #136) and the aggregate batch-read ceiling (issue #179).
 ///
 /// **Ignored by default**: these need a board attached, so CI — which has
 /// none — must not run them. Run them explicitly:
@@ -3030,32 +3315,41 @@ mod tests {
 /// - One Pico de Gallo attached. Set `GALLO_TEST_SERIAL` to pick a
 ///   specific board; with exactly one attached it may be omitted.
 /// - An I2C target that tolerates a pointer-register write at
-///   `GALLO_TEST_I2C_ADDR` (default `0x48`, a TMP102). Only
-///   [`empty_batch_write_never_reaches_the_bus`] needs it; the others
-///   need any responding address.
+///   `GALLO_TEST_I2C_ADDR` (default `0x48`, a TMP102). Needed by
+///   [`empty_batch_write_never_reaches_the_bus`],
+///   [`i2c_batch_at_the_response_ceiling_still_returns_data`] and
+///   [`oversized_i2c_batch_never_reaches_the_bus`]; the rest need any
+///   responding address.
+/// - GPIO 0 free to be driven. [`oversized_spi_batch_never_moves_chip_select`]
+///   uses it as a chip-select witness and leaves it an output, low.
 ///
 /// # Why these exist on top of the unit tests
 ///
 /// The unit tests prove the guards refuse locally and transmit nothing,
 /// against a scripted transport. They cannot prove the guards left real
-/// bus behaviour alone. These do: a positive control that a normal write
-/// still works, the `write-read` path that is legal-but-empty, and a
-/// pointer-register witness showing a refused batch never drove its
-/// leading operation onto the bus.
+/// bus behaviour alone. These do: positive controls that a normal write
+/// and a maximal deliverable batch still work, the `write-read` path that
+/// is legal-but-empty, a pointer-register witness showing a refused batch
+/// never drove its leading operation onto the bus, and a chip-select
+/// witness showing a refused SPI batch never asserted CS.
 ///
 /// # What these cannot prove
 ///
-/// They cannot show the refusal was *local*. Firmware has refused an
-/// empty payload since #133 and this guard deliberately returns the
-/// identical error value, so removing the host guard would leave every
-/// assertion here still passing — only slower. Locality is proven by the
-/// `count(...) == 0` assertions in the unit tests, and nowhere else.
+/// They cannot show the refusal was *local*. Firmware refuses both an
+/// empty payload (since #133) and an undeliverable read total (since
+/// #179), and these guards deliberately return the identical error value,
+/// so removing the host guard would leave every assertion here still
+/// passing — only slower. Locality is proven by the `count(...) == 0`
+/// assertions in the unit tests, and nowhere else. Proving the *firmware*
+/// guard specifically requires a host binary built without the guard; see
+/// the A/B run recorded in AGENTS.md §13.17.
 ///
-/// A useful bench control, since three of these drive the bus: point
-/// `GALLO_TEST_I2C_ADDR` at an unpopulated address and they must fail
-/// with `NoAcknowledge`. Only
-/// [`empty_write_is_refused_and_the_device_stays_responsive`] should
-/// still pass, because its guard fires before any addressing happens.
+/// A useful bench control for the I2C half, since most of those drive the
+/// bus: point `GALLO_TEST_I2C_ADDR` at an unpopulated address and they
+/// must fail with `NoAcknowledge`. Only
+/// [`empty_write_is_refused_and_the_device_stays_responsive`] should still
+/// pass, because its guard fires before any addressing happens. The two
+/// SPI tests touch no I2C target and are unaffected.
 #[cfg(test)]
 mod hardware {
     use super::*;
@@ -3180,5 +3474,154 @@ mod hardware {
             .await
             .expect("empty write-read must still work");
         assert_eq!(got.len(), 2);
+    }
+
+    // --- Aggregate batch-read ceiling (issue #179) ---
+    //
+    // These pin the boundary and boundary+1 on real hardware, and prove the
+    // refusal happens before the bus moves. The witnesses are the ones the
+    // repo has used before: a TMP102 pointer register for I2C (as in #135
+    // and #160), and the chip-select pin's own level for SPI.
+    //
+    // # What these cannot prove
+    //
+    // They cannot show which side refused. `pico-de-gallo-lib` and the
+    // firmware return the identical error value on purpose, so deleting the
+    // host guard leaves every assertion here passing. Locality is proven by
+    // the `count(...) == 0` assertions in the unit tests above. Proving the
+    // *firmware* guard specifically needs a host built without the guard —
+    // the A/B run recorded in AGENTS.md §13.17 used a pre-fix `gallo`
+    // binary against post-fix firmware for exactly that.
+
+    /// The registers used as an I2C witness.
+    ///
+    /// TLOW and THIGH hold stable, distinct power-on values (`0x4B00` and
+    /// `0x5000` on a TMP102), unlike the temperature register, which
+    /// changes between reads and would make an equality assertion flaky.
+    const TMP102_TLOW: u8 = 0x02;
+    const TMP102_THIGH: u8 = 0x03;
+
+    #[tokio::test]
+    #[ignore = "requires an attached board and a TMP102-like target; see module docs"]
+    async fn i2c_batch_at_the_response_ceiling_still_returns_data() {
+        // Positive control for the refusal test below: the largest
+        // deliverable batch must still run, return every byte, and have its
+        // leading write take effect.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+        let a = addr();
+
+        let ops = vec![
+            I2cBatchOp::Write { data: &[TMP102_TLOW] },
+            I2cBatchOp::Read {
+                len: MAX_RESPONSE_PAYLOAD as u16,
+            },
+        ];
+        let got = pg
+            .i2c_batch(a, &ops)
+            .await
+            .expect("a batch reading exactly the ceiling must still be delivered");
+        assert_eq!(got.len(), MAX_RESPONSE_PAYLOAD, "the whole response must arrive");
+
+        let after = pg.i2c_read(a, 1).await.expect("witness read");
+        assert_eq!(
+            after[0], 0x4B,
+            "the accepted batch's leading write must have selected TLOW"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board and a TMP102-like target; see module docs"]
+    async fn oversized_i2c_batch_never_reaches_the_bus() {
+        // The point of #179. Before the fix this batch executed in full --
+        // the pointer moved to THIGH -- and only then lost its response to
+        // transport truncation, so the caller saw
+        // `Comms(Postcard(DeserializeUnexpectedEnd))` with no hint that the
+        // device had already changed. Measured that way on board
+        // 49742081C885AC69; see AGENTS.md §13.17.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+        let a = addr();
+
+        pg.i2c_write(a, &[TMP102_TLOW]).await.expect("seed pointer to TLOW");
+        let before = pg.i2c_read(a, 2).await.expect("baseline read");
+
+        let ops = vec![
+            I2cBatchOp::Write { data: &[TMP102_THIGH] },
+            I2cBatchOp::Read {
+                len: MAX_RESPONSE_PAYLOAD as u16 + 1,
+            },
+        ];
+        match pg.i2c_batch(a, &ops).await {
+            Err(PicoDeGalloError::Endpoint(I2cBatchError {
+                failed_op,
+                kind: I2cError::BufferTooLong,
+            })) => assert_eq!(failed_op, 0, "an aggregate overflow names no single operation"),
+            other => panic!("expected Endpoint(I2cBatchError{{BufferTooLong}}), got {other:?}"),
+        }
+
+        let after = pg.i2c_read(a, 2).await.expect("witness read");
+        assert_eq!(
+            before, after,
+            "the refused batch moved the pointer register, so its leading write reached the bus"
+        );
+
+        pg.i2c_scan(false)
+            .await
+            .expect("device unresponsive after a refused oversized batch");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board; see module docs"]
+    async fn spi_batch_at_the_response_ceiling_still_returns_data() {
+        // Positive control. Needs no SPI target: with MISO idle the bytes
+        // are meaningless, but their count is the property under test.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+
+        let ops = vec![SpiBatchOp::Read {
+            len: MAX_RESPONSE_PAYLOAD as u16,
+        }];
+        let got = pg
+            .spi_batch(0, &ops)
+            .await
+            .expect("a batch reading exactly the ceiling must still be delivered");
+        assert_eq!(got.len(), MAX_RESPONSE_PAYLOAD);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board; see module docs"]
+    async fn oversized_spi_batch_never_moves_chip_select() {
+        // The SPI half of #179. `spi_batch_handler` configures the
+        // chip-select as an output, drives it low, runs the operations, then
+        // drives it high again -- so the pin's level after the call is a
+        // witness for whether the transaction ran at all. Before the fix,
+        // driving GPIO 0 low and then issuing this batch left it high.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+
+        pg.gpio_put(0, GpioState::Low).await.expect("drive the CS pin low");
+        assert_eq!(
+            pg.gpio_get(0).await.expect("baseline CS read"),
+            GpioState::Low,
+            "the witness must start low, or the assertion below proves nothing"
+        );
+
+        let ops = vec![SpiBatchOp::Read {
+            len: MAX_RESPONSE_PAYLOAD as u16 + 1,
+        }];
+        match pg.spi_batch(0, &ops).await {
+            Err(SpiBatchCallError::Endpoint(SpiBatchError {
+                failed_op,
+                kind: SpiError::BufferTooLong,
+            })) => assert_eq!(failed_op, 0, "an aggregate overflow names no single operation"),
+            other => panic!("expected Endpoint(SpiBatchError{{BufferTooLong}}), got {other:?}"),
+        }
+
+        assert_eq!(
+            pg.gpio_get(0).await.expect("witness CS read"),
+            GpioState::Low,
+            "the refused batch deasserted chip-select, so the transaction ran"
+        );
     }
 }
