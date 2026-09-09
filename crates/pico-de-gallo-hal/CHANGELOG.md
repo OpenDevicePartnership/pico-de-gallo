@@ -9,6 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `UartHalError::kind()` now reports
+  `embedded_io::ErrorKind::InvalidInput` for `UartError::BufferTooLong`
+  instead of `Other`. Part of #158.
+
+  `InvalidInput` is documented upstream as "A parameter was incorrect",
+  which accurately describes a count or payload above the applicable
+  ceiling. `I2cHalError::kind()` and `SpiHalError::kind()` deliberately keep
+  reporting `Other`: `embedded_hal::i2c::ErrorKind` offers only `Bus`,
+  `ArbitrationLoss`, `NoAcknowledge`, `Overrun`, and `Other`, while
+  `embedded_hal::spi::ErrorKind` offers only `Overrun`, `ModeFault`,
+  `FrameFormat`, `ChipSelectFault`, and `Other`. None describes an oversized
+  argument, and `Overrun` would falsely imply that a transfer occurred.
+  Tests pin all three mappings.
+
 - **Breaking:** all eight `*HalError` enums gained a `Timeout(Duration)`
   variant, carrying through the new `PicoDeGalloError::Timeout` from
   `pico-de-gallo-lib`. Refs #178.

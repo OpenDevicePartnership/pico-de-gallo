@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `GALLO_MAX_RESPONSE_PAYLOAD` (1014), mirroring
+  `pico_de_gallo_internal::MAX_RESPONSE_PAYLOAD` and emitted into
+  `pico_de_gallo.h` as a `#define`. Part of #158.
+
+  C callers that sized a read, or a duplex `gallo_spi_transfer`, against
+  `GALLO_MAX_TRANSFER_SIZE` could construct a request whose response the host
+  transport could not carry. The existing `GALLO_MAX_TRANSFER_SIZE` comment
+  now states explicitly that it does not bound device-to-host responses.
+
 - `Status::CallTimeout` (-76): the device did not answer an RPC within its
   bound. Closes #178 on the C surface.
 
@@ -21,6 +30,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `switch ((enum Status)x)` will fail to build until they add a case. That
   is intended: a silent fallthrough is how a new status becomes a wrong
   `errno`.
+
+### Changed
+
+- **Behaviour change for C consumers:** the six size-checked entry points —
+  `gallo_i2c_read`, `gallo_i2c_write`, `gallo_i2c_write_read`,
+  `gallo_spi_read`, `gallo_spi_write`, and `gallo_spi_transfer` — now check
+  the ceiling appropriate to the direction of their bytes and return
+  `Status::BufferTooLong` when it is exceeded. Part of #158.
+
+  Previously they returned `Status::InvalidArgument` only above `u16::MAX`
+  and enforced no smaller maximum. No `Status` value was added: those values
+  are stable C ABI, and adding one would fall through the exhaustive
+  `switch ((enum Status)x)` consumers are instructed to write (AGENTS.md
+  section 8). Because both direction-specific ceilings are far below
+  `u16::MAX`, the subsequent `usize`-to-`u16` narrowing is now provably
+  lossless; a `const` assertion pins that invariant.
 
 ### Fixed
 

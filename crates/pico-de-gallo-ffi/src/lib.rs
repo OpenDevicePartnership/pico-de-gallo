@@ -283,13 +283,39 @@ pub enum Status {
 
 /// Maximum number of bytes the firmware will move in a single transfer.
 ///
-/// Requests larger than this are rejected with [`Status::BufferTooLong`].
-/// Applies per direction: a write-then-read may carry up to this many
-/// bytes in each direction.
+/// Bounds the payload a caller **sends**: the buffers of
+/// [`gallo_i2c_write`], [`gallo_spi_write`], [`gallo_uart_write`],
+/// [`gallo_onewire_write`], [`gallo_onewire_write_pullup`], and the write
+/// half of [`gallo_i2c_write_read`]. Larger requests are rejected with
+/// [`Status::BufferTooLong`] before any bus activity.
 ///
-/// Mirrors `pico_de_gallo_internal::MAX_TRANSFER_SIZE` so C callers can
-/// size their buffers from the same limit the firmware enforces.
+/// **This is not the bound on data coming back.** For anything the device
+/// must send you, use [`GALLO_MAX_RESPONSE_PAYLOAD`], which is roughly four
+/// times smaller. Sizing a read — or a duplex [`gallo_spi_transfer`] —
+/// against this constant builds a request that cannot be answered.
+///
+/// Mirrors `pico_de_gallo_internal::MAX_TRANSFER_SIZE`.
 pub const GALLO_MAX_TRANSFER_SIZE: usize = 4096;
+
+/// Maximum number of bytes a single response can carry back to the host.
+///
+/// Bounds any length the caller asks the device to **return**: the `len` of
+/// [`gallo_i2c_read`], [`gallo_spi_read`], [`gallo_onewire_read`], the
+/// `count` of [`gallo_uart_read`], the read half of
+/// [`gallo_i2c_write_read`], the aggregate of a batch's returning
+/// operations, and — because it is full duplex — the whole `len` of
+/// [`gallo_spi_transfer`]. Larger requests are rejected with
+/// [`Status::BufferTooLong`] before any bus activity.
+///
+/// This is a property of the **host** USB transport, not of the firmware:
+/// a response frame longer than the inbound transfer buffer is truncated in
+/// transit, and the caller would otherwise see a deserialization failure
+/// that names the transport rather than the argument at fault. See
+/// `pico_de_gallo_internal::MAX_RESPONSE_PAYLOAD` for the byte-by-byte
+/// derivation, and issues #158 and #179.
+///
+/// Mirrors `pico_de_gallo_internal::MAX_RESPONSE_PAYLOAD`.
+pub const GALLO_MAX_RESPONSE_PAYLOAD: usize = 1014;
 
 /// Maximum number of operations in a single [`gallo_i2c_batch`] or
 /// [`gallo_spi_batch`] call.
@@ -325,6 +351,13 @@ pub const GALLO_NUM_GPIOS: usize = 4;
 pub const GALLO_BUILD_ID_LEN: usize = 65;
 
 const _: () = assert!(GALLO_MAX_TRANSFER_SIZE == lib::MAX_TRANSFER_SIZE);
+const _: () = assert!(GALLO_MAX_RESPONSE_PAYLOAD == lib::MAX_RESPONSE_PAYLOAD);
+// Every `usize` length parameter is narrowed to `u16` before reaching the
+// library. Both ceilings sit far below `u16::MAX`, so refusing above them
+// makes that narrowing provably lossless and removes the need for a
+// separate truncation guard.
+const _: () = assert!(GALLO_MAX_TRANSFER_SIZE <= u16::MAX as usize);
+const _: () = assert!(GALLO_MAX_RESPONSE_PAYLOAD < GALLO_MAX_TRANSFER_SIZE);
 const _: () = assert!(GALLO_MAX_BATCH_OPS == lib::MAX_BATCH_OPS);
 const _: () = assert!(GALLO_NUM_GPIOS == lib::NUM_GPIOS);
 const _: () = assert!(GALLO_BUILD_ID_LEN == lib::BUILD_ID_CAPACITY + 1);
@@ -818,9 +851,11 @@ pub unsafe extern "C" fn gallo_i2c_read(
         return Status::InvalidArgument;
     }
 
-    if len > u16::MAX.into() {
-        eprintln!("Buffer is too large");
-        return Status::InvalidArgument;
+    if len > GALLO_MAX_RESPONSE_PAYLOAD {
+        eprintln!(
+            "Read count {len} exceeds the deliverable response ceiling {GALLO_MAX_RESPONSE_PAYLOAD}"
+        );
+        return Status::BufferTooLong;
     }
 
     // Safety: caller must ensure that `gallo` is a valid opaque
@@ -875,9 +910,9 @@ pub unsafe extern "C" fn gallo_i2c_write(
         return Status::InvalidArgument;
     }
 
-    if len > u16::MAX.into() {
-        eprintln!("Buffer is too large");
-        return Status::InvalidArgument;
+    if len > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {len} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
     }
 
     // Refuse an empty payload before touching the device (issue #136).
@@ -933,9 +968,16 @@ pub unsafe extern "C" fn gallo_i2c_write_read(
         return Status::InvalidArgument;
     }
 
-    if txlen > u16::MAX.into() || rxlen > u16::MAX.into() {
-        eprintln!("Buffer is too large");
-        return Status::InvalidArgument;
+    if txlen > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {txlen} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
+    }
+
+    if rxlen > GALLO_MAX_RESPONSE_PAYLOAD {
+        eprintln!(
+            "Read count {rxlen} exceeds the deliverable response ceiling {GALLO_MAX_RESPONSE_PAYLOAD}"
+        );
+        return Status::BufferTooLong;
     }
 
     // Safety: caller must ensure that `gallo` is a valid opaque
@@ -1048,9 +1090,11 @@ pub unsafe extern "C" fn gallo_spi_read(
         return Status::InvalidArgument;
     }
 
-    if len > u16::MAX.into() {
-        eprintln!("Buffer is too large");
-        return Status::InvalidArgument;
+    if len > GALLO_MAX_RESPONSE_PAYLOAD {
+        eprintln!(
+            "Read count {len} exceeds the deliverable response ceiling {GALLO_MAX_RESPONSE_PAYLOAD}"
+        );
+        return Status::BufferTooLong;
     }
 
     // Safety: caller must ensure that `gallo` is a valid opaque
@@ -1104,9 +1148,9 @@ pub unsafe extern "C" fn gallo_spi_write(
         return Status::InvalidArgument;
     }
 
-    if len > u16::MAX.into() {
-        eprintln!("Buffer is too large");
-        return Status::InvalidArgument;
+    if len > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {len} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
     }
 
     // Safety: caller must ensure that `gallo` is a valid opaque
@@ -1161,7 +1205,11 @@ pub unsafe extern "C" fn gallo_spi_flush(gallo: *const PicoDeGallo) -> Status {
 /// returns a fresh response buffer that is then copied into `read_buf`).
 ///
 /// Returns [`Status::Ok`] on success. Returns [`Status::BufferTooLong`] if
-/// `len` exceeds the firmware transfer limit ([`lib::MAX_TRANSFER_SIZE`]),
+/// `len` exceeds [`GALLO_MAX_RESPONSE_PAYLOAD`] — **not**
+/// [`GALLO_MAX_TRANSFER_SIZE`]. This transfer is full duplex, so `len` is
+/// simultaneously the payload sent and the payload returned, and the tighter
+/// of the two ceilings binds. [`gallo_spi_write`], which asks for nothing
+/// back, accepts four times as much. Also returns
 /// [`Status::SpiTransferFailed`] if the firmware reports a generic SPI
 /// error, or [`Status::CommsFailed`] on a USB error.
 ///
@@ -1187,9 +1235,13 @@ pub unsafe extern "C" fn gallo_spi_transfer(
         return Status::InvalidArgument;
     }
 
-    if len > u16::MAX.into() {
-        eprintln!("Buffer is too large");
-        return Status::InvalidArgument;
+    // Full duplex: `len` is simultaneously the payload sent and the
+    // payload returned, so the tighter response ceiling binds.
+    if len > GALLO_MAX_RESPONSE_PAYLOAD {
+        eprintln!(
+            "Duplex transfer {len} exceeds the deliverable response ceiling {GALLO_MAX_RESPONSE_PAYLOAD}"
+        );
+        return Status::BufferTooLong;
     }
 
     // Safety: caller must ensure that `gallo` is a valid opaque
@@ -2471,6 +2523,12 @@ pub unsafe extern "C" fn gallo_uart_read(
         return Status::InvalidArgument;
     }
 
+    if usize::from(count) > GALLO_MAX_RESPONSE_PAYLOAD {
+        eprintln!(
+            "Read count {count} exceeds the deliverable response ceiling {GALLO_MAX_RESPONSE_PAYLOAD}"
+        );
+        return Status::BufferTooLong;
+    }
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
     let gallo = unsafe { &*gallo };
@@ -2521,6 +2579,10 @@ pub unsafe extern "C" fn gallo_uart_write(
         return Status::InvalidArgument;
     }
 
+    if usize::from(len) > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {len} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
+    }
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
     let gallo = unsafe { &*gallo };
@@ -2992,6 +3054,12 @@ pub unsafe extern "C" fn gallo_onewire_read(
         return Status::InvalidArgument;
     }
 
+    if usize::from(len) > GALLO_MAX_RESPONSE_PAYLOAD {
+        eprintln!(
+            "Read count {len} exceeds the deliverable response ceiling {GALLO_MAX_RESPONSE_PAYLOAD}"
+        );
+        return Status::BufferTooLong;
+    }
     let gallo = unsafe { &*gallo };
     match block_on(gallo.0.onewire_read(len)) {
         Ok(data) => {
@@ -3027,6 +3095,10 @@ pub unsafe extern "C" fn gallo_onewire_write(
         return Status::InvalidArgument;
     }
 
+    if usize::from(len) > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {len} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
+    }
     let gallo = unsafe { &*gallo };
     let data = if len > 0 {
         unsafe { std::slice::from_raw_parts(buf, len as usize) }
@@ -3065,6 +3137,10 @@ pub unsafe extern "C" fn gallo_onewire_write_pullup(
         return Status::InvalidArgument;
     }
 
+    if usize::from(len) > GALLO_MAX_TRANSFER_SIZE {
+        eprintln!("Write payload {len} exceeds the transfer limit {GALLO_MAX_TRANSFER_SIZE}");
+        return Status::BufferTooLong;
+    }
     let gallo = unsafe { &*gallo };
     let data = if len > 0 {
         unsafe { std::slice::from_raw_parts(buf, len as usize) }
@@ -4159,12 +4235,11 @@ mod tests {
     }
 
     #[test]
-    fn spi_transfer_oversized_returns_invalid_argument() {
+    fn spi_transfer_oversized_returns_buffer_too_long() {
         let sentinel = 0xDEAD_BEEFusize as *const PicoDeGallo;
-        // u16::MAX + 1 exceeds the firmware transfer limit (the check is
-        // `> u16::MAX`). Buffers may be NULL because the size check fires
-        // before the buffer check — but here we keep them non-NULL so the
-        // test isolates the size guard.
+        // The size guard must fire before the device pointer is
+        // dereferenced, which is what makes a bogus sentinel safe here and
+        // what lets these ceilings be tested with no board attached.
         let tx = [0u8; 1];
         let mut rx = [0u8; 1];
         let status = unsafe {
@@ -4175,7 +4250,223 @@ mod tests {
                 u16::MAX as usize + 1,
             )
         };
-        assert_eq!(status, Status::InvalidArgument);
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    // ----------------------------- Payload ceilings (issue #158) -----------------------------
+    //
+    // Every one of these passes a deliberately invalid device pointer. The
+    // assertion is therefore twofold: the returned `Status`, and — implicitly,
+    // by not segfaulting — that the guard runs before the dereference.
+    //
+    // The direction of the bytes picks the ceiling, not the endpoint:
+    // a length the device must send back is bounded by
+    // `GALLO_MAX_RESPONSE_PAYLOAD`, a payload the caller sends by
+    // `GALLO_MAX_TRANSFER_SIZE`.
+
+    fn bad_device() -> *const PicoDeGallo {
+        0xDEAD_BEEFusize as *const PicoDeGallo
+    }
+
+    #[test]
+    fn i2c_read_above_the_response_ceiling_returns_buffer_too_long() {
+        let mut buf = [0u8; 1];
+        let status = unsafe {
+            gallo_i2c_read(
+                bad_device(),
+                0x48,
+                buf.as_mut_ptr(),
+                GALLO_MAX_RESPONSE_PAYLOAD + 1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn spi_read_above_the_response_ceiling_returns_buffer_too_long() {
+        let mut buf = [0u8; 1];
+        let status = unsafe {
+            gallo_spi_read(
+                bad_device(),
+                buf.as_mut_ptr(),
+                GALLO_MAX_RESPONSE_PAYLOAD + 1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn i2c_write_read_read_half_uses_the_response_ceiling() {
+        let tx = [0u8; 1];
+        let mut rx = [0u8; 1];
+        let status = unsafe {
+            gallo_i2c_write_read(
+                bad_device(),
+                0x48,
+                tx.as_ptr(),
+                1,
+                rx.as_mut_ptr(),
+                GALLO_MAX_RESPONSE_PAYLOAD + 1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn i2c_write_read_write_half_uses_the_transfer_ceiling() {
+        // The looser ceiling, and the point of testing both halves: a write
+        // of `GALLO_MAX_RESPONSE_PAYLOAD + 1` must NOT be refused here, so
+        // the boundary that fires is the transfer one.
+        let tx = [0u8; 1];
+        let mut rx = [0u8; 1];
+        let status = unsafe {
+            gallo_i2c_write_read(
+                bad_device(),
+                0x48,
+                tx.as_ptr(),
+                GALLO_MAX_TRANSFER_SIZE + 1,
+                rx.as_mut_ptr(),
+                1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn i2c_write_above_the_transfer_ceiling_returns_buffer_too_long() {
+        let buf = [0u8; 1];
+        let status = unsafe {
+            gallo_i2c_write(
+                bad_device(),
+                0x48,
+                buf.as_ptr(),
+                GALLO_MAX_TRANSFER_SIZE + 1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn spi_write_above_the_transfer_ceiling_returns_buffer_too_long() {
+        let buf = [0u8; 1];
+        let status =
+            unsafe { gallo_spi_write(bad_device(), buf.as_ptr(), GALLO_MAX_TRANSFER_SIZE + 1) };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn spi_transfer_uses_the_response_ceiling_not_the_transfer_ceiling() {
+        // The asymmetry, at the C boundary. `spi/transfer` is full duplex,
+        // so its single `len` is both the payload sent and the payload
+        // returned, and the tighter ceiling binds. A C caller who sized a
+        // duplex buffer against `GALLO_MAX_TRANSFER_SIZE` — the only
+        // constant the header used to offer — would be building a request
+        // that cannot answer.
+        let tx = [0u8; 1];
+        let mut rx = [0u8; 1];
+        let status = unsafe {
+            gallo_spi_transfer(
+                bad_device(),
+                tx.as_ptr(),
+                rx.as_mut_ptr(),
+                GALLO_MAX_RESPONSE_PAYLOAD + 1,
+            )
+        };
+        assert_eq!(
+            status,
+            Status::BufferTooLong,
+            "a duplex transfer above the response ceiling must be refused \
+             even though it is far below GALLO_MAX_TRANSFER_SIZE"
+        );
+    }
+
+    #[test]
+    fn exported_ceilings_mirror_the_library_constants() {
+        // The `const _` asserts beside the definitions already make drift a
+        // build failure, including the ordering a C caller depends on when
+        // sizing a duplex buffer. This pins the mirroring itself.
+        assert_eq!(GALLO_MAX_RESPONSE_PAYLOAD, lib::MAX_RESPONSE_PAYLOAD);
+        assert_eq!(GALLO_MAX_TRANSFER_SIZE, lib::MAX_TRANSFER_SIZE);
+    }
+
+    // The `u16`-typed entry points cannot truncate, so the library guard
+    // alone would produce the right `Status`. They check locally anyway, so
+    // that every sized entry point refuses *before* dereferencing the opaque
+    // handle rather than only before touching the bus. Without that, the
+    // five below would be the only sized functions whose refusal required a
+    // valid device, which is an asymmetry a C caller cannot see from the
+    // header. Each test passes a deliberately invalid pointer and therefore
+    // asserts the ordering as much as the value.
+
+    #[test]
+    fn uart_read_above_the_response_ceiling_returns_buffer_too_long() {
+        let mut buf = [0u8; 1];
+        let mut out_len: u16 = 0;
+        let status = unsafe {
+            gallo_uart_read(
+                bad_device(),
+                buf.as_mut_ptr(),
+                GALLO_MAX_RESPONSE_PAYLOAD as u16 + 1,
+                10,
+                &mut out_len,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn uart_write_above_the_transfer_ceiling_returns_buffer_too_long() {
+        let buf = [0u8; 1];
+        let status = unsafe {
+            gallo_uart_write(
+                bad_device(),
+                buf.as_ptr(),
+                GALLO_MAX_TRANSFER_SIZE as u16 + 1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn onewire_read_above_the_response_ceiling_returns_buffer_too_long() {
+        let mut buf = [0u8; 1];
+        let mut out_len: u16 = 0;
+        let status = unsafe {
+            gallo_onewire_read(
+                bad_device(),
+                buf.as_mut_ptr(),
+                GALLO_MAX_RESPONSE_PAYLOAD as u16 + 1,
+                &mut out_len,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn onewire_write_above_the_transfer_ceiling_returns_buffer_too_long() {
+        let buf = [0u8; 1];
+        let status = unsafe {
+            gallo_onewire_write(
+                bad_device(),
+                buf.as_ptr(),
+                GALLO_MAX_TRANSFER_SIZE as u16 + 1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
+    }
+
+    #[test]
+    fn onewire_write_pullup_above_the_transfer_ceiling_returns_buffer_too_long() {
+        let buf = [0u8; 1];
+        let status = unsafe {
+            gallo_onewire_write_pullup(
+                bad_device(),
+                buf.as_ptr(),
+                GALLO_MAX_TRANSFER_SIZE as u16 + 1,
+                1,
+            )
+        };
+        assert_eq!(status, Status::BufferTooLong);
     }
 
     // --- gallo_spi_batch (P1-2) ---

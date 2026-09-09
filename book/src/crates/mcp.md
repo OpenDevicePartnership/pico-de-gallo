@@ -317,11 +317,21 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 | `spi_set_config` | Set frequency, phase, and polarity | destructive |
 | `spi_batch` | Atomic multi-step transaction under chip-select | destructive |
 
-> [!WARNING]
-> MCP SPI tools are not protected by the Zephyr driver's 1013-byte containment.
-> A 1015-byte TX-only request reproduced a device-wide firmware-dispatcher
-> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [!NOTE]
+> MCP tools refuse over-ceiling payloads locally, before connecting to a
+> board. Data returned by the device is limited to `MAX_RESPONSE_PAYLOAD`
+> (1014 bytes), while data sent to it is limited to `MAX_TRANSFER_SIZE`
+> (4096 bytes). Full-duplex `spi_transfer` is therefore limited to 1014
+> bytes even though `spi_write` accepts 4096. The refusal is an
+> `invalid_params` error naming the offending size, the limit and the
+> remedy — not the bare `BufferTooLong` a device-side refusal would
+> produce. See
 > [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+>
+> Refusing before connecting is deliberate: `connect` runs
+> `system/reset-subscriptions`, which tears down GPIO subscriptions
+> belonging to *other* host processes, so a mis-sized request must not
+> reach it (issue #104).
 
 `spi_batch` takes `cs` as a `u8` and runs its steps in a fixed order:
 parse every operation payload, connect exactly once, read the GPIO count

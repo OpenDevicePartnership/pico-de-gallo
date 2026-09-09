@@ -51,7 +51,7 @@ that doesn't appear in your header means success.
 | `I2cBusError`              |   −19 | I²C bus error                                            |
 | `I2cArbitrationLoss`       |   −20 | I²C arbitration loss                                     |
 | `I2cOverrun`               |   −21 | I²C data overrun                                         |
-| `BufferTooLong`            |   −22 | Buffer exceeds firmware transfer limit                   |
+| `BufferTooLong`            |   −22 | Argument exceeds its directional payload ceiling         |
 | `I2cAddressOutOfRange`     |   −23 | I²C address out of valid range                           |
 | `GpioInvalidPin`           |   −24 | Invalid GPIO pin number                                  |
 | `CommsFailed`              |   −25 | USB communication failure                                |
@@ -115,6 +115,13 @@ validated metadata fetch and has a far longer bound. The handle stays
 usable, so the call may simply be retried — except after a batch, whose
 fate is unknown (it may have executed fully, partially, or not at all), so
 a blind retry there can repeat side effects.
+
+`BufferTooLong` (−22) is also a host-side refusal. Data returned by the device
+is limited to `GALLO_MAX_RESPONSE_PAYLOAD` (1014 bytes), while data sent to it
+is limited to `GALLO_MAX_TRANSFER_SIZE` (4096 bytes). Full-duplex SPI transfer
+uses the tighter response ceiling. The same status still represents a
+device-side buffer refusal, but an over-ceiling argument is rejected locally
+before transmission. Issue #158 added no new `Status` value.
 
 `SpiInvalidCsPin` (−71) and `SpiNoGpios` (−74) are host-side refusals: the
 chip-select was rejected before anything was transmitted, and no pin was

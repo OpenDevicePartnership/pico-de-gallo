@@ -8,6 +8,48 @@ The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- `PDG_SPI_MAX_BUFFER` is now **1014**, up from 1013, and moved from
+  `drivers/spi/pdg_spi.c` to `drivers/spi/pdg_spi_bottom.h`. Refs #158.
+
+  The old value was measured rather than derived, and was off by one against
+  the real edge. It came from the M5 acceptance run, which probed 1013
+  (worked) and 1015 (hung) but never 1014, and so could not narrow the
+  boundary without stepping into the hang. Issues #179 and #158 closed both
+  gaps: the ceiling is now derived exactly as `1024 - 7 - 1 - 2 = 1014` from
+  postcard-rpc's host inbound transfer buffer, and 1014/1015 were measured
+  directly on `spi/transfer`.
+
+  Every Zephyr SPI operation reaches the device through one full-duplex
+  `gallo_spi_transfer()`, so the binding limit is what a single *response*
+  frame can carry. `pdg_spi_bottom.c` now carries a `_Static_assert` tying
+  the constant to the FFI's `GALLO_MAX_RESPONSE_PAYLOAD`, so drift is a build
+  failure. That is the "one shared contract rather than a constant duplicated
+  per consumer" the old FOLLOW-UP comment asked for; contrary to the
+  expectation recorded there, it needed no wire-format or schema change.
+
+  Three claims attached to the old constant are superseded and are recorded
+  as such rather than deleted: that the 1013/1024 relationship was
+  "SUGGESTIVE ONLY" with "no evidence" for a framing decomposition (there is
+  now, and it is exact); that duplex was unverified above 512 bytes
+  (`spi/transfer` *is* the duplex endpoint and was measured at 1014); and
+  that a 1015-byte transfer wedges the dispatcher device-wide (#158 could not
+  reproduce this on firmware `62dd64e710fd` — a non-reproduction on one
+  build, not proof it never happened).
+
+- `M5_SPI_CEILING` in `tests/pdg_mfd_m5/acceptance` tracks the new value, so
+  its over-ceiling probe is now 1015. The `BUILD_ASSERT` that previously
+  forbade any T5 case from reaching 1015 is retired deliberately, with the
+  reasoning recorded inline: 1015 is refused by `bufset_len_()` with
+  `-EMSGSIZE` before any transport call, which is exactly what T5b and T5c
+  assert, so it cannot reach the wire from this test.
+
+- The module's local checks are no longer the only containment. Issue #158
+  made `pico-de-gallo-lib`, the C FFI, Python, MCP and the `gallo` CLI all
+  refuse over-ceiling payloads locally, so `zephyr/README.md` no longer
+  claims otherwise.
+
 ### Added
 
 - `pdg_common_status_to_errno()` maps the new `CallTimeout` status to

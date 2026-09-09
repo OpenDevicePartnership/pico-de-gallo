@@ -61,38 +61,65 @@
 /*
  * Payload-boundary constants for T5. ONE place to edit when the ceiling moves.
  *
- * M5_SPI_CEILING mirrors PDG_SPI_MAX_BUFFER at zephyr/drivers/spi/pdg_spi.c:226.
- * It is duplicated rather than shared because that constant lives in a .c file
- * with no header, and reaching into driver internals from a test would be
- * worse. Note this is deliberately NOT a self-referential assertion: test
+ * M5_SPI_CEILING mirrors PDG_SPI_MAX_BUFFER at
+ * zephyr/drivers/spi/pdg_spi_bottom.h. It remains duplicated so this acceptance
+ * test checks the driver's externally visible boundary independently rather
+ * than compiling its expectation from the implementation header. Note this is
+ * deliberately NOT a self-referential assertion: test
  * design §9.1 deleted "assert PDG_SPI_MAX_BUFFER == N in the test source" as
  * vacuous, because it only proves a macro equals itself. The value actually
  * compiled into the driver is pinned instead by T5b/T5c's -EMSGSIZE behaviour
  * and by the LOG_WRN the driver emits, which names its own constant.
  *
- * 1013 is MEASURED, not derived: the largest length observed to work on
- * hardware, TX-only. See the comment on PDG_SPI_MAX_BUFFER for what is still
- * unknown, in particular that the DUPLEX ceiling has never been measured.
+ * 1014 is derived from the 1024-byte postcard-rpc host inbound transfer buffer
+ * minus the 7-byte response header, 1-byte Result discriminant and 2-byte
+ * varint length prefix. Issue #158 measured the full-duplex `spi/transfer`
+ * endpoint directly on board 5256657D8A5D7F03: 1014 works and 1015 fails
+ * cleanly. Issue #179 confirmed the boundary on board 49742081C885AC69 and
+ * exported this derived contract to C as GALLO_MAX_RESPONSE_PAYLOAD.
  */
-#define M5_SPI_CEILING 1013U
+#define M5_SPI_CEILING 1014U
 #define M5_SPI_OVER_CEILING (M5_SPI_CEILING + 1U)
 
 /*
- * A duplex length chosen for margin, not coverage: roughly half the measured
- * TX-only ceiling and far from the 1015-byte length that hangs the firmware
- * dispatcher device-wide. Used by T5e (shape check) and as T5d's first
- * fragment. Matches CONFIG_SPI_LARGE_BUFFER_SIZE in ../spi_loopback.conf.
+ * A duplex length retained as this test's chosen shape-check size, not as a
+ * claimed safe ceiling. Issue #158 has since verified duplex at the 1014-byte
+ * ceiling. Used by T5e and as T5d's first fragment. Matches
+ * CONFIG_SPI_LARGE_BUFFER_SIZE in ../spi_loopback.conf.
  */
 #define M5_SPI_DUPLEX_SAFE 512U
 
 BUILD_ASSERT(M5_SPI_DUPLEX_SAFE < M5_SPI_CEILING,
-	     "the duplex shape check must sit below the measured TX-only ceiling");
+	     "the duplex shape check must sit below the derived transfer ceiling");
 BUILD_ASSERT(M5_SPI_OVER_CEILING - M5_SPI_DUPLEX_SAFE < M5_SPI_CEILING,
 	     "T5d's second fragment must itself be under the ceiling, or the test "
 	     "would prove a per-buffer rejection rather than an accumulated one");
-BUILD_ASSERT(M5_SPI_OVER_CEILING < 1015U,
-	     "no T5 case may reach 1015: a 1015-byte transfer never returns and "
-	     "wedges the firmware dispatcher device-wide");
+/*
+ * This assertion used to read `M5_SPI_OVER_CEILING < 1015U`, guarding against
+ * any T5 case reaching 1015 -- the length then believed to wedge the firmware
+ * dispatcher device-wide. Raising the ceiling to 1014 makes the over-ceiling
+ * probe exactly 1015, so that guard could not survive as written. It is
+ * retired deliberately, not inverted by accident, on three grounds:
+ *
+ *   1. 1015 cannot reach the wire from here. It is above PDG_SPI_MAX_BUFFER,
+ *      so bufset_len_() returns -EMSGSIZE before any allocation, lock,
+ *      set-config, chip-select edge or transport call. T5b and T5c are the
+ *      tests that assert exactly that, and the sweep classifies the same
+ *      refusal as M5_PROBE_LOCAL.
+ *   2. Issue #158 could not reproduce the wedge at all on firmware
+ *      62dd64e710fd: the call returned a clean error in 12 ms and the board
+ *      stayed responsive. That is a non-reproduction on one build, not proof
+ *      the wedge never existed.
+ *   3. Issues #157 and #178 landed in between. A genuinely wedged dispatcher
+ *      is now reset by the firmware supervisor in roughly 10.5 s, and every
+ *      host RPC is bounded by a timeout.
+ *
+ * If the local check regresses, ground 1 evaporates and this test becomes the
+ * thing that pokes the hazard. T5b/T5c failing is therefore the signal to
+ * stop, not a nuisance to work around.
+ */
+BUILD_ASSERT(M5_SPI_OVER_CEILING == 1015U,
+	     "T5 must exercise the first length above the derived ceiling");
 
 BUILD_ASSERT(DT_NODE_HAS_STATUS_OKAY(M5_SPI_NODE),
 	     "M5 acceptance image requires pdg_spi0 to be okay");
@@ -276,12 +303,12 @@ static int m5_precheck_configs(void)
  *   - 4096 TX-only          -> -ECOMM (transport)
  *   - 3072 TX + 3072 RX     -> -ECOMM (transport)
  *
- * The asymmetry nobody accounted for is that the packet budget must cover the
- * REQUEST frame and the RESPONSE frame. Every estimate so far, including the
- * firmware's PacketBuffers<MAX_TRANSFER_SIZE + 1024> reasoning, considered one
- * direction only. TX-only and full duplex may therefore have DIFFERENT
- * ceilings, and which one binds is the entire question. So both shapes are
- * swept independently.
+ * This sweep was added when only the request/response asymmetry was known and
+ * TX-only and full-duplex calls were thought potentially to have different
+ * ceilings. Issue #158 established that every Zephyr SPI operation reaches the
+ * same full-duplex `spi/transfer` endpoint, whose response frame binds both
+ * shapes at 1014 bytes. Both shapes remain swept to preserve that historical
+ * comparison.
  *
  * Binary search, not a linear crawl, and EVERY probe is logged with its length
  * and exact errno so the transition point is visible in the log rather than
@@ -490,8 +517,9 @@ static int m5_run_ceiling_sweep(void)
 	m5_sweep_report("TXONLY", tx_ceiling, tx_fail);
 	m5_sweep_report("DUPLEX", duplex_ceiling, duplex_fail);
 
-	/* Full duplex is expected to bind, since its packet budget carries both
-	 * frames. Report which one actually did rather than assuming.
+	/* #158 established that both Zephyr shapes reach one full-duplex endpoint
+	 * and share its response-frame ceiling. Keep reporting both results so a
+	 * future divergence remains visible rather than assuming the contract held.
 	 */
 	printk("M5_SWEEP_BINDING_SHAPE=%s\n",
 	       (duplex_ceiling <= tx_ceiling) ? "DUPLEX" : "TXONLY");
@@ -994,14 +1022,16 @@ static int m5_payload_reject(const char *step, size_t len_a, size_t len_b, int e
 /*
  * T5 -- payload boundary.
  *
- * GOVERNING PRINCIPLE: every case here is either (a) a length MEASURED to work,
- * or (b) a length expected to be rejected LOCALLY with -EMSGSIZE before any bus
- * traffic. No T5 case puts an unmeasured length on the wire. That makes the
- * 1015-byte firmware hang window unreachable by construction rather than by
- * care, and it keeps unmeasured assumptions out of the boundary tests -- which
- * is what two earlier rounds of this milestone got wrong.
+ * GOVERNING PRINCIPLE: every case here is either (a) the derived ceiling,
+ * measured by #158 to work, or (b) a length expected to be rejected LOCALLY
+ * with -EMSGSIZE before any bus traffic. The historical 1015-byte dispatcher
+ * hang was not reproduced by #158 on firmware 62dd64e710fd: it returned a clean
+ * error in 12 ms and the board remained responsive. In the interim, #157 added
+ * a watchdog supervisor for genuine dispatcher wedges and #178 bounded every
+ * host RPC. T5 still rejects 1015 locally as the first over-ceiling length.
  *
- * Consequently there is deliberately NO case at 1015, 1016 or 3072.
+ * Consequently there is deliberately no live transfer above 1014; 1015, 4096
+ * and the accumulated 1015-byte case exercise local rejection.
  */
 static int m5_run_t5(void)
 {
@@ -1014,14 +1044,12 @@ static int m5_run_t5(void)
 	int ret;
 
 	/*
-	 * T5a -- the ceiling case, TX-ONLY BY DELIBERATE CHOICE.
+	 * T5a -- the ceiling case, using Zephyr's TX-only shape.
 	 *
-	 * DO NOT "improve" this into a full-duplex transfer. TX-only is the
-	 * shape that was actually measured on hardware; the duplex ceiling has
-	 * never been measured at any working length, and the only duplex data
-	 * point (3072) fails -ECOMM. Making this duplex would put an unmeasured
-	 * length on the wire, which is exactly what this test set exists to
-	 * avoid. T5e covers the duplex SHAPE separately, at a safe length.
+	 * This shape is retained to cover discard-RX handling. It still reaches
+	 * one full-duplex gallo_spi_transfer(), and #158 measured that endpoint at
+	 * 1014 (success) and 1015 (clean failure). T5e separately checks returned
+	 * duplex data at the fixture's established 512-byte test size.
 	 *
 	 * Load-bearing in the opposite direction from T5b-T5d: a driver that
 	 * rejects EVERYTHING with -EMSGSIZE passes b, c and d and fails here.
@@ -1033,9 +1061,9 @@ static int m5_run_t5(void)
 	 */
 	ret = spi_transceive(m5_spi, &m5_cfg_plain, &tx_ceiling_set, NULL);
 	if (m5_require_errno("T5A_CEILING_TXONLY", ret, 0) != 0) {
-		printk("M5_ACCEPTANCE_FAIL step=T5A reason=measured-ceiling-rejected "
-		       "len=%u note=%u is the largest length measured to work on "
-		       "hardware; a failure here means the ceiling moved\n",
+		printk("M5_ACCEPTANCE_FAIL step=T5A reason=derived-ceiling-rejected "
+		       "len=%u note=%u is the shared response-payload ceiling; "
+		       "a failure here means the contract moved\n",
 		       M5_SPI_CEILING, M5_SPI_CEILING);
 		return -1;
 	}
@@ -1079,13 +1107,12 @@ static int m5_run_t5(void)
 	       M5_SPI_OVER_CEILING - M5_SPI_DUPLEX_SAFE, M5_SPI_OVER_CEILING);
 
 	/*
-	 * T5e -- duplex SHAPE check, NOT a ceiling check.
+	 * T5e -- the fixture's retained duplex shape check, not a boundary test.
 	 *
-	 * Full duplex has never been shown to work at any length: the only
-	 * duplex data point on record is 3072, which fails -ECOMM. This
-	 * establishes that the shape works at all, at a deliberately safe
-	 * length well below the measured TX-only ceiling. It says NOTHING about
-	 * where the duplex ceiling is, and must not be read as if it did.
+	 * This originally supplied the only successful duplex data point, at 512
+	 * bytes. Issue #158 later measured the duplex endpoint directly at the
+	 * boundary: 1014 succeeds and 1015 fails cleanly. Keep 512 here because
+	 * this case checks returned-data shape while T5a/T5b check the boundary.
 	 */
 	memset(m5_big_rx, M5_POISON, M5_SPI_DUPLEX_SAFE);
 	ret = spi_transceive(m5_spi, &m5_cfg_plain, &tx_duplex_set, &rx_duplex_set);
@@ -1096,8 +1123,8 @@ static int m5_run_t5(void)
 		printk("M5_ACCEPTANCE_FAIL step=T5E_DUPLEX_SHAPE reason=echo-mismatch\n");
 		return -1;
 	}
-	printk("M5_T5E_LENGTH=%u shape=full-duplex note=shape-check-only, the duplex "
-	       "ceiling remains unmeasured\n", M5_SPI_DUPLEX_SAFE);
+	printk("M5_T5E_LENGTH=%u shape=full-duplex note=shape-check-only, boundary "
+	       "verified separately by issues #158 and #179\n", M5_SPI_DUPLEX_SAFE);
 
 	printk("M5_T5_PASS\n");
 

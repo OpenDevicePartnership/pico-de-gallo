@@ -221,33 +221,49 @@ per-trigger guards remain necessary.
 
 #### The transfer-size ceiling
 
-`MAX_TRANSFER_SIZE` is a **packet-buffer budget, not usable payload**.
-The buffer must also hold the postcard-rpc header, the length varint
-and COBS framing, and the budget covers the request frame *and* the
-response frame.
+There are **two** ceilings, not one, and which binds depends on the
+direction of the bytes rather than on the endpoint:
 
-Measured on hardware, the largest TX-only `spi/transfer` payload
-observed to work is **1013 bytes**, and 1015 wedges the dispatcher.
-1014 was never tested, so the exact boundary sits in an untested gap.
+| Direction | Constant | Value |
+|---|---|---:|
+| device → host | `MAX_RESPONSE_PAYLOAD` | 1014 |
+| host → device | `MAX_TRANSFER_SIZE` | 4096 |
 
-Not every oversized transfer wedges the device, which is part of what
-makes this hard to reason about: 4096 TX-only and 3072 full duplex
-both fail cleanly with `-ECOMM` at the transport instead. Full duplex
-is documented safe only at 512 bytes or fewer.
+The response ceiling is **derived**, not measured: 1024 bytes of
+postcard-rpc host inbound transfer buffer, less a 7-byte response
+header, the 1-byte postcard `Result` discriminant and a 2-byte varint
+length prefix. It is a property of the *host* transport, which the
+firmware cannot observe. The two budgets are independent — a 1021-byte
+request payload leaves the response ceiling unmoved.
 
-The Zephyr driver caps itself at 1013. **Every other host surface — the
-CLI, `pico-de-gallo-lib`, the HAL, the FFI, Python and MCP — can still
-reach the wedge**, which is
-[#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158).
+`spi/transfer` is the case that makes the distinction matter: it is full
+duplex, so its single argument is both directions at once and the
+tighter ceiling binds. It accepts 1014 bytes where `spi/write`, which
+asks for nothing back, accepts 4096.
 
-This finding previously sat inside a phase describing completed work,
-which buried it. It belongs here until the ceiling is enforced.
+Both are now enforced locally on every host surface — the CLI,
+`pico-de-gallo-lib`, the HAL, the FFI, Python and MCP — and the Zephyr
+driver's `PDG_SPI_MAX_BUFFER` is tied to the exported
+`GALLO_MAX_RESPONSE_PAYLOAD` by a `_Static_assert`
+([#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158),
+[#179](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/179)).
+
+Superseded by the above, and recorded because the history matters: the
+earlier figure was 1013 with the boundary "in an untested gap" because
+1014 had never been probed, full duplex was documented safe only to 512
+bytes, and a 1015-byte TX-only transfer was believed to wedge the
+dispatcher device-wide. #158 could not reproduce that wedge on firmware
+`62dd64e710fd` — a non-reproduction on one build, not proof it never
+happened — after
+[#157](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/157)
+added the watchdog supervisor and
+[#178](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/178)
+bounded every host RPC with a timeout.
 
 #### Open work
 
 | Item                                                       | Issue                                                                     |
 |------------------------------------------------------------|---------------------------------------------------------------------------|
-| Real payload ceiling unenforced on every host surface      | [#158](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/158) |
 | Verify `i2c/batch` repeated START framing on an analyser   | [#160](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/160) |
 | `SPI_CS` pin cannot be used as a chip select               | [#99](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/99)   |
 

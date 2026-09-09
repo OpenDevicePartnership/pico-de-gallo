@@ -18,6 +18,12 @@ in open-drain mode.
 | **Search** | Starts a new ROM search and returns the first device |
 | **Search Next** | Continues the current ROM search |
 
+Direction determines the payload ceiling. `onewire_read` may return at most
+`MAX_RESPONSE_PAYLOAD` (1014 bytes). `onewire_write` and
+`onewire_write_pullup` may send at most `MAX_TRANSFER_SIZE` (4096 bytes).
+Every host surface checks these limits before transmitting and reports
+`BufferTooLong` for an over-ceiling call.
+
 ## DS18B20 Temperature Sensor Example
 
 The DS18B20 is the most popular 1-Wire device. Here's how to read its

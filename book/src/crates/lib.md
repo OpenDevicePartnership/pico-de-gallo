@@ -361,11 +361,14 @@ The library exposes one typed async method per firmware capability.
 | `onewire_search` | — | Start ROM search and return the first device |
 | `onewire_search_next` | — | Continue the current ROM search |
 
-> [!WARNING]
-> The Rust library is not protected by the Zephyr driver's 1013-byte
-> containment. A 1015-byte TX-only SPI request reproduced a device-wide
-> firmware-dispatcher wedge. Keep individual SPI payloads at or below 512 bytes;
-> see [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+> [!NOTE]
+> The library refuses over-ceiling payloads locally, before transmitting.
+> Data returned by the device is limited to `MAX_RESPONSE_PAYLOAD` (1014
+> bytes); data sent to it is limited to `MAX_TRANSFER_SIZE` (4096 bytes).
+> Full-duplex `spi_transfer` is limited to 1014 bytes because the same length
+> must fit in both directions. A refusal is
+> `PicoDeGalloError::Endpoint(...::BufferTooLong)`; see
+> [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 
 For the full API surface, field docs, and current signatures, use the crate
 reference on [docs.rs](https://docs.rs/pico-de-gallo-lib).

@@ -285,7 +285,7 @@ enum I2cCommands {
 
         /// Number of bytes to read
         #[arg(short, long)]
-        count: usize,
+        count: u16,
     },
 
     /// Write bytes through I2C bus to device at given address
@@ -311,7 +311,7 @@ enum I2cCommands {
 
         /// Number of bytes to read
         #[arg(short, long)]
-        count: usize,
+        count: u16,
     },
 
     /// Set I2C bus parameters
@@ -359,7 +359,7 @@ enum SpiCommands {
     Read {
         /// Number of bytes to read
         #[arg(short, long)]
-        count: usize,
+        count: u16,
     },
 
     /// Write bytes through SPI bus
@@ -380,7 +380,7 @@ enum SpiCommands {
     WriteRead {
         /// Number of bytes to read
         #[arg(short, long)]
-        count: usize,
+        count: u16,
 
         /// Bytes to transfer
         #[arg(short, long, num_args(1..), value_parser(parse_byte))]
@@ -478,7 +478,7 @@ enum GpioCommands {
 enum UartCommands {
     /// Read bytes from the UART bus
     Read {
-        /// Number of bytes to read (up to 4096)
+        /// Number of bytes to read (up to 1014, the response-frame ceiling)
         #[arg(short, long)]
         count: u16,
 
@@ -966,8 +966,8 @@ impl Cli {
         Ok(())
     }
 
-    async fn i2c_read(&self, pg: &PicoDeGallo, address: &u8, count: &usize) -> Result<()> {
-        let buf = match pg.i2c_read(*address, *count as u16).await {
+    async fn i2c_read(&self, pg: &PicoDeGallo, address: &u8, count: &u16) -> Result<()> {
+        let buf = match pg.i2c_read(*address, *count).await {
             Ok(data) => data,
             Err(e) => return Err(eyre!("{:?}", e).wrap_err("i2c_read failed")),
         };
@@ -983,8 +983,8 @@ impl Cli {
             .map_err(|e| eyre!("{:?}", e).wrap_err("i2c_write failed"))
     }
 
-    async fn i2c_write_then_read(&self, pg: &PicoDeGallo, address: &u8, bytes: &[u8], count: &usize) -> Result<()> {
-        let buf = match pg.i2c_write_read(*address, bytes, *count as u16).await {
+    async fn i2c_write_then_read(&self, pg: &PicoDeGallo, address: &u8, bytes: &[u8], count: &u16) -> Result<()> {
+        let buf = match pg.i2c_write_read(*address, bytes, *count).await {
             Ok(data) => data,
             Err(e) => return Err(eyre!("{:?}", e).wrap_err("i2c_write_read failed")),
         };
@@ -994,8 +994,8 @@ impl Cli {
         Ok(())
     }
 
-    async fn spi_read(&self, pg: &PicoDeGallo, count: &usize) -> Result<()> {
-        let buf = match pg.spi_read(*count as u16).await {
+    async fn spi_read(&self, pg: &PicoDeGallo, count: &u16) -> Result<()> {
+        let buf = match pg.spi_read(*count).await {
             Ok(data) => data,
             Err(e) => return Err(eyre!("{:?}", e).wrap_err("spi_read failed")),
         };
@@ -1022,7 +1022,7 @@ impl Cli {
         Ok(())
     }
 
-    async fn spi_write_then_read(&self, pg: &PicoDeGallo, bytes: &[u8], count: &usize) -> Result<()> {
+    async fn spi_write_then_read(&self, pg: &PicoDeGallo, bytes: &[u8], count: &u16) -> Result<()> {
         self.spi_write(pg, bytes).await?;
         self.spi_read(pg, count).await
     }
@@ -1755,6 +1755,33 @@ mod tests {
                 assert_eq!(count, 4);
             }
             _ => panic!("expected I2c Read command"),
+        }
+    }
+
+    #[test]
+    fn cli_read_counts_reject_values_that_would_truncate() {
+        // Every read count reaches `pico-de-gallo-lib` as a `u16`. While
+        // these were declared `usize`, `--count 65537` was cast with `as
+        // u16` and silently became 1: the caller asked for 65537 bytes, the
+        // command exited 0, and one byte was printed. No layer could catch
+        // it afterwards, because by the time the library saw the value it
+        // was already a legal 1.
+        //
+        // Declaring them `u16` makes clap refuse the value with a range
+        // error instead. Counts between the response ceiling and `u16::MAX`
+        // are then refused by the library guard with `BufferTooLong`.
+        // Issue #158.
+        for args in [
+            vec!["gallo", "i2c", "read", "-a", "0x48", "-c", "65537"],
+            vec!["gallo", "i2c", "write-read", "-a", "0x48", "-b", "0x01", "-c", "65537"],
+            vec!["gallo", "spi", "read", "-c", "65537"],
+            vec!["gallo", "spi", "write-read", "-b", "0x01", "-c", "65537"],
+        ] {
+            let joined = args.join(" ");
+            assert!(
+                Cli::try_parse_from(&args).is_err(),
+                "`{joined}` must be refused, not truncated"
+            );
         }
     }
 

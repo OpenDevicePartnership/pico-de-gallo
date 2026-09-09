@@ -176,11 +176,18 @@ See the [I<sup>2</sup>C chapter](../interfaces/i2c.md) and
 | `get-config` | Show the active SPI configuration |
 | `batch` | Run atomic multi-step SPI transactions under chip-select |
 
-> [!WARNING]
-> The CLI is not protected by the Zephyr driver's 1013-byte containment. A
-> 1015-byte TX-only SPI request reproduced a device-wide firmware-dispatcher
-> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [!NOTE]
+> The CLI refuses over-ceiling payloads locally, before transmitting. Data
+> returned by the device is limited to `MAX_RESPONSE_PAYLOAD` (1014 bytes),
+> while data sent to it is limited to `MAX_TRANSFER_SIZE` (4096 bytes).
+> Full-duplex `spi transfer` is therefore limited to 1014 bytes even though
+> `spi write` accepts 4096. The command reports `BufferTooLong`; see
 > [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
+The read counts accepted by `i2c read -c`, `i2c write-read -c`, `spi read -c`,
+and `spi write-read -c` are `u16` values. Values above 65535 are rejected by
+argument parsing rather than wrapping during conversion; the lower
+`MAX_RESPONSE_PAYLOAD` limit is then enforced before transmission.
 
 `batch --cs <PIN>` accepts any `u8`. The pin is checked at run time
 against the GPIO count the connected device reports — not against a fixed

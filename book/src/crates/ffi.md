@@ -68,24 +68,26 @@ firmware enforces instead of hard-coding copies:
 
 ```c
 #define GALLO_MAX_TRANSFER_SIZE 4096
+#define GALLO_MAX_RESPONSE_PAYLOAD 1014
 #define GALLO_MAX_BATCH_OPS 64
 #define GALLO_NUM_GPIOS 4
 ```
 
-`GALLO_MAX_TRANSFER_SIZE` mirrors the protocol's 4096-byte packet-buffer and
-local argument bound. It is **not** a guarantee that 4096 bytes of application
-payload can traverse the framed transport; deliverable size depends on the
-operation's request and response shape. Exceeding the local bound yields
-`Status::BufferTooLong`, while a smaller framed request can still fail in
-transport. See the measured [SPI limits](../interfaces/spi.md#holding-chip-select-and-the-fault-latch).
+The direction of the bytes selects the limit. `GALLO_MAX_TRANSFER_SIZE` is the
+4096-byte limit for data sent from the host to the device.
+`GALLO_MAX_RESPONSE_PAYLOAD` is the 1014-byte limit for data the device must
+return, including the aggregate returned by a batch. A full-duplex
+`gallo_spi_transfer` uses the response limit for its entire length because each
+byte travels in both directions. Exceeding either limit yields
+`Status::BufferTooLong` locally, before transmission. See
+[troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 Exceeding `GALLO_MAX_BATCH_OPS` in `gallo_i2c_batch` or `gallo_spi_batch`
 yields `Status::InvalidArgument`.
 
-> [!WARNING]
-> The Zephyr driver's 1013-byte containment does not apply to C callers. A
-> 1015-byte TX-only SPI request reproduced a device-wide firmware-dispatcher
-> wedge. Until an operation-specific host limit exists, keep individual SPI
-> payloads at or below 512 bytes; see [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+> [!NOTE]
+> `gallo_spi_write` accepts 4096 bytes, but `gallo_spi_transfer` accepts only
+> 1014. Sizing both from `GALLO_MAX_TRANSFER_SIZE` is incorrect: the latter
+> must also fit its returned bytes in `GALLO_MAX_RESPONSE_PAYLOAD`.
 
 `GALLO_NUM_GPIOS` bounds the valid pin indices, `0..GALLO_NUM_GPIOS`, which
 map to physical GPIO8-GPIO11 on the Pico 2 header. Anything at or above it
@@ -236,7 +238,9 @@ Concatenated read data is written to `out_buf` and the total length to
 `*out_len`. On failure, `*out_failed_op` (if non-NULL) receives the zero-based
 index of the operation that failed, and the status reflects the underlying
 I<sup>2</sup>C error (`I2cNack`, `I2cBusError`, etc.). `BufferTooLong` means
-`out_buf` was too small; `*out_len` still receives the required capacity.
+either that the aggregate returned data exceeds
+`GALLO_MAX_RESPONSE_PAYLOAD` or that `out_buf` was too small. In the latter
+case, `*out_len` still receives the required capacity.
 
 ### SPI
 
@@ -263,8 +267,8 @@ Status gallo_spi_transfer(const PicoDeGallo *gallo,
 
 Simultaneously sends `len` bytes from `write_buf` on MOSI and receives
 `len` bytes on MISO into `read_buf`. The two buffers may alias.
-Returns `BufferTooLong` if `len` exceeds the firmware transfer limit,
-or `SpiTransferFailed` on a generic SPI error.
+Returns `BufferTooLong` locally if `len` exceeds
+`GALLO_MAX_RESPONSE_PAYLOAD`, or `SpiTransferFailed` on a generic SPI error.
 
 #### SPI batch
 
@@ -290,8 +294,9 @@ deasserts it after the last (or on error), providing atomic
 `SpiDevice::transaction` semantics. Read data from `Read` and
 `Transfer` operations is concatenated into `out_buf` in order. On
 per-op failure, `*out_failed_op` (if non-NULL) receives the zero-based
-index. `BufferTooLong` means `out_buf` was too small; `*out_len` still
-receives the required capacity.
+index. `BufferTooLong` means either that the aggregate returned data exceeds
+`GALLO_MAX_RESPONSE_PAYLOAD` or that `out_buf` was too small. In the latter
+case, `*out_len` still receives the required capacity.
 
 #### Chip-select preflight
 

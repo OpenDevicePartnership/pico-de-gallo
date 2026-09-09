@@ -33,12 +33,30 @@ pub(crate) async fn spi_read_handler<'a>(
 }
 
 /// Handler for `spi/write` — writes bytes to the SPI bus.
+///
+/// The payload is bounded by [`MAX_TRANSFER_SIZE`] even though it streams
+/// straight from `req.contents` and never lands in `context.buf`. There is
+/// no memory-safety problem without the bound, which is why it was missing:
+/// every other handler's check exists to protect that shared buffer. But
+/// `MAX_TRANSFER_SIZE` is documented as *the* per-transaction limit and is
+/// exported to every host surface as `GALLO_MAX_TRANSFER_SIZE`, so an
+/// endpoint that quietly accepts more makes that contract a lie.
+///
+/// Inherited from the #158 triage on board 5256657D8A5D7F03: 4097 and 5000
+/// bytes were both accepted here and driven onto the bus. This guard has
+/// not itself been re-measured on hardware. Issue #158.
 pub(crate) async fn spi_write_handler<'a>(
     context: &mut Context,
     _header: VarHeader,
     req: SpiWriteRequest<'a>,
 ) -> SpiWriteResponse {
-    debug!("spi write: len={=usize}", req.contents.len());
+    let len = req.contents.len();
+    if len > MAX_TRANSFER_SIZE {
+        warn!("spi write: len {} exceeds transfer limit", len);
+        return Err(SpiError::BufferTooLong);
+    }
+
+    debug!("spi write: len={=usize}", len);
     context.spi.write(req.contents).await.map_err(|_| SpiError::Other)
 }
 

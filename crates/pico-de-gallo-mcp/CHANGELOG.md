@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `encoding.rs` now provides `validate_read_count`, `validate_response_len`,
+  and `validate_write_payload`, wired into every I²C, SPI, UART, and 1-Wire
+  tool that accepts a count or payload, including aggregate batch lengths.
+  Part of #158.
+
+  The checks are local rather than merely inherited from the library. A
+  library refusal reached an agent through `map_pdg_err`'s `Endpoint` arm as
+  `invalid_params("device error: buffer exceeds firmware limit")`: that calls
+  a purely local refusal a device error, names no size, and leaves an LLM
+  agent guessing what value would work. The new messages name the offending
+  size, the applicable limit, and the remedy.
+
+  Size validation deliberately runs before `connect`. Connecting calls
+  `system_reset_subscriptions`, which tears down GPIO subscriptions owned by
+  other host processes, so an oversized argument must not cause that
+  cross-process side effect. This preserves the ordering established for
+  issue #104.
+
 ### Fixed
 
 - Tool calls can no longer hang forever when the device does not answer; they

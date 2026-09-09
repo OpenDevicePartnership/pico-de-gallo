@@ -156,10 +156,13 @@ pg.spi_set_config(
 
 ## Example: I<sup>2</sup>C Register Read
 
-> [!WARNING]
-> Python SPI calls are not protected by the Zephyr driver's 1013-byte
-> containment. A 1015-byte TX-only request reproduced a device-wide firmware
-> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [!NOTE]
+> Python refuses over-ceiling payloads locally, before transmitting. Data
+> returned by the device is limited to `MAX_RESPONSE_PAYLOAD` (1014 bytes),
+> while data sent to it is limited to `MAX_TRANSFER_SIZE` (4096 bytes).
+> Full-duplex `spi_transfer` is therefore limited to 1014 bytes even though
+> `spi_write` accepts 4096. An over-ceiling call raises `RuntimeError` with the
+> `BufferTooLong` message; see
 > [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 
 ```python

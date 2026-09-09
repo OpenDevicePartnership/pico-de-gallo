@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `spi/write` and `i2c/write` now bound their payload against
+  `MAX_TRANSFER_SIZE` (4096) and return `BufferTooLong` above it. Part of
+  #158.
+
+  They were the only two handlers with no upper bound at all. Both stream
+  from `req.contents` rather than `context.buf`, so there was never a
+  memory-safety problem — which is precisely why the omission went
+  unnoticed: every other handler's check exists to protect that shared
+  buffer, not to enforce a contract. But `MAX_TRANSFER_SIZE` is documented
+  as the per-transaction limit and is exported to every host surface as
+  `GALLO_MAX_TRANSFER_SIZE`, so two endpoints silently accepting more made
+  that contract untrue. Measured on hardware during #158 triage: `spi/write`
+  accepted 4097 and 5000 bytes and drove them onto the bus, and `i2c/write`
+  at 4097 reached the wire and returned a bus NAK rather than
+  `BufferTooLong`.
+
+  No wire-format or schema change: `BufferTooLong` already existed on both
+  error types and only the bound is new.
+
 - `i2c/batch` and `spi/batch` now bound their aggregate read length against
   `MAX_RESPONSE_PAYLOAD` (1014) instead of `MAX_TRANSFER_SIZE` (4096).
   Closes #179.

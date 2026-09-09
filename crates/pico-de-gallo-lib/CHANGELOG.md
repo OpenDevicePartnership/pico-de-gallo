@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Every payload-carrying entry point now enforces a size ceiling locally,
+  before anything is transmitted, instead of documenting one and enforcing
+  nothing. Part of #158.
+
+  Two ceilings apply, and which one binds depends on the direction of the
+  bytes rather than on the endpoint:
+
+  | Direction | Ceiling | Methods |
+  |---|---|---|
+  | device to host | `MAX_RESPONSE_PAYLOAD` (1014) | `i2c_read`, `spi_read`, `uart_read`, `onewire_read`, the read half of `i2c_write_read`, and `spi_transfer` |
+  | host to device | `MAX_TRANSFER_SIZE` (4096) | `i2c_write`, `spi_write`, `uart_write`, `onewire_write`, `onewire_write_pullup`, and the write half of `i2c_write_read` |
+
+  Overflow is reported as `BufferTooLong` on the relevant peripheral error
+  type. No new error variant and no wire change: `BufferTooLong` already
+  existed on all four.
+
+  `spi_transfer` is the case that shows the two ceilings are genuinely
+  distinct rather than cosmetic. It is full duplex, so its single argument
+  is both the request payload and the response length, and the tighter bound
+  wins: it now accepts 1014 bytes where `spi_write` accepts 4096. #158
+  measured `spi/write` completing normally at 1015 bytes, the size at which
+  `spi/transfer` fails, so collapsing the two into one ceiling would be
+  wrong in one direction or the other whichever value were chosen.
+
+  Previously a read of 1015..=4096 bytes was accepted, the bus was driven,
+  and the reply was then truncated in transport — surfacing as
+  `Comms(Postcard(DeserializeUnexpectedEnd))`, which names the transport
+  rather than the argument at fault and suggests no size that would work.
+  Unlike the batch endpoints fixed in #179, nothing is corrupted by this:
+  a plain read commits no writes, so it is a diagnosability fix rather than
+  a data-integrity one.
+
+### Changed
+
+- The doc comments on `i2c_read`, `i2c_write_read`, `spi_read`,
+  `spi_transfer` and `uart_read` no longer state 4096 as the caller-facing
+  limit. They were wrong twice over: nothing enforced the number, and for a
+  read path the real ceiling is 1014, not 4096.
+
+- `batch_read_total_is_undeliverable` (private) is now
+  `response_len_is_undeliverable`, since the same predicate governs plain
+  reads. A sibling `request_payload_is_too_long` covers the other
+  direction, and a `const` assertion pins the response ceiling as the
+  strictly tighter of the two — the invariant `spi_transfer` relies on when
+  it checks only one.
+
 ### Added
 
 - Re-export of `MAX_RESPONSE_PAYLOAD` from `pico-de-gallo-internal`.

@@ -4,7 +4,7 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{ErrorData, tool, tool_router};
 
-use crate::encoding::{Bytes, parse_bytes};
+use crate::encoding::{Bytes, parse_bytes, validate_read_count, validate_write_payload};
 use crate::error::{invalid_arg, map_pdg_err};
 use crate::select::TargetParams;
 use crate::{GalloMcp, ok_device_json};
@@ -56,6 +56,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<UartReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        validate_read_count(p.count).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         let data = dev
             .uart_read(p.count, p.timeout_ms)
@@ -74,6 +75,7 @@ impl GalloMcp {
         Parameters(p): Parameters<UartWriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
+        validate_write_payload(&bytes).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.uart_write(&bytes).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &"ok")

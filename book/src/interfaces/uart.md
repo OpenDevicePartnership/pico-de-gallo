@@ -207,12 +207,17 @@ async fn drain_buffer(gallo: &PicoDeGallo) -> Vec<u8> {
 
 ## Error Handling
 
+UART direction determines the payload ceiling. `uart_read` may return at most
+`MAX_RESPONSE_PAYLOAD` (1014 bytes), while `uart_write` may send at most
+`MAX_TRANSFER_SIZE` (4096 bytes). Every host surface checks this before
+transmitting and reports `BufferTooLong` for an over-ceiling call.
+
 UART operations return `PicoDeGalloError<UartError>` on failure. The
 `UartError` variants cover both protocol-level and configuration errors:
 
 | Variant | Description |
 |---------|-------------|
-| `BufferTooLong` | Requested read/write exceeds the firmware buffer size |
+| `BufferTooLong` | Read exceeds the response ceiling or write exceeds the transfer ceiling |
 | `Overrun` | Receive buffer overflowed before host read the data |
 | `Break` | Break condition detected on the line |
 | `Parity` | Parity check failed |

@@ -540,18 +540,34 @@ spi/set-config -> gpio/put(assert) -> spi/transfer -> gpio/put(deassert)
 
 Each can fail independently. Host death after the assert leaves chip select
 asserted; a fresh session can deassert ordinary residue.
-Only RPCs that *return* have defined behaviour — an RPC that never returns
-leaves the calling thread pending forever, with no errno, no cleanup, no fault
-latch update, and the SPI lock still held. There is no bounded cancellation.
+Every host RPC is bounded by a timeout since #178. A response lost at the
+transport therefore returns `-ETIMEDOUT` rather than leaving the calling thread
+pending forever. The SPI lock remains held until that bounded call returns;
+normal deassert and fault-latch handling then apply. Firmware #157 also added a
+watchdog supervisor that resets a genuinely wedged dispatcher in about 10.5
+seconds.
 
-The Zephyr SPI driver rejects any transfer whose clocked length exceeds 1013
-bytes. This contains a known firmware failure; it is not a duplex-capacity
-guarantee. TX-only 1013 succeeded, TX-only 1015 wedges the dispatcher, and 1014
-was not tested. Full duplex succeeded at 512, failed at 3072, and was not tested
-from 513 through 1013. Applications needing a documented-safe duplex size must
-use 512 bytes or less. Do not infer 1013-byte duplex support from
-`PDG_SPI_MAX_BUFFER`; the protocol's 4096-byte constant is a packet-buffer and
-argument bound, not a demonstrated application-payload guarantee.
+The Zephyr SPI driver rejects any transfer whose clocked length exceeds 1014
+bytes. Every Zephyr SPI operation is one full-duplex `gallo_spi_transfer()`, so
+the response frame is the binding limit. The ceiling is derived as 1024 bytes
+for the postcard-rpc host inbound transfer buffer, minus a 7-byte response
+header, 1-byte postcard `Result` discriminant and 2-byte varint length prefix.
+Each term is pinned by a test in `pico-de-gallo-internal`; #179 exports the
+result to C as `GALLO_MAX_RESPONSE_PAYLOAD`, and a `_Static_assert` ties the
+Zephyr constant to it.
+
+This supersedes the earlier measurements: TX-only 1013 succeeded, 1014 was not
+tested, full duplex succeeded at 512 and failed at 3072, and the range from 513
+through 1013 was not tested duplex. Issue #158 measured the full-duplex
+`spi/transfer` endpoint directly on board `5256657D8A5D7F03`: 1014 works and
+1015 fails cleanly; #179 confirmed the boundary on board `49742081C885AC69`.
+The old 512-byte documented-safe advice is therefore no longer needed. #158's
+triage also could not reproduce the historical 1015-byte TX-only dispatcher
+wedge on firmware `62dd64e710fd`: the call returned a clean error in 12 ms and
+the board stayed responsive. That is a non-reproduction on one firmware build,
+not proof that the earlier wedge never occurred; #157 and #178 landed between
+the two runs. The protocol's 4096-byte constant remains a packet-buffer and
+argument bound, not the usable response-payload ceiling.
 
 The Zephyr I2C driver uses separate driver limits. Reads are limited to 1014
 bytes: 1014 returned exactly the requested length, while the tested lengths at
@@ -818,7 +834,7 @@ firmware's `i2c/scan` endpoint, which probes the whole bus in one round trip.
 | `SPI_HOLD_ON_CS` without `SPI_LOCK_ON` | `-ENOTSUP` |
 | Chip-select pin explicitly configured as an input | `-EACCES` |
 | Chip-select pin under a live GPIO event subscription | `-EBUSY` |
-| Transfers over 1013 bytes | `-EMSGSIZE` |
+| Transfers over 1014 bytes | `-EMSGSIZE` |
 | Legacy firmware lacks a required SPI operation | `-ENOSYS` |
 | Firmware SPI operation times out | `-ETIMEDOUT` |
 | Controller latched by an unacknowledged chip-select deassert | `-EHOSTDOWN` until a successful `spi_release()` |
@@ -921,14 +937,24 @@ worst-case open timeout. Capture host `stderr` as well as the Zephyr log because
 registry and FFI diagnostics may appear only there.
 
 **An SPI call never returns, and later RPCs also stop responding**
-A 1015-byte TX-only transfer reproduced a device-wide firmware-dispatcher wedge.
-The 1013-byte Zephyr check contains that trigger only through this driver. In the
-reproduced tests the device resumed after USB re-enumeration; on Windows/WSL this
-used `usbipd detach` followed by attach. That observation does not prove detach
-cancels the blocked handler. On Linux/macOS unplug/reconnect or use USB
-unbind/rebind. Power-cycle if re-enumeration is unavailable or ineffective.
-`system/reset-subscriptions` cannot recover this condition because the blocked
-dispatcher cannot service it.
+A historical 1015-byte TX-only transfer reproduced a device-wide
+firmware-dispatcher wedge. Issue #158 could not reproduce it on firmware
+`62dd64e710fd`: the call returned a clean error in 12 ms and the board remained
+responsive. That single-build non-reproduction does not prove the earlier wedge
+never occurred. Two intervening changes supersede its recovery guidance: #157
+added a watchdog supervisor that resets a genuinely wedged dispatcher in about
+10.5 seconds, and #178 bounds every host RPC so a lost response becomes a clean
+timeout. Issue #158 also made the Rust library, FFI, Python, MCP and `gallo` CLI
+refuse over-ceiling payloads locally; Zephyr's 1014-byte check is no longer the
+only host-side containment.
+
+If older firmware or host software still wedges, the reproduced historical
+recovery was USB re-enumeration; on Windows/WSL this used `usbipd detach`
+followed by attach. That observation does not prove detach cancels the blocked
+handler. On Linux/macOS unplug/reconnect or use USB unbind/rebind. Power-cycle
+if re-enumeration is unavailable or ineffective. `system/reset-subscriptions`
+cannot recover a currently blocked dispatcher because it cannot service the
+request.
 
 **Corrosion or crates.io is unreachable**
 The FFI itself builds from this repository and needs no network. Corrosion is

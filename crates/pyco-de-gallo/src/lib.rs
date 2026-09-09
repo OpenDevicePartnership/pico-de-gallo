@@ -863,15 +863,19 @@ impl PycoDeGallo {
 
     /// Read ``count`` bytes from the I2C device at ``address``.
     ///
-    /// The firmware buffer is limited to 4096 bytes; reads exceeding this
-    /// limit will be truncated.
+    /// ``count`` may be at most 1014 bytes (MAX_RESPONSE_PAYLOAD), the
+    /// most a single response can carry back over USB. Larger reads are
+    /// refused, not truncated.
     ///
     /// Args:
     ///     address (int): 7-bit I2C target address.
-    ///     count (int): Number of bytes to read.
+    ///     count (int): Number of bytes to read, at most 1014.
     ///
     /// Returns:
     ///     bytes: The bytes read from the bus.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``count`` exceeds 1014.
     fn i2c_read(&self, py: Python<'_>, address: u8, count: u16) -> PyResult<Vec<u8>> {
         self.block(py, self.inner.i2c_read(address, count))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
@@ -879,9 +883,15 @@ impl PycoDeGallo {
 
     /// Write ``data`` to the I2C device at ``address``.
     ///
+    /// ``data`` may be at most 4096 bytes (MAX_TRANSFER_SIZE).
+    ///
     /// Args:
     ///     address (int): 7-bit I2C target address.
-    ///     data (bytes | list[int]): Bytes to write.
+    ///     data (bytes | list[int]): Bytes to write, at most 4096.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``data`` exceeds 4096
+    ///         bytes.
     fn i2c_write(&self, py: Python<'_>, address: u8, data: Vec<u8>) -> PyResult<()> {
         self.block(py, self.inner.i2c_write(address, &data))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
@@ -891,16 +901,24 @@ impl PycoDeGallo {
     /// back ``read_count`` bytes in a single transaction (without releasing
     /// the bus).
     ///
-    /// The firmware buffer is limited to 4096 bytes; reads exceeding this
-    /// limit will be truncated.
+    /// Both ceilings apply, one per direction: ``read_count`` may be at
+    /// most 1014 bytes (MAX_RESPONSE_PAYLOAD), because that is all a
+    /// single response can carry back over USB, while ``write_data`` may
+    /// be up to 4096 bytes (MAX_TRANSFER_SIZE). An over-limit call is
+    /// refused, not truncated.
     ///
     /// Args:
     ///     address (int): 7-bit I2C target address.
-    ///     write_data (bytes | list[int]): Bytes to write first.
-    ///     read_count (int): Number of bytes to read back.
+    ///     write_data (bytes | list[int]): Bytes to write first, at most
+    ///         4096.
+    ///     read_count (int): Number of bytes to read back, at most 1014.
     ///
     /// Returns:
     ///     bytes: The bytes read from the bus.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, if ``read_count`` exceeds 1014,
+    ///         or if ``write_data`` exceeds 4096 bytes.
     fn i2c_write_read(
         &self,
         py: Python<'_>,
@@ -968,14 +986,35 @@ impl PycoDeGallo {
 
     /// Read ``count`` bytes from the SPI bus.
     ///
-    /// The firmware buffer is limited to 4096 bytes; reads exceeding this
-    /// limit will be truncated.
+    /// ``count`` may be at most 1014 bytes (MAX_RESPONSE_PAYLOAD), the
+    /// most a single response can carry back over USB. Larger reads are
+    /// refused, not truncated.
+    ///
+    /// Args:
+    ///     count (int): Number of bytes to read, at most 1014.
+    ///
+    /// Returns:
+    ///     bytes: The bytes read from the bus.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``count`` exceeds 1014.
     fn spi_read(&self, py: Python<'_>, count: u16) -> PyResult<Vec<u8>> {
         self.block(py, self.inner.spi_read(count))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
     /// Write ``data`` to the SPI bus.
+    ///
+    /// ``data`` may be at most 4096 bytes (MAX_TRANSFER_SIZE) — four times
+    /// what :meth:`spi_transfer` allows, because a write asks for nothing
+    /// back and so is not bound by the response ceiling.
+    ///
+    /// Args:
+    ///     data (bytes | list[int]): Bytes to write, at most 4096.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``data`` exceeds 4096
+    ///         bytes.
     fn spi_write(&self, py: Python<'_>, data: Vec<u8>) -> PyResult<()> {
         self.block(py, self.inner.spi_write(&data))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
@@ -990,11 +1029,21 @@ impl PycoDeGallo {
     /// Perform a full-duplex SPI transfer.
     ///
     /// Simultaneously sends ``write_data`` and receives the same number of
-    /// bytes. The firmware buffer is limited to 4096 bytes; transfers
-    /// exceeding this limit will be rejected.
+    /// bytes. Because the transfer is full duplex, ``write_data`` is both
+    /// the payload sent and the size of the payload returned, so the
+    /// tighter of the two ceilings binds: at most 1014 bytes
+    /// (MAX_RESPONSE_PAYLOAD). :meth:`spi_write` accepts 4096 because it
+    /// returns nothing.
+    ///
+    /// Args:
+    ///     write_data (bytes | list[int]): Bytes to send, at most 1014.
     ///
     /// Returns:
     ///     bytes: Bytes received during the transfer.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``write_data`` exceeds
+    ///         1014 bytes.
     fn spi_transfer(&self, py: Python<'_>, write_data: Vec<u8>) -> PyResult<Vec<u8>> {
         self.block(py, self.inner.spi_transfer(&write_data))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
@@ -1072,17 +1121,30 @@ impl PycoDeGallo {
     /// firmware's 30-minute ceiling are clamped to it.
     ///
     /// Args:
-    ///     count (int): Maximum number of bytes to read.
+    ///     count (int): Maximum number of bytes to read, at most 1014
+    ///         (MAX_RESPONSE_PAYLOAD).
     ///     timeout_ms (int): Timeout in milliseconds.
     ///
     /// Returns:
     ///     bytes: Bytes received, possibly fewer than ``count``.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``count`` exceeds 1014.
     fn uart_read(&self, py: Python<'_>, count: u16, timeout_ms: u32) -> PyResult<Vec<u8>> {
         self.block(py, self.inner.uart_read(count, timeout_ms))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
     /// Write ``data`` to the UART bus.
+    ///
+    /// ``data`` may be at most 4096 bytes (MAX_TRANSFER_SIZE).
+    ///
+    /// Args:
+    ///     data (bytes | list[int]): Bytes to write, at most 4096.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``data`` exceeds 4096
+    ///         bytes.
     fn uart_write(&self, py: Python<'_>, data: Vec<u8>) -> PyResult<()> {
         self.block(py, self.inner.uart_write(&data))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
@@ -1613,12 +1675,31 @@ impl PycoDeGallo {
     /// Read ``len`` bytes from the 1-Wire bus.
     ///
     /// The firmware sends ``0xFF`` read slots and captures the response bits.
+    ///
+    /// Args:
+    ///     len (int): Number of bytes to read, at most 1014
+    ///         (MAX_RESPONSE_PAYLOAD).
+    ///
+    /// Returns:
+    ///     bytes: The bytes read from the bus.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``len`` exceeds 1014.
     fn onewire_read(&self, py: Python<'_>, len: u16) -> PyResult<Vec<u8>> {
         self.block(py, self.inner.onewire_read(len))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
     /// Write raw bytes to the 1-Wire bus.
+    ///
+    /// ``data`` may be at most 4096 bytes (MAX_TRANSFER_SIZE).
+    ///
+    /// Args:
+    ///     data (bytes | list[int]): Bytes to write, at most 4096.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``data`` exceeds 4096
+    ///         bytes.
     fn onewire_write(&self, py: Python<'_>, data: Vec<u8>) -> PyResult<()> {
         self.block(py, self.inner.onewire_write(&data))
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
@@ -1629,6 +1710,17 @@ impl PycoDeGallo {
     /// Required for parasitic-power devices like the DS18B20 during
     /// temperature conversion. The bus is held high for
     /// ``pullup_duration_ms`` milliseconds after the last bit is sent.
+    ///
+    /// ``data`` may be at most 4096 bytes (MAX_TRANSFER_SIZE).
+    ///
+    /// Args:
+    ///     data (bytes | list[int]): Bytes to write, at most 4096.
+    ///     pullup_duration_ms (int): Strong-pullup duration in
+    ///         milliseconds.
+    ///
+    /// Raises:
+    ///     RuntimeError: On a bus failure, or if ``data`` exceeds 4096
+    ///         bytes.
     fn onewire_write_pullup(
         &self,
         py: Python<'_>,
