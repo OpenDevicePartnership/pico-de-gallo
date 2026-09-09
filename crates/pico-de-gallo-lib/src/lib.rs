@@ -3574,10 +3574,19 @@ mod hardware {
     #[tokio::test]
     #[ignore = "requires an attached board; see module docs"]
     async fn spi_batch_at_the_response_ceiling_still_returns_data() {
-        // Positive control. Needs no SPI target: with MISO idle the bytes
-        // are meaningless, but their count is the property under test.
+        // Positive control, in two parts. Needs no SPI target: with MISO
+        // idle the bytes are meaningless, but their count is one of the
+        // properties under test.
+        //
+        // The second part is what makes
+        // [`oversized_spi_batch_never_moves_chip_select`] mean anything. An
+        // *accepted* batch must leave the chip-select high, so a witness
+        // that reads low after a refusal is a real observation rather than
+        // a pin nothing ever touches.
         let _bench = BENCH.lock().await;
         let pg = board().await;
+
+        pg.gpio_put(0, GpioState::Low).await.expect("drive the CS pin low");
 
         let ops = vec![SpiBatchOp::Read {
             len: MAX_RESPONSE_PAYLOAD as u16,
@@ -3586,7 +3595,14 @@ mod hardware {
             .spi_batch(0, &ops)
             .await
             .expect("a batch reading exactly the ceiling must still be delivered");
-        assert_eq!(got.len(), MAX_RESPONSE_PAYLOAD);
+        assert_eq!(got.len(), MAX_RESPONSE_PAYLOAD, "the whole response must arrive");
+
+        assert_eq!(
+            pg.gpio_get(0).await.expect("witness CS read"),
+            GpioState::High,
+            "an accepted batch must have deasserted chip-select, or the \
+             witness in oversized_spi_batch_never_moves_chip_select is blind"
+        );
     }
 
     #[tokio::test]
