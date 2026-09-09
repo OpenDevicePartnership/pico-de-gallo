@@ -389,19 +389,57 @@ fn check_i2c_write_payload(contents: &[u8]) -> Result<(), I2cError> {
     Ok(())
 }
 
-/// `true` when a batch that returns `total` bytes cannot have its response
-/// delivered.
+/// `true` when a response carrying `len` bytes cannot be delivered to the
+/// host.
 ///
-/// Both batch endpoints answer with `Result<Vec<u8>, _>` and so share one
-/// ceiling; only their error types differ, which is why the policy lives
-/// here and each caller wraps it. See [`MAX_RESPONSE_PAYLOAD`] for the
-/// derivation and issue #179 for what accepting such a batch costs: the
-/// operations run, the response is truncated in transport, and the caller
-/// is handed a `DeserializeUnexpectedEnd` that reads like a comms fault and
-/// invites a retry which repeats every write.
-fn batch_read_total_is_undeliverable(total: usize) -> bool {
-    total > MAX_RESPONSE_PAYLOAD
+/// See [`MAX_RESPONSE_PAYLOAD`] for the byte-by-byte derivation. This is a
+/// property of the host transport, not of the firmware, so it is the one
+/// bound the device cannot be relied upon to apply for us.
+///
+/// Applies to any length the caller asks the device to *send back*: a plain
+/// read count, the read half of `i2c/write-read`, the (duplex) length of an
+/// `spi/transfer`, and the aggregate of a batch's returning operations.
+/// Issue #179 covered only the batch aggregate, because a batch commits
+/// `Write` operations before losing its response and so corrupts state; the
+/// plain endpoints commit nothing, but still report the overflow as
+/// `Comms(Postcard(DeserializeUnexpectedEnd))`, which names the transport
+/// rather than the argument at fault. Issue #158 extended it to the rest.
+///
+/// Extracted so the policy is independently testable (issue #136).
+fn response_len_is_undeliverable(len: usize) -> bool {
+    len > MAX_RESPONSE_PAYLOAD
 }
+
+/// `true` when a request payload of `len` bytes exceeds what the firmware
+/// accepts in one transaction.
+///
+/// [`MAX_TRANSFER_SIZE`] bounds the *outbound* direction and is far looser
+/// than [`response_len_is_undeliverable`]'s ceiling; the two budgets are
+/// independent, which #158 measured directly by showing that a 1021-byte
+/// request payload did not move the response ceiling by a single byte.
+/// Applies to every payload the caller *sends*: `i2c/write`, `spi/write`,
+/// `uart/write`, both 1-Wire writes, and the write half of
+/// `i2c/write-read`.
+///
+/// A duplex `spi/transfer` is both directions at once and so must satisfy
+/// this *and* the response ceiling; since the latter is strictly tighter
+/// (asserted by a `const _` beside that function)
+/// checking the response ceiling alone suffices there.
+///
+/// Extracted so the policy is independently testable (issue #136).
+fn request_payload_is_too_long(len: usize) -> bool {
+    len > MAX_TRANSFER_SIZE
+}
+
+// `spi_transfer` checks only the response ceiling, on the grounds that it is
+// the tighter of the two. That reasoning is only sound while this holds, so
+// make an inversion a build failure rather than something a test has to
+// catch — the same treatment the derivation itself gets in
+// `pico-de-gallo-internal`.
+const _: () = assert!(
+    MAX_RESPONSE_PAYLOAD < MAX_TRANSFER_SIZE,
+    "spi_transfer's single bound assumes the response ceiling binds first"
+);
 
 /// Returns `Err` naming the first [`I2cBatchOp::Write`] in `ops` that
 /// carries an empty payload.
@@ -434,7 +472,7 @@ fn check_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Result<(), I2cBatchError> {
             });
         }
     }
-    if batch_read_total_is_undeliverable(i2c_batch_response_len(ops)) {
+    if response_len_is_undeliverable(i2c_batch_response_len(ops)) {
         return Err(I2cBatchError {
             failed_op: 0,
             kind: I2cError::BufferTooLong,
@@ -453,7 +491,7 @@ fn check_i2c_batch_ops(ops: &[I2cBatchOp<'_>]) -> Result<(), I2cBatchError> {
 ///
 /// Extracted so the policy is independently testable (issue #179).
 fn check_spi_batch_ops(ops: &[SpiBatchOp<'_>]) -> Result<(), SpiBatchError> {
-    if batch_read_total_is_undeliverable(spi_batch_response_len(ops)) {
+    if response_len_is_undeliverable(spi_batch_response_len(ops)) {
         return Err(SpiBatchError {
             failed_op: 0,
             kind: SpiError::BufferTooLong,
@@ -815,9 +853,23 @@ impl PicoDeGallo {
 
     /// Read `count` bytes from the I2C device at `address`.
     ///
-    /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
-    /// (4096) bytes. Reads exceeding this limit will be truncated.
+    /// # Response ceiling
+    ///
+    /// `count` may be at most [`MAX_RESPONSE_PAYLOAD`] (1014). A larger read
+    /// is refused locally, before anything is transmitted, with
+    /// [`I2cError::BufferTooLong`].
+    ///
+    /// That is far below [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
+    /// (4096), which bounds the firmware's scratch buffer rather than what a
+    /// response frame can carry. Before issue #158 this method documented
+    /// 4096 and enforced nothing: a read of 1015..=4096 bytes was accepted,
+    /// the bus was clocked, and the reply was then truncated in transport,
+    /// surfacing as `Comms(Postcard(DeserializeUnexpectedEnd))` — an error
+    /// that names the transport rather than the argument at fault.
     pub async fn i2c_read(&self, address: u8, count: u16) -> Result<Vec<u8>, PicoDeGalloError<I2cError>> {
+        if response_len_is_undeliverable(usize::from(count)) {
+            return Err(PicoDeGalloError::Endpoint(I2cError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<I2cRead>(&I2cReadRequest { address, count })
             .await?
@@ -825,8 +877,18 @@ impl PicoDeGallo {
     }
 
     /// Write `contents` to the I2C device at `address`.
+    ///
+    /// An empty payload is refused with [`I2cError::ZeroLengthWrite`]; see
+    /// [`check_i2c_write_payload`] for why that one is a wedge rather than
+    /// merely an error. A payload above
+    /// [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`] (4096) is refused with
+    /// [`I2cError::BufferTooLong`]. Both refusals are local and cost no USB
+    /// round-trip.
     pub async fn i2c_write(&self, address: u8, contents: &[u8]) -> Result<(), PicoDeGalloError<I2cError>> {
         check_i2c_write_payload(contents).map_err(PicoDeGalloError::Endpoint)?;
+        if request_payload_is_too_long(contents.len()) {
+            return Err(PicoDeGalloError::Endpoint(I2cError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<I2cWrite>(&I2cWriteRequest { address, contents })
             .await?
@@ -835,14 +897,30 @@ impl PicoDeGallo {
 
     /// Write `contents` to the I2C device at `address` and read back `count` bytes.
     ///
-    /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
-    /// (4096) bytes. Reads exceeding this limit will be truncated.
+    /// # Ceilings
+    ///
+    /// The two halves are bounded independently, because the request and
+    /// response budgets are independent — #158 measured a 1021-byte request
+    /// payload leaving the response ceiling unmoved:
+    ///
+    /// * `count` may be at most [`MAX_RESPONSE_PAYLOAD`] (1014);
+    /// * `contents` may be at most
+    ///   [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`] (4096).
+    ///
+    /// Either overflow is refused locally with [`I2cError::BufferTooLong`]
+    /// before anything is transmitted. An *empty* `contents` remains legal
+    /// and is deliberately not refused: that transfer does not terminate
+    /// with a STOP, so it returns rather than parking, and it is the
+    /// idiomatic way to probe an address.
     pub async fn i2c_write_read(
         &self,
         address: u8,
         contents: &[u8],
         count: u16,
     ) -> Result<Vec<u8>, PicoDeGalloError<I2cError>> {
+        if response_len_is_undeliverable(usize::from(count)) || request_payload_is_too_long(contents.len()) {
+            return Err(PicoDeGalloError::Endpoint(I2cError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<I2cWriteRead>(&I2cWriteReadRequest {
                 address,
@@ -936,9 +1014,17 @@ impl PicoDeGallo {
 
     /// Read `count` bytes from the SPI bus.
     ///
-    /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
-    /// (4096) bytes. Reads exceeding this limit will be truncated.
+    /// # Response ceiling
+    ///
+    /// `count` may be at most [`MAX_RESPONSE_PAYLOAD`] (1014). A larger read
+    /// is refused locally, before anything is transmitted, with
+    /// [`SpiError::BufferTooLong`], rather than clocking the bus and then
+    /// losing the reply to transport truncation. See
+    /// [`response_len_is_undeliverable`].
     pub async fn spi_read(&self, count: u16) -> Result<Vec<u8>, PicoDeGalloError<SpiError>> {
+        if response_len_is_undeliverable(usize::from(count)) {
+            return Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<SpiRead>(&SpiReadRequest { count })
             .await?
@@ -946,7 +1032,20 @@ impl PicoDeGallo {
     }
 
     /// Write `contents` to the SPI bus.
+    ///
+    /// `contents` may be at most
+    /// [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`] (4096) bytes; more is
+    /// refused locally with [`SpiError::BufferTooLong`].
+    ///
+    /// Note this is the *looser* of the two ceilings, deliberately. A write
+    /// returns no payload, so the response budget does not apply — #158
+    /// measured `spi/write` completing normally at 1015 bytes, the size at
+    /// which [`Self::spi_transfer`] fails. The two endpoints cannot share
+    /// one bound.
     pub async fn spi_write(&self, contents: &[u8]) -> Result<(), PicoDeGalloError<SpiError>> {
+        if request_payload_is_too_long(contents.len()) {
+            return Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<SpiWrite>(&SpiWriteRequest { contents })
             .await?
@@ -963,10 +1062,27 @@ impl PicoDeGallo {
 
     /// Perform a full-duplex SPI transfer.
     ///
-    /// Simultaneously sends `write_data` and receives the same number of bytes.
-    /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
-    /// bytes. Transfers exceeding this limit will be rejected.
+    /// Simultaneously sends `write_data` and receives the same number of
+    /// bytes.
+    ///
+    /// # Response ceiling
+    ///
+    /// `write_data` may be at most [`MAX_RESPONSE_PAYLOAD`] (1014) bytes —
+    /// **not** [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`], which this
+    /// method previously documented. Because the transfer is full duplex,
+    /// its single argument is simultaneously the request payload and the
+    /// response length, so the tighter of the two ceilings binds. A larger
+    /// transfer is refused locally with [`SpiError::BufferTooLong`].
+    ///
+    /// This is the asymmetry worth remembering: [`Self::spi_write`] accepts
+    /// four times as much, because it asks for nothing back.
     pub async fn spi_transfer(&self, write_data: &[u8]) -> Result<Vec<u8>, PicoDeGalloError<SpiError>> {
+        // The response ceiling is strictly tighter than the request ceiling
+        // (asserted by the `const _` beside `request_payload_is_too_long`),
+        // so checking it alone also satisfies `request_payload_is_too_long`.
+        if response_len_is_undeliverable(write_data.len()) {
+            return Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<SpiTransfer>(&SpiTransferRequest { contents: write_data })
             .await?
@@ -1063,8 +1179,14 @@ impl PicoDeGallo {
     /// above the firmware's 30-minute ceiling are clamped to it.
     ///
     /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
-    /// (4096) bytes.
+    /// (4096) bytes, but `count` is bounded far tighter by
+    /// [`MAX_RESPONSE_PAYLOAD`] (1014): more than that cannot be carried
+    /// back in one response frame, so it is refused locally with
+    /// [`UartError::BufferTooLong`] before anything is transmitted.
     pub async fn uart_read(&self, count: u16, timeout_ms: u32) -> Result<Vec<u8>, PicoDeGalloError<UartError>> {
+        if response_len_is_undeliverable(usize::from(count)) {
+            return Err(PicoDeGalloError::Endpoint(UartError::BufferTooLong));
+        }
         // The caller's own read timeout is the firmware-side duration here.
         self.bounded_for(timeout_ms)
             .send_resp::<UartRead>(&UartReadRequest { count, timeout_ms })
@@ -1078,7 +1200,14 @@ impl PicoDeGallo {
     /// returns once all bytes have been accepted by the TX buffer (not
     /// necessarily transmitted on the wire). Use [`uart_flush`](Self::uart_flush)
     /// to wait for transmission to complete.
+    ///
+    /// `contents` may be at most
+    /// [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`] (4096) bytes; more is
+    /// refused locally with [`UartError::BufferTooLong`].
     pub async fn uart_write(&self, contents: &[u8]) -> Result<(), PicoDeGalloError<UartError>> {
+        if request_payload_is_too_long(contents.len()) {
+            return Err(PicoDeGalloError::Endpoint(UartError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<UartWrite>(&UartWriteRequest { contents })
             .await?
@@ -1748,7 +1877,14 @@ impl PicoDeGallo {
     /// Read `len` bytes from the 1-Wire bus.
     ///
     /// The firmware sends `0xFF` read slots and captures the device's response bits.
+    ///
+    /// `len` may be at most [`MAX_RESPONSE_PAYLOAD`] (1014); more cannot be
+    /// carried back in one response frame and is refused locally with
+    /// [`OneWireError::BufferTooLong`] before any read slot is driven.
     pub async fn onewire_read(&self, len: u16) -> Result<Vec<u8>, PicoDeGalloError<OneWireError>> {
+        if response_len_is_undeliverable(usize::from(len)) {
+            return Err(PicoDeGalloError::Endpoint(OneWireError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<OneWireRead>(&OneWireReadRequest { len })
             .await?
@@ -1756,7 +1892,14 @@ impl PicoDeGallo {
     }
 
     /// Write raw bytes to the 1-Wire bus.
+    ///
+    /// `data` may be at most [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
+    /// (4096) bytes; more is refused locally with
+    /// [`OneWireError::BufferTooLong`].
     pub async fn onewire_write(&self, data: &[u8]) -> Result<(), PicoDeGalloError<OneWireError>> {
+        if request_payload_is_too_long(data.len()) {
+            return Err(PicoDeGalloError::Endpoint(OneWireError::BufferTooLong));
+        }
         self.bounded()
             .send_resp::<OneWireWrite>(&OneWireWriteRequest { data })
             .await?
@@ -1768,11 +1911,19 @@ impl PicoDeGallo {
     /// This is needed for parasitic-power devices like the DS18B20 during temperature
     /// conversion. The bus is held high for `pullup_duration_ms` milliseconds after
     /// the last bit is sent.
+    ///
+    /// `data` may be at most [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
+    /// (4096) bytes; more is refused locally with
+    /// [`OneWireError::BufferTooLong`], before the bus is driven and before
+    /// the pullup hold begins.
     pub async fn onewire_write_pullup(
         &self,
         data: &[u8],
         pullup_duration_ms: u16,
     ) -> Result<(), PicoDeGalloError<OneWireError>> {
+        if request_payload_is_too_long(data.len()) {
+            return Err(PicoDeGalloError::Endpoint(OneWireError::BufferTooLong));
+        }
         // The caller's strong-pullup hold is firmware-side time on top of the
         // write itself, so it must widen the bound or a long parasitic-power
         // conversion would look like an unresponsive device.
@@ -1937,6 +2088,24 @@ mod tests {
                 "i2c/batch"
             } else if hdr.key == VarKey::Key8(I2cWriteRead::REQ_KEY) {
                 "i2c/write-read"
+            } else if hdr.key == VarKey::Key8(I2cRead::REQ_KEY) {
+                "i2c/read"
+            } else if hdr.key == VarKey::Key8(SpiRead::REQ_KEY) {
+                "spi/read"
+            } else if hdr.key == VarKey::Key8(SpiWrite::REQ_KEY) {
+                "spi/write"
+            } else if hdr.key == VarKey::Key8(SpiTransfer::REQ_KEY) {
+                "spi/transfer"
+            } else if hdr.key == VarKey::Key8(UartRead::REQ_KEY) {
+                "uart/read"
+            } else if hdr.key == VarKey::Key8(UartWrite::REQ_KEY) {
+                "uart/write"
+            } else if hdr.key == VarKey::Key8(OneWireRead::REQ_KEY) {
+                "onewire/read"
+            } else if hdr.key == VarKey::Key8(OneWireWrite::REQ_KEY) {
+                "onewire/write"
+            } else if hdr.key == VarKey::Key8(OneWireWritePullup::REQ_KEY) {
+                "onewire/write-pullup"
             } else {
                 "other"
             };
@@ -3298,6 +3467,299 @@ mod tests {
             "empty write-read must not be refused locally"
         );
     }
+
+    // -------------------------------------------------------------------
+    // Per-call payload ceilings (issue #158)
+    // -------------------------------------------------------------------
+    //
+    // #179 bounded only the two *batch* endpoints, because those commit
+    // `Write` operations to the bus before losing their response. The plain
+    // endpoints commit nothing, so the same overflow is merely confusing
+    // rather than destructive — but it is still reported as
+    // `Comms(Postcard(DeserializeUnexpectedEnd))`, which names the transport
+    // rather than the caller's argument and gives no hint what size would
+    // have worked.
+    //
+    // Two independent ceilings apply, and which one binds depends on the
+    // *direction* of the bytes, not on the endpoint:
+    //
+    //   * a length the device must send back  -> MAX_RESPONSE_PAYLOAD (1014)
+    //   * a payload the caller sends          -> MAX_TRANSFER_SIZE    (4096)
+    //
+    // Measured in #158 and #179, the two budgets are independent: a
+    // 1021-byte request payload did not move the response ceiling by one
+    // byte. `spi/transfer` is the case that proves the distinction is real
+    // rather than cosmetic — it is full duplex, so its single argument is
+    // both, and the tighter of the two must win.
+    //
+    // As in the #179 block above, the `count(...) == 0` assertions are the
+    // load-bearing ones, and each refusal test scripts a `CloseWire` it
+    // never expects to consume so that a regression fails promptly instead
+    // of hanging.
+
+    /// Every response-bearing entry point, as
+    /// `(name, at-ceiling call, over-ceiling call)`.
+    ///
+    /// Written out per test rather than as a loop so a failure names the
+    /// endpoint that broke.
+    #[tokio::test]
+    async fn i2c_read_at_the_response_ceiling_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.i2c_read(0x48, MAX_RESPONSE_PAYLOAD as u16).await;
+        assert_eq!(script.count("i2c/read"), 1, "a deliverable read must still be sent");
+    }
+
+    #[tokio::test]
+    async fn i2c_read_above_the_response_ceiling_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.i2c_read(0x48, MAX_RESPONSE_PAYLOAD as u16 + 1).await {
+            Err(PicoDeGalloError::Endpoint(I2cError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/read"), 0, "a local refusal must transmit nothing");
+    }
+
+    #[tokio::test]
+    async fn i2c_write_read_at_the_response_ceiling_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.i2c_write_read(0x48, &[0x00], MAX_RESPONSE_PAYLOAD as u16).await;
+        assert_eq!(script.count("i2c/write-read"), 1);
+    }
+
+    #[tokio::test]
+    async fn i2c_write_read_above_the_response_ceiling_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.i2c_write_read(0x48, &[0x00], MAX_RESPONSE_PAYLOAD as u16 + 1).await {
+            Err(PicoDeGalloError::Endpoint(I2cError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/write-read"), 0);
+    }
+
+    #[tokio::test]
+    async fn i2c_write_read_bounds_its_write_by_the_transfer_limit() {
+        // The write phase is a request payload, so it gets the *looser*
+        // ceiling. A 2000-byte write with a small read must go out: applying
+        // the response ceiling to both halves would refuse a legal call.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.i2c_write_read(0x48, &vec![0xA5; 2000], 2).await;
+        assert_eq!(
+            script.count("i2c/write-read"),
+            1,
+            "the write phase must not inherit the response ceiling"
+        );
+    }
+
+    #[tokio::test]
+    async fn i2c_write_read_above_the_transfer_limit_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.i2c_write_read(0x48, &vec![0xA5; MAX_TRANSFER_SIZE + 1], 2).await {
+            Err(PicoDeGalloError::Endpoint(I2cError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/write-read"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_read_at_the_response_ceiling_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.spi_read(MAX_RESPONSE_PAYLOAD as u16).await;
+        assert_eq!(script.count("spi/read"), 1);
+    }
+
+    #[tokio::test]
+    async fn spi_read_above_the_response_ceiling_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.spi_read(MAX_RESPONSE_PAYLOAD as u16 + 1).await {
+            Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/read"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_transfer_at_the_response_ceiling_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.spi_transfer(&vec![0xA5; MAX_RESPONSE_PAYLOAD]).await;
+        assert_eq!(script.count("spi/transfer"), 1);
+    }
+
+    #[tokio::test]
+    async fn spi_transfer_is_bounded_by_the_response_ceiling_not_the_transfer_limit() {
+        // The case that proves the two ceilings are genuinely distinct.
+        // `spi/transfer` is full duplex: its one argument is simultaneously
+        // the request payload and the response length, so the tighter bound
+        // wins. 1015 is comfortably legal as a request (MAX_TRANSFER_SIZE is
+        // 4096) and would have been accepted by a guard that only knew about
+        // the request budget — and would then have lost its response.
+        // `MAX_RESPONSE_PAYLOAD + 1` being a legal request size is what
+        // makes this test meaningful; a `const` assertion beside
+        // `request_payload_is_too_long` keeps it true.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.spi_transfer(&vec![0xA5; MAX_RESPONSE_PAYLOAD + 1]).await {
+            Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/transfer"), 0);
+    }
+
+    #[tokio::test]
+    async fn uart_read_at_the_response_ceiling_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.uart_read(MAX_RESPONSE_PAYLOAD as u16, 10).await;
+        assert_eq!(script.count("uart/read"), 1);
+    }
+
+    #[tokio::test]
+    async fn uart_read_above_the_response_ceiling_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.uart_read(MAX_RESPONSE_PAYLOAD as u16 + 1, 10).await {
+            Err(PicoDeGalloError::Endpoint(UartError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("uart/read"), 0);
+    }
+
+    #[tokio::test]
+    async fn onewire_read_at_the_response_ceiling_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.onewire_read(MAX_RESPONSE_PAYLOAD as u16).await;
+        assert_eq!(script.count("onewire/read"), 1);
+    }
+
+    #[tokio::test]
+    async fn onewire_read_above_the_response_ceiling_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.onewire_read(MAX_RESPONSE_PAYLOAD as u16 + 1).await {
+            Err(PicoDeGalloError::Endpoint(OneWireError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("onewire/read"), 0);
+    }
+
+    // Request-bearing paths. These carry the looser MAX_TRANSFER_SIZE
+    // ceiling, and each at-limit control doubles as proof that the guard is
+    // not simply refusing everything.
+
+    #[tokio::test]
+    async fn i2c_write_at_the_transfer_limit_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.i2c_write(0x48, &vec![0xA5; MAX_TRANSFER_SIZE]).await;
+        assert_eq!(script.count("i2c/write"), 1);
+    }
+
+    #[tokio::test]
+    async fn i2c_write_above_the_transfer_limit_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.i2c_write(0x48, &vec![0xA5; MAX_TRANSFER_SIZE + 1]).await {
+            Err(PicoDeGalloError::Endpoint(I2cError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("i2c/write"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_write_at_the_transfer_limit_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.spi_write(&vec![0xA5; MAX_TRANSFER_SIZE]).await;
+        assert_eq!(script.count("spi/write"), 1);
+    }
+
+    #[tokio::test]
+    async fn spi_write_above_the_transfer_limit_sends_no_rpc() {
+        // Note the asymmetry with `spi_transfer` above: `spi/write` returns
+        // no payload, so it keeps the looser ceiling and 1015 bytes is fine
+        // here. #158 measured `spi/write` succeeding at 1015 on hardware,
+        // which is why the two endpoints cannot share one bound.
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.spi_write(&vec![0xA5; MAX_TRANSFER_SIZE + 1]).await {
+            Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("spi/write"), 0);
+    }
+
+    #[tokio::test]
+    async fn spi_write_between_the_two_ceilings_still_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.spi_write(&vec![0xA5; MAX_RESPONSE_PAYLOAD + 1]).await;
+        assert_eq!(
+            script.count("spi/write"),
+            1,
+            "a write returns nothing, so the response ceiling must not apply"
+        );
+    }
+
+    #[tokio::test]
+    async fn uart_write_at_the_transfer_limit_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.uart_write(&vec![0xA5; MAX_TRANSFER_SIZE]).await;
+        assert_eq!(script.count("uart/write"), 1);
+    }
+
+    #[tokio::test]
+    async fn uart_write_above_the_transfer_limit_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.uart_write(&vec![0xA5; MAX_TRANSFER_SIZE + 1]).await {
+            Err(PicoDeGalloError::Endpoint(UartError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("uart/write"), 0);
+    }
+
+    #[tokio::test]
+    async fn onewire_write_at_the_transfer_limit_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.onewire_write(&vec![0xA5; MAX_TRANSFER_SIZE]).await;
+        assert_eq!(script.count("onewire/write"), 1);
+    }
+
+    #[tokio::test]
+    async fn onewire_write_above_the_transfer_limit_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.onewire_write(&vec![0xA5; MAX_TRANSFER_SIZE + 1]).await {
+            Err(PicoDeGalloError::Endpoint(OneWireError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("onewire/write"), 0);
+    }
+
+    #[tokio::test]
+    async fn onewire_write_pullup_at_the_transfer_limit_reaches_the_wire() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        let _ = pg.onewire_write_pullup(&vec![0xA5; MAX_TRANSFER_SIZE], 1).await;
+        assert_eq!(script.count("onewire/write-pullup"), 1);
+    }
+
+    #[tokio::test]
+    async fn onewire_write_pullup_above_the_transfer_limit_sends_no_rpc() {
+        let (pg, script) = scripted(vec![Reply::CloseWire], TEST_TIMEOUT);
+        match pg.onewire_write_pullup(&vec![0xA5; MAX_TRANSFER_SIZE + 1], 1).await {
+            Err(PicoDeGalloError::Endpoint(OneWireError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+        assert_eq!(script.count("onewire/write-pullup"), 0);
+    }
+
+    // The two policy predicates, tested directly at their boundaries so a
+    // drift in either constant is attributed to the predicate rather than to
+    // whichever endpoint test happens to run first.
+
+    #[test]
+    fn response_len_boundary_is_max_response_payload() {
+        assert!(!response_len_is_undeliverable(0));
+        assert!(!response_len_is_undeliverable(MAX_RESPONSE_PAYLOAD - 1));
+        assert!(!response_len_is_undeliverable(MAX_RESPONSE_PAYLOAD));
+        assert!(response_len_is_undeliverable(MAX_RESPONSE_PAYLOAD + 1));
+    }
+
+    #[test]
+    fn request_payload_boundary_is_max_transfer_size() {
+        assert!(!request_payload_is_too_long(0));
+        assert!(!request_payload_is_too_long(MAX_TRANSFER_SIZE - 1));
+        assert!(!request_payload_is_too_long(MAX_TRANSFER_SIZE));
+        assert!(request_payload_is_too_long(MAX_TRANSFER_SIZE + 1));
+    }
 }
 
 /// Hardware-in-the-loop checks for the batch guards: the zero-length I2C
@@ -3639,5 +4101,78 @@ mod hardware {
             GpioState::Low,
             "the refused batch deasserted chip-select, so the transaction ran"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // Per-call ceilings (issue #158)
+    // -------------------------------------------------------------------
+    //
+    // NOT YET EXECUTED ON HARDWARE. Every other test in this module was run
+    // against a board and its results are recorded in AGENTS.md §13.17;
+    // these three were written blind, because the bench was unavailable when
+    // #158 was implemented. They are the harness for the outstanding A/B,
+    // not evidence that it was done. Treat a failure here as equally likely
+    // to be a bug in the test.
+    //
+    // The A/B they are meant to support: build a host binary with the guards
+    // stubbed out, confirm 1015 returns `Comms(Postcard(...))` rather than
+    // `BufferTooLong`, then rebuild with the guards and confirm it does not.
+
+    #[tokio::test]
+    #[ignore = "requires an attached board; see module docs"]
+    async fn spi_read_at_the_response_ceiling_still_returns_data() {
+        // Positive control. Needs no SPI target: with MISO idle the bytes
+        // are meaningless, but their count is the property under test.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+
+        let got = pg
+            .spi_read(MAX_RESPONSE_PAYLOAD as u16)
+            .await
+            .expect("a read of exactly the ceiling must still be delivered");
+        assert_eq!(got.len(), MAX_RESPONSE_PAYLOAD, "the whole response must arrive");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board; see module docs"]
+    async fn oversized_spi_read_is_refused_as_a_size_error() {
+        // The regression #158 is about. Before the guard this returned
+        // `Comms(Postcard(DeserializeUnexpectedEnd))` -- re-measured on
+        // hardware 2026-09-09 during #179 and recorded in its §13.17 row --
+        // which names the transport rather than the argument at fault and
+        // gives the caller no clue what size would have worked.
+        //
+        // Unlike the batch endpoints, nothing here is corrupted by the old
+        // behaviour: a read commits no writes. This is a diagnosability fix,
+        // not a data-integrity one.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+
+        match pg.spi_read(MAX_RESPONSE_PAYLOAD as u16 + 1).await {
+            Err(PicoDeGalloError::Endpoint(SpiError::BufferTooLong)) => {}
+            other => panic!("expected Endpoint(BufferTooLong), got {other:?}"),
+        }
+
+        // The board must still be alive: this was never a wedge, and the
+        // #158 triage could not reproduce one at any size.
+        pg.ping(0x5158).await.expect("the board must survive a refused read");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires an attached board; see module docs"]
+    async fn spi_write_above_the_response_ceiling_still_succeeds() {
+        // The asymmetry, on real hardware. A single shared ceiling would
+        // wrongly refuse this: `spi/write` returns no payload, so the
+        // response budget does not apply to it, and #158 measured it
+        // completing normally at 1015 bytes in 0.36 s.
+        //
+        // This is the test that fails if someone "simplifies" the two
+        // predicates into one.
+        let _bench = BENCH.lock().await;
+        let pg = board().await;
+
+        pg.spi_write(&vec![0xA5; MAX_RESPONSE_PAYLOAD + 1])
+            .await
+            .expect("a write returns nothing, so the response ceiling must not apply");
     }
 }
