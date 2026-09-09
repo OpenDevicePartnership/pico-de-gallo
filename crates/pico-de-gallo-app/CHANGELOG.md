@@ -5,6 +5,25 @@ All notable changes to `gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- The read-count arguments of `i2c read`, `i2c write-read`, `spi read`, and
+  `spi write-read` are now parsed as `u16` instead of `usize` and then cast
+  with `as u16`. Part of #158.
+
+  The old cast silently wrapped `--count 65537` to 1, so the command asked
+  for 65,537 bytes, exited successfully, and printed one byte. No lower layer
+  could reject it because the library received the already-wrapped, legal
+  value 1. Clap now refuses values outside the `u16` range; values between
+  the response ceiling and `u16::MAX` reach the library's local guard and
+  return `BufferTooLong`.
+
+  The byte arguments' `num_args(1..)` setting is a minimum, not a maximum.
+  Oversized write payloads are now refused by the inherited library guard
+  rather than being accepted without any ceiling.
+
 ## [0.10.0] — 2026-09-01
 
 ### Changed

@@ -4,7 +4,9 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{ErrorData, tool, tool_router};
 
-use crate::encoding::{Bytes, parse_bytes};
+use crate::encoding::{
+    Bytes, parse_bytes, validate_read_count, validate_response_len, validate_write_payload,
+};
 use crate::error::{invalid_arg, map_pdg_err, map_validate_err};
 use crate::select::TargetParams;
 use crate::{GalloMcp, ok_device_json};
@@ -175,6 +177,7 @@ impl GalloMcp {
         &self,
         Parameters(p): Parameters<SpiReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
+        validate_read_count(p.count).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         let data = dev.spi_read(p.count).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &Bytes::from_slice(&data))
@@ -190,6 +193,7 @@ impl GalloMcp {
         Parameters(p): Parameters<SpiWriteParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
+        validate_write_payload(&bytes).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.spi_write(&bytes).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &"ok")
@@ -205,6 +209,9 @@ impl GalloMcp {
         Parameters(p): Parameters<SpiTransferParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
+        // Full duplex: `data` is both the sent payload and the returned one,
+        // so the tighter response ceiling binds, not the transfer ceiling.
+        validate_response_len(bytes.len()).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         let data = dev.spi_transfer(&bytes).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &Bytes::from_slice(&data))
@@ -290,6 +297,25 @@ impl GalloMcp {
         // 1. Parse all write/transfer payloads into owned buffers first (the
         //    ops borrow &[u8]), with no device access.
         let bufs = parse_batch_payloads(&p.ops)?;
+        for buf in &bufs {
+            validate_write_payload(buf).map_err(invalid_arg)?;
+        }
+        // `Read` and `Transfer` both come back; the response ceiling binds
+        // their AGGREGATE. Mirrors `check_spi_batch_ops` in the library.
+        let mut b0 = 0usize;
+        let mut total_read = 0usize;
+        for op in &p.ops {
+            match op {
+                SpiBatchOpParam::Read { count } => total_read += *count as usize,
+                SpiBatchOpParam::Transfer { .. } => {
+                    total_read += bufs[b0].len();
+                    b0 += 1;
+                }
+                SpiBatchOpParam::Write { .. } => b0 += 1,
+                SpiBatchOpParam::Delay { .. } => {}
+            }
+        }
+        validate_response_len(total_read).map_err(invalid_arg)?;
 
         // 2. Connect exactly once. Do NOT hoist this above the parse: see
         //    `parse_batch_payloads`.

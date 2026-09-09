@@ -4,7 +4,10 @@ use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::CallToolResult;
 use rmcp::{ErrorData, tool, tool_router};
 
-use crate::encoding::{Bytes, parse_bytes, validate_i2c_address, validate_i2c_write_payload};
+use crate::encoding::{
+    Bytes, parse_bytes, validate_i2c_address, validate_i2c_write_payload, validate_read_count,
+    validate_response_len, validate_write_payload,
+};
 use crate::error::{invalid_arg, map_pdg_err};
 use crate::select::TargetParams;
 use crate::{GalloMcp, ok_device_json};
@@ -110,6 +113,7 @@ impl GalloMcp {
         Parameters(p): Parameters<I2cReadParams>,
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
+        validate_read_count(p.count).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         let data = dev.i2c_read(addr, p.count).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &Bytes::from_slice(&data))
@@ -127,6 +131,7 @@ impl GalloMcp {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
         validate_i2c_write_payload(&bytes).map_err(invalid_arg)?;
+        validate_write_payload(&bytes).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         dev.i2c_write(addr, &bytes).await.map_err(map_pdg_err)?;
         ok_device_json(&dev, &"ok")
@@ -143,6 +148,8 @@ impl GalloMcp {
     ) -> Result<CallToolResult, ErrorData> {
         let addr = validate_i2c_address(p.address).map_err(invalid_arg)?;
         let bytes = parse_bytes(&p.data).map_err(invalid_arg)?;
+        validate_write_payload(&bytes).map_err(invalid_arg)?;
+        validate_read_count(p.count).map_err(invalid_arg)?;
         let dev = self.connect(p.serial_number.as_deref()).await?;
         let data = dev
             .i2c_write_read(addr, &bytes, p.count)
@@ -241,9 +248,22 @@ impl GalloMcp {
                 let buf = parse_bytes(data).map_err(invalid_arg)?;
                 validate_i2c_write_payload(&buf)
                     .map_err(|e| invalid_arg(format!("op {i}: {e}")))?;
+                validate_write_payload(&buf).map_err(|e| invalid_arg(format!("op {i}: {e}")))?;
                 write_bufs.push(buf);
             }
         }
+        // The response ceiling binds the AGGREGATE of the returning ops, not
+        // each one: a batch of individually legal reads can still overflow
+        // one reply frame. Mirrors `check_i2c_batch_ops` in the library.
+        let total_read: usize = p
+            .ops
+            .iter()
+            .map(|op| match op {
+                I2cBatchOpParam::Read { count } => *count as usize,
+                I2cBatchOpParam::Write { .. } => 0,
+            })
+            .sum();
+        validate_response_len(total_read).map_err(invalid_arg)?;
         let mut ops: Vec<I2cBatchOp<'_>> = Vec::with_capacity(p.ops.len());
         let mut w = 0usize;
         for op in &p.ops {

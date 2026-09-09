@@ -5,6 +5,24 @@ All notable changes to `pyco-de-gallo` will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Corrected the docstrings for `i2c_read`, `i2c_write_read`, `spi_read`, and
+  `spi_transfer`, which stated a 4096-byte limit that was wrong twice over:
+  no limit was enforced, and device-to-host responses are bounded at 1014
+  bytes. Part of #158.
+
+  Limit notes were also added to `i2c_write`, `spi_write`, `uart_read`,
+  `uart_write`, `onewire_read`, `onewire_write`, and
+  `onewire_write_pullup`, which previously documented no ceiling. The limit
+  follows byte direction: reads use the 1014-byte response ceiling, writes
+  use the 4096-byte request ceiling, and full-duplex `spi_transfer` uses the
+  tighter response ceiling. Oversized calls now raise `RuntimeError` from
+  the library's local guard instead of surfacing a transport deserialization
+  failure.
+
 ## [0.6.0] — 2026-09-01
 
 ### Added

@@ -5,6 +5,7 @@
 //! returned as a [`Bytes`] struct carrying both a hex string and the decoded
 //! array.
 
+use pico_de_gallo_lib::{MAX_RESPONSE_PAYLOAD, MAX_TRANSFER_SIZE};
 use serde::Serialize;
 
 /// A byte payload rendered both as a hex string and a decoded array.
@@ -132,6 +133,68 @@ pub fn validate_i2c_write_payload(data: &[u8]) -> Result<(), String> {
     Ok(())
 }
 
+/// Validate that a requested read count fits in one response frame.
+///
+/// Two independent ceilings bound a transfer, chosen by the *direction* of
+/// the bytes. Anything the device must send back is capped at
+/// [`MAX_RESPONSE_PAYLOAD`] (1014) — a property of the host USB transport,
+/// far below the 4096-byte firmware buffer. `pico-de-gallo-lib` enforces
+/// this too, but its refusal reaches an agent through `map_pdg_err` as a
+/// *device* error whose text names no size. Refusing here reports it as the
+/// invalid argument it is, and names both the offending count and the limit
+/// so the agent can re-chunk without guessing (issue #158).
+pub fn validate_read_count(count: u16) -> Result<(), String> {
+    validate_response_len(count as usize).map_err(|_| {
+        format!(
+            "read count {count} exceeds the {MAX_RESPONSE_PAYLOAD}-byte response limit; \
+             split the read into smaller chunks"
+        )
+    })
+}
+
+/// Validate the total number of bytes a single call asks the device to
+/// return.
+///
+/// The response ceiling bounds the whole reply frame, so it applies to an
+/// *aggregate*: a batch of individually legal reads can still overflow it,
+/// and a full-duplex `spi_transfer` is bounded by its payload length
+/// because those bytes come back. This mirrors `pico-de-gallo-lib`'s
+/// `check_i2c_batch_ops` / `check_spi_batch_ops`, which sum the returning
+/// operations and report the overflow with `failed_op = 0` because an
+/// aggregate is not attributable to any single operation.
+///
+/// Takes `usize` rather than `u16` because the sum of up to
+/// [`pico_de_gallo_lib::MAX_BATCH_OPS`] reads overflows a `u16`, and
+/// because a duplex payload arrives as a decoded byte vector.
+pub fn validate_response_len(total: usize) -> Result<(), String> {
+    if total > MAX_RESPONSE_PAYLOAD {
+        return Err(format!(
+            "{total} bytes to be returned exceeds the {MAX_RESPONSE_PAYLOAD}-byte \
+             response limit; request fewer bytes back"
+        ));
+    }
+    Ok(())
+}
+
+/// Validate that an outbound payload fits the firmware transfer buffer.
+///
+/// The *outbound* ceiling is [`MAX_TRANSFER_SIZE`] (4096) — looser than the
+/// response ceiling, because bytes travelling to the device are not carried
+/// in a single response frame. As with [`validate_read_count`], refusing
+/// locally turns a size mistake into an actionable invalid-argument message
+/// instead of an opaque "device error: buffer exceeds firmware limit"
+/// (issue #158).
+pub fn validate_write_payload(data: &[u8]) -> Result<(), String> {
+    let len = data.len();
+    if len > MAX_TRANSFER_SIZE {
+        return Err(format!(
+            "write payload {len} bytes exceeds the {MAX_TRANSFER_SIZE}-byte transfer \
+             limit; split the write into smaller chunks"
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -222,5 +285,41 @@ mod tests {
         // do so via `validate_i2c_write_payload` rather than by tightening
         // the shared parser.
         assert_eq!(parse_bytes("").unwrap(), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn validate_read_count_accepts_the_limit() {
+        assert!(validate_read_count(MAX_RESPONSE_PAYLOAD as u16).is_ok());
+        assert!(validate_read_count(0).is_ok());
+    }
+
+    #[test]
+    fn validate_read_count_refuses_one_past_the_limit() {
+        let over = MAX_RESPONSE_PAYLOAD as u16 + 1;
+        let e = validate_read_count(over).unwrap_err();
+        assert!(e.contains(&over.to_string()), "{e}");
+        assert!(e.contains(&MAX_RESPONSE_PAYLOAD.to_string()), "{e}");
+    }
+
+    #[test]
+    fn validate_response_len_refuses_an_aggregate_over_the_limit() {
+        assert!(validate_response_len(MAX_RESPONSE_PAYLOAD).is_ok());
+        let over = MAX_RESPONSE_PAYLOAD + 1;
+        let e = validate_response_len(over).unwrap_err();
+        assert!(e.contains(&over.to_string()), "{e}");
+    }
+
+    #[test]
+    fn validate_write_payload_accepts_the_limit() {
+        assert!(validate_write_payload(&vec![0u8; MAX_TRANSFER_SIZE]).is_ok());
+        assert!(validate_write_payload(&[]).is_ok());
+    }
+
+    #[test]
+    fn validate_write_payload_refuses_one_past_the_limit() {
+        let over = MAX_TRANSFER_SIZE + 1;
+        let e = validate_write_payload(&vec![0u8; over]).unwrap_err();
+        assert!(e.contains(&over.to_string()), "{e}");
+        assert!(e.contains(&MAX_TRANSFER_SIZE.to_string()), "{e}");
     }
 }

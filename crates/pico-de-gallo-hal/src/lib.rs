@@ -997,8 +997,19 @@ impl std::error::Error for UartHalError {}
 
 #[cfg(any(feature = "embedded-io-06", feature = "embedded-io-07"))]
 impl UartHalError {
+    /// `true` for errors that name a bad *argument* rather than a bad bus.
+    ///
+    /// `embedded_io::ErrorKind::InvalidInput` is documented as "A parameter
+    /// was incorrect", which covers both an unsupportable baud rate and a
+    /// payload or read count past the ceilings enforced in
+    /// `pico-de-gallo-lib`. The I2C and SPI equivalents have no such variant
+    /// and must fall back to `Other` — see
+    /// `i2c_error_kind_buffer_too_long_is_other`.
     fn is_invalid_input(&self) -> bool {
-        matches!(self, Self::Uart(UartError::InvalidBaudRate))
+        matches!(
+            self,
+            Self::Uart(UartError::InvalidBaudRate) | Self::Uart(UartError::BufferTooLong)
+        )
     }
 }
 
@@ -2460,6 +2471,54 @@ mod tests {
     fn spi_device_comms_error_kind_is_other() {
         use embedded_hal::spi::Error as _;
         let err = SpiHalError::Comms("CS assert failed".into());
+        assert_eq!(err.kind(), embedded_hal::spi::ErrorKind::Other);
+    }
+
+    #[cfg(feature = "embedded-io-06")]
+    #[test]
+    fn uart_error_kind_buffer_too_long_io_06() {
+        // `embedded_io::ErrorKind::InvalidInput` is documented as "A
+        // parameter was incorrect", which is exactly what an over-ceiling
+        // `count` or payload is. Unlike the I2C and SPI cases below, this
+        // trait *does* offer a variant for a bad argument, so falling back
+        // to `Other` here would be throwing away information a caller can
+        // act on. Issue #158.
+        use embedded_io_06::Error as _;
+        let err = UartHalError::Uart(UartError::BufferTooLong);
+        assert_eq!(err.kind(), embedded_io_06::ErrorKind::InvalidInput);
+    }
+
+    #[cfg(feature = "embedded-io-07")]
+    #[test]
+    fn uart_error_kind_buffer_too_long_io_07() {
+        use embedded_io_07::Error as _;
+        let err = UartHalError::Uart(UartError::BufferTooLong);
+        assert_eq!(err.kind(), embedded_io_07::ErrorKind::InvalidInput);
+    }
+
+    #[test]
+    fn i2c_error_kind_buffer_too_long_is_other() {
+        // Deliberately `Other`, and not an oversight.
+        // `embedded_hal::i2c::ErrorKind` has exactly five variants — `Bus`,
+        // `ArbitrationLoss`, `NoAcknowledge`, `Overrun`, `Other` — none of
+        // which describes an argument that was too large. Every other
+        // candidate would be an active lie: `Overrun` in particular names a
+        // peripheral receive buffer overflowing during a transfer that did
+        // happen, whereas this transfer was refused before the bus was
+        // touched. Issue #158.
+        use embedded_hal::i2c::Error as _;
+        let err = I2cHalError::I2c(I2cError::BufferTooLong);
+        assert_eq!(err.kind(), embedded_hal::i2c::ErrorKind::Other);
+        assert_ne!(err.kind(), embedded_hal::i2c::ErrorKind::Overrun);
+    }
+
+    #[test]
+    fn spi_error_kind_buffer_too_long_is_other() {
+        // As above: `embedded_hal::spi::ErrorKind` offers `Overrun`,
+        // `ModeFault`, `FrameFormat`, `ChipSelectFault` and `Other`, none of
+        // which is an oversized argument. Issue #158.
+        use embedded_hal::spi::Error as _;
+        let err = SpiHalError::Spi(SpiError::BufferTooLong);
         assert_eq!(err.kind(), embedded_hal::spi::ErrorKind::Other);
     }
 
