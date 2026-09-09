@@ -65,6 +65,73 @@ Issue #158 added local validation and firmware bounds without changing an
 endpoint, request or response type. It is therefore not a wire change and did
 not require a schema change or version bump.
 
+## The request frame ceiling
+
+`MAX_TRANSFER_SIZE` bounds a single *argument*. Independently of it, the whole
+request **frame** — header plus postcard body — has to fit in the firmware's
+receive buffer, which is `MAX_TRANSFER_SIZE + 1024` = 5120 bytes (`BufStorage`
+in `crates/pico-de-gallo-firmware/src/main.rs`).
+
+A frame that does not fit is discarded **silently**. postcard-rpc's server maps
+`WireRxErrorKind::ReceivedMessageTooLarge` to `continue`, so nothing is sent
+back; the caller sees only its own timeout. That is the failure mode to expect
+here, not `BufferTooLong`.
+
+The largest frame the firmware accepts is one byte less than the buffer:
+
+| Bytes | Term |
+|------:|------|
+| `5120` | firmware receive buffer, `MAX_TRANSFER_SIZE + 1024` |
+| `-1` | a frame that *exactly* fills the buffer is refused |
+| **`= 5119`** | largest accepted request frame |
+
+That `-1` is a mechanism, not a safety margin. postcard-rpc's
+`EUsbWireRx::receive` ends a frame when a **short** USB packet arrives, and
+loops `while !window.is_empty()`. A frame whose length equals the buffer size
+fills the window with full 64-byte packets, so the loop runs out of window
+before it ever sees a short packet, falls into its "ran out of space" branch,
+reads the transfer-terminating zero-length packet there, and reports
+`ReceivedMessageTooLarge`. Frames that are a multiple of 64 but *smaller* than
+the buffer are unaffected, because window remains and the zero-length packet
+ends the frame in the normal path.
+
+What is left for the payload depends on the header, which is **not** a
+constant:
+
+| Bytes | Term |
+|------:|------|
+| `5119` | largest accepted request frame |
+| `-1` | header discriminant |
+| `-8` or `-2` | header key — see below |
+| `-4` | header sequence number (`VarSeq::Seq4`, always; `VarSeq::resize` is defined in postcard-rpc 0.12.1 and called nowhere in it, so the `VarSeqKind` this repo passes never takes effect) |
+| `-N` | whatever the request struct encodes around the payload — for a bare `&[u8]` field that is a 2-byte postcard varint length prefix |
+
+postcard-rpc narrows the key width over the life of a connection.
+`HostClient` starts at `VarKeyKind::Key8` and adopts the server's narrower key
+only after it has **received a reply**; this device's server answers with
+`Key2`. So a process's first request carries a 13-byte header and every request
+after the first reply carries 7, and the usable payload is six bytes smaller
+until then. A request that is itself dropped does not narrow anything, because
+no reply came back.
+
+For an endpoint whose request is a single byte slice, that works out to:
+
+| State | Header | Largest payload |
+|---|---:|---:|
+| before the first reply | 13 | 5104 |
+| after the first reply | 7 | 5110 |
+
+**No supported single-argument call can reach this.** Since #158 every host
+surface caps a write argument at `MAX_TRANSFER_SIZE`, which puts the worst-case
+frame a little over 4110 bytes — a kilobyte clear of the ceiling. Batches are
+the exception: nothing bounds a batch's aggregate *write* bytes, so `i2c/batch`
+and `spi/batch` can still build an over-ceiling frame and lose it silently. See
+[Transaction Batching](../interfaces/batching.md#the-request-frame-ceiling).
+
+Measured on board `49742081C885AC69` (hw-rev2, firmware
+`firmware-v0.11.0-79-gc3c6a3e07bec`) under Linux/nusb, and previously on
+`5256657D8A5D7F03` under Windows/WinUSB with identical edges — issue #180.
+
 ## Endpoints and topics
 
 Endpoints are normal request/response RPCs declared with `endpoints!`. Topics
