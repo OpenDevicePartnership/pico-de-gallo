@@ -51,6 +51,17 @@ pub(crate) async fn i2c_read_handler<'a>(
 /// is only a backstop — without this guard it would notice the dispatch slot
 /// blowing its budget and reset the device after roughly 10 s.
 /// Issue #101.
+///
+/// The payload is also bounded above by [`MAX_TRANSFER_SIZE`], even though
+/// it streams straight from `req.contents` and never lands in
+/// `context.buf`. There is no memory-safety problem without the bound,
+/// which is why it was missing: every other handler's check exists to
+/// protect that shared buffer. But `MAX_TRANSFER_SIZE` is documented as
+/// *the* per-transaction limit and is exported to every host surface as
+/// `GALLO_MAX_TRANSFER_SIZE`, so an endpoint that quietly accepts more
+/// makes that contract a lie. Measured on hardware in issue #158: 4097
+/// bytes reached the bus and came back as a NAK rather than
+/// `BufferTooLong`. Issue #158.
 pub(crate) async fn i2c_write_handler<'a>(
     context: &mut Context,
     _header: VarHeader,
@@ -62,7 +73,13 @@ pub(crate) async fn i2c_write_handler<'a>(
         return Err(I2cError::ZeroLengthWrite);
     }
 
-    debug!("i2c write: addr={=u8:#x} len={=usize}", req.address, req.contents.len());
+    let len = req.contents.len();
+    if len > MAX_TRANSFER_SIZE {
+        warn!("i2c write: len {} exceeds transfer limit", len);
+        return Err(I2cError::BufferTooLong);
+    }
+
+    debug!("i2c write: addr={=u8:#x} len={=usize}", req.address, len);
     context
         .i2c
         .write_async(req.address, req.contents.iter().copied())
