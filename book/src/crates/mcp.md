@@ -317,10 +317,12 @@ Every tool except `list_devices` accepts an optional `serial_number`.
 | `spi_set_config` | Set frequency, phase, and polarity | destructive |
 | `spi_batch` | Atomic multi-step transaction under chip-select | destructive |
 
-> [!WARNING]
-> MCP SPI tools are not protected by the Zephyr driver's 1013-byte containment.
-> A 1015-byte TX-only request reproduced a device-wide firmware-dispatcher
-> wedge. Keep individual SPI payloads at or below 512 bytes; see
+> [!NOTE]
+> MCP tools refuse over-ceiling payloads locally, before transmitting. Data
+> returned by the device is limited to `MAX_RESPONSE_PAYLOAD` (1014 bytes),
+> while data sent to it is limited to `MAX_TRANSFER_SIZE` (4096 bytes).
+> Full-duplex `spi_transfer` is therefore limited to 1014 bytes even though
+> `spi_write` accepts 4096. The tool reports `BufferTooLong`; see
 > [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 
 `spi_batch` takes `cs` as a `u8` and runs its steps in a fixed order:

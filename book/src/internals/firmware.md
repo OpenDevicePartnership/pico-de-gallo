@@ -273,10 +273,14 @@ Changing an accepted pin to output does not alter its configured pull:
 firmware changes only the SIO output-enable state, while the pull-up and
 pull-down settings remain in the separate pad-control state.
 
-The shared transfer buffer is 4096 bytes (`MAX_TRANSFER_SIZE`), and handlers
-validate lengths before indexing into it. This is an internal buffer and
-argument bound, not a demonstrated end-to-end application-payload guarantee;
-framing and response shape reduce the deliverable size.
+The shared transfer buffer is 4096 bytes (`MAX_TRANSFER_SIZE`). Firmware
+`i2c/write` and `spi/write` reject larger payloads before bus access; before
+issue #158 those two handlers had no upper bound. Data returned to the host is
+separately bounded by `MAX_RESPONSE_PAYLOAD` (1014 bytes), including the
+aggregate returned by a batch. That tighter value is derived from the host
+transport and cannot be observed by firmware, but firmware enforces it where
+necessary to avoid executing bus side effects whose result cannot be
+delivered. Host surfaces enforce both directional bounds before transmitting.
 
 ## Dependency pins that matter
 

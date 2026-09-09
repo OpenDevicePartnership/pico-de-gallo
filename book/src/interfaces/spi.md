@@ -86,6 +86,17 @@ $ gallo spi transfer --bytes 0x01 0x02 0x03 0x04
 `transfer` clocks out the given bytes on MOSI and simultaneously
 clocks in the same number of bytes on MISO — true full-duplex.
 
+Direction determines the limit. `spi_write` sends data only and accepts up to
+`MAX_TRANSFER_SIZE` (4096 bytes). `spi_read` returns data and accepts up to
+`MAX_RESPONSE_PAYLOAD` (1014 bytes). `spi_transfer` is full duplex, so every
+argument byte also has to return; the tighter `MAX_RESPONSE_PAYLOAD` ceiling
+therefore limits the whole transfer to 1014 bytes. Every host surface checks
+these limits before transmitting and reports `BufferTooLong` for an
+over-ceiling call.
+
+This asymmetry is intentional and measured: issue #158 observed `spi/write`
+succeeding with 1015 bytes at the same boundary where `spi/transfer` fails.
+
 ### Config
 
 Mode is selected with a single `--mode` flag, defaulting to 0:
@@ -206,15 +217,18 @@ spi/set-config -> gpio/put(assert) -> spi/transfer -> gpio/put(deassert)
 ```
 
 Any of them can fail independently, and host death after the assert can leave
-chip select asserted; a fresh session can deassert ordinary residue. Only RPCs that *return* have defined behaviour — an RPC that never
-returns leaves the call pending forever with no errno and no cleanup.
+chip select asserted; a fresh session can deassert ordinary residue. Issue #178
+now bounds every host RPC with a timeout, and issue #157 added a firmware
+dispatch-progress supervisor as a backstop. If a timed-out request asserted
+chip select, its device-side fate can still be unknown, so do not assume the
+timeout deasserted the line.
 
-A non-returning 1015-byte TX-only request reproduced a device-wide dispatcher
-wedge. In those tests the device resumed after USB re-enumeration (`usbipd
-detach`/attach on Windows/WSL). This is an observed procedure, not proof that
-detach cancels the handler. On Linux/macOS reconnect the cable or use USB
-unbind/rebind; power-cycle if re-enumeration is unavailable or ineffective.
-`system/reset-subscriptions` cannot run while the dispatcher is blocked.
+Historical context still matters: an earlier 1015-byte TX-only request
+reproduced a device-wide dispatcher wedge, recoverable in that run by USB
+re-enumeration. Issue #158 could not reproduce that wedge on firmware
+`62dd64e710fd` after #157 and #178 landed: the call returned a clean error in
+12 ms and the board stayed responsive. That single-build non-reproduction does
+not prove the earlier wedge never existed.
 
 Zephyr also collapses a child's `spi-cs-setup-delay-ns` and
 `spi-cs-hold-delay-ns` into a single
@@ -254,30 +268,30 @@ went inactive, so the controller **latches**. Every later transceive then
 returns `-EHOSTDOWN` before issuing any configuration, chip-select edge or
 clocking. Only a `spi_release()` whose checked deassert succeeds clears it.
 
-Other errors a caller can see: `-ENODEV`, `-EINVAL`, `-ENOTSUP`, `-EMSGSIZE`
-(over **1013 bytes**). This is a Zephyr containment limit, not a duplex-capacity
-guarantee: TX-only 1013 succeeded, TX-only 1015 wedges the firmware dispatcher,
-and 1014 was not tested. Full duplex succeeded at 512, failed at 3072, and was
-not tested from 513 through 1013. Applications needing a documented-safe duplex
-size must use 512 bytes or less. Do not infer 1013-byte duplex support from
-`PDG_SPI_MAX_BUFFER`; the protocol's 4096-byte constant is a packet-buffer and
-argument bound, not a demonstrated end-to-end payload guarantee),
-`-ENOMEM`, `-EIO` / `-ECOMM` / `-EPROTO`, `-EACCES` (a
-chip-select pin the firmware records as an explicit input) and `-EBUSY` (a
-chip-select pin under a live firmware GPIO event subscription). Stacked drivers
-collapse these into a generic not-ready error — `jedec,spi-nor`, for instance,
-reports `-ENODEV` for any transfer failure — so the controller's own log line
-is the only authoritative diagnosis.
+Other errors a caller can see include `-ENODEV`, `-EINVAL`, `-ENOTSUP`,
+`-ENOMEM`, `-EIO` / `-ECOMM` / `-EPROTO`, `-EACCES` (a chip-select pin the
+firmware records as an explicit input), `-EBUSY` (a chip-select pin under a live
+firmware GPIO event subscription), and `-EMSGSIZE` (over
+`PDG_SPI_MAX_BUFFER`, 1014 bytes). Issue #158 superseded the old 1013-byte
+containment and 512-byte documented-safe duplex limit by measuring
+`spi/transfer` at the exact boundary: 1014 works and 1015 fails cleanly.
+`PDG_SPI_MAX_BUFFER` now lives in `pdg_spi_bottom.h`, and a `_Static_assert`
+ties it to `GALLO_MAX_RESPONSE_PAYLOAD`; it is not the 4096-byte send-only
+`GALLO_MAX_TRANSFER_SIZE`. Stacked drivers collapse these errors into a generic
+not-ready error — `jedec,spi-nor`, for instance, reports `-ENODEV` for any
+transfer failure — so the controller's own log line is the only authoritative
+diagnosis.
 
 `gallo spi batch` and the host `spi_batch` APIs described above are unchanged
 and remain fully supported; only the Zephyr module stopped using them.
 `zephyr/README.md` in the repository remains the detailed module guide.
 
-> [!WARNING]
-> The 1013-byte containment exists only in the Zephyr driver. CLI, Rust, C,
-> Python, and MCP SPI calls can still reach the 1015-byte device-wide wedge.
-> Keep individual SPI payloads at or below 512 bytes until an operation-specific
-> host limit is derived; see [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+> [!NOTE]
+> The Zephyr driver and every direct host surface enforce the directional
+> limits locally. Zephyr returns `-EMSGSIZE`; Rust, C, Python, CLI, and MCP use
+> their `BufferTooLong` mapping. `spi_write` accepts 4096 bytes, but any SPI
+> operation that returns bytes is limited to 1014; see
+> [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 
 ## Rust Library
 

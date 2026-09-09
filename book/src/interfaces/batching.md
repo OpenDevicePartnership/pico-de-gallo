@@ -277,6 +277,8 @@ from the request, so no framing is needed in the response.
 | Maximum size of an individual operation | None — bounded only by the totals below |
 | **Total bytes a batch may return** | **1014 (`MAX_RESPONSE_PAYLOAD`)** |
 | Protocol packet-buffer/argument bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
+| Plain read/duplex endpoint bound | 1014 bytes (`MAX_RESPONSE_PAYLOAD`) |
+| Plain write endpoint bound | 4096 bytes (`MAX_TRANSFER_SIZE`) |
 | Direct I²C RPC measurements | Read: 1014 bytes after a 1-byte write; write: no failure through 4096 bytes |
 | Batch measurements | Reads totalling 1014 bytes return in full; 1015 is refused with `BufferTooLong`, on both `i2c/batch` and `spi/batch` |
 | Demonstrated SPI payload (send direction) | Shape-dependent and below 4096; no general ceiling is published |
@@ -295,6 +297,12 @@ shape and response size both matter. The direct-RPC I²C measurements used
 `i2c/write` and `i2c/write-read`; the batch row was measured separately,
 through `i2c/batch` and `spi/batch`. See the measured I²C and SPI evidence in
 [Troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
+Issue #179 introduced the aggregate returned-data bound for batches. Issue
+#158 applies the same directional rule to the plain endpoints and every host
+surface: reads and full-duplex transfers use `MAX_RESPONSE_PAYLOAD`, while
+send-only writes use `MAX_TRANSFER_SIZE`. In both cases an over-ceiling call is
+refused before transmission.
 
 #### The response ceiling
 

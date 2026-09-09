@@ -140,58 +140,61 @@ collisions). Try a slower clock with `gallo i2c set-config --frequency standard`
 
 ### `BufferTooLong` (−22)
 
-Two different limits are involved here, and conflating them is a common
-source of confusion:
+The argument exceeds one of two independent ceilings. Choose the ceiling by
+the direction of the bytes, not by the endpoint:
 
-- **The protocol constant, 4096 bytes** (`MAX_TRANSFER_SIZE`). This is the
-  firmware's per-packet **buffer budget**, not a usable payload size — the
-  same buffer must also hold the postcard-rpc header, the length varint and
-  the COBS framing, and it covers the request frame *and* the response
-  frame.
-- **The usable payload, which is smaller and shape-dependent.** In measured SPI
-  tests, 4096-byte TX-only and 3072-byte full-duplex requests passed their local
-  checks, reached the transport, and failed `-ECOMM`.
+| Direction | Constant | Value | Examples |
+|---|---|---:|---|
+| device → host | `MAX_RESPONSE_PAYLOAD` | 1014 | reads, the read half of I²C write-read, batch returning operations, all of full-duplex SPI transfer |
+| host → device | `MAX_TRANSFER_SIZE` | 4096 | writes and the write half of I²C write-read |
 
-I²C has separate measured results. A read of 1014 bytes after a one-byte write
-returned exactly 1014 bytes; the tested lengths at and above 1015 returned the
-host-side response decode error `Postcard(DeserializeUnexpectedEnd)` rather
-than wedging the dispatcher. No failing write request length was observed
-through 4096 bytes: each request crossed USB intact, was decoded, initiated a
-bus transaction and returned the expected address NACK. Because the address was
-unpopulated, no payload byte was clocked. This verifies request framing at 4096,
-not successful bus-level clocking of a 4096-byte payload. No I²C hang was found
-in the tested range, but that does not prove none exists.
+`MAX_RESPONSE_PAYLOAD` is derived from postcard-rpc's host inbound USB buffer:
+1024 − 7 bytes of response header (1 discriminant, 2 key, 4 sequence) − 1
+postcard `Result` discriminant − 2 bytes of varint length prefix = 1014. It is a
+host-transport property that firmware cannot observe. `spi_transfer` makes the
+distinction visible: it is full duplex, so its whole argument is limited to
+1014, while send-only `spi_write` accepts 4096. Issue #158 measured
+`spi/write` succeeding at 1015 bytes exactly where `spi/transfer` fails.
 
-Only the one-byte-write row of the I²C write/read frontier was measured. The
-available target rejected longer writes. Reading the 1014-byte read edge and
-the 4096-byte request-framing result as independent per-direction limits is an
-**inference from mechanism, not measurement**: a shared roughly 1015-byte
-framing budget is hard to reconcile with a 4096-byte write request being
-delivered, decoded and initiating a bus transaction, while the read failure is
-in response decoding and write data travels in the request.
+Every host surface now rejects an over-ceiling argument locally before
+transmitting. Rust and MCP report `BufferTooLong`; C returns
+`Status::BufferTooLong`; Python raises `RuntimeError`; Zephyr returns
+`-EMSGSIZE`. No new C `Status` value was added. To fix the call, split or chunk
+the transfer. A batch's returning operations count in aggregate, so dividing a
+large read into operations inside one batch does not evade the response limit.
 
-Split larger transfers. Batch operations still occupy one framed request and
-response; batching does not make an otherwise undeliverable aggregate fit.
+The historical measurements explain why these guards exist. Before issue #179,
+a batch returning 1015–4096 bytes executed its bus operations and only then lost
+the response with `Postcard(DeserializeUnexpectedEnd)`; #179 added the aggregate
+batch ceiling. Before #158, plain I²C reads showed the same 1014/1015 edge, while
+I²C write requests reached 4096 and initiated a transaction at an unpopulated
+address. That verifies request framing, not successful clocking of a 4096-byte
+payload, and no I²C hang found in that range proves none exists.
 
-The Zephyr SPI driver rejects clocked lengths above 1013 bytes. That is
-containment, not a duplex-capacity guarantee: TX-only 1013 succeeded, TX-only
-1015 wedges the dispatcher, and 1014 was not tested. Full duplex succeeded at
-512, failed at 3072, and was not tested from 513 through 1013. Applications
-needing a documented-safe duplex size must use 512 bytes or less. Do not infer
-1013-byte duplex support from `PDG_SPI_MAX_BUFFER`.
+These figures come from the issue #158 measurements on board
+`5256657D8A5D7F03` and the issue #179 measurements on board
+`49742081C885AC69`; this documentation update did not repeat them.
 
-The Zephyr I²C driver similarly rejects reads above 1014 bytes and writes above
-4096 bytes. Unlike SPI's 1015-byte dispatcher wedge, exceeding the measured I²C
-read edge produced a clean error. The 4096-byte write limit is still only the
-largest representable request-framing value tested, not a demonstrated
-bus-payload length or a measured ceiling.
+The older Zephyr SPI guidance capped transfers at 1013 and documented full
+duplex only through 512 because 1014 and the 513–1013 range had not been tested.
+Issue #158 superseded it: `spi/transfer` was measured at 1014 successfully, and
+1015 now fails cleanly. `PDG_SPI_MAX_BUFFER` is therefore 1014 and is tied to
+`GALLO_MAX_RESPONSE_PAYLOAD` by a `_Static_assert`.
 
-These Zephyr limits do not protect CLI, Rust, C, Python, or MCP callers. In the
-reproduced SPI tests the device resumed after USB re-enumeration (`usbipd
-detach`/attach on Windows/WSL). This is an observation, not proof that detach
-cancels the handler. On Linux/macOS reconnect the cable or use USB
-unbind/rebind; power-cycle if unavailable or ineffective.
-`system/reset-subscriptions` cannot run while dispatch is blocked.
+An earlier 1015-byte TX-only request did reproduce a device-wide dispatcher
+wedge. Issue #158 could not reproduce it on firmware `62dd64e710fd`, after
+issue #157 added the watchdog supervisor and issue #178 bounded every host RPC:
+the call returned a clean error in 12 ms and the board stayed responsive. This
+is a non-reproduction on one firmware build, not proof the earlier observation
+never occurred.
+
+If you are running firmware older than the #157 watchdog supervisor and do hit
+a wedge, the recovery recorded at the time was USB re-enumeration: `usbipd
+detach` followed by attach on Windows/WSL. That is an observed procedure, not
+proof that detaching cancels the blocked handler. On Linux and macOS,
+reconnect the cable or use USB unbind/rebind, and power-cycle if
+re-enumeration is unavailable or ineffective. `system/reset-subscriptions`
+cannot run while dispatch is blocked, so it is not a way out.
 
 ### GPIO `WrongDirection` (−28)
 

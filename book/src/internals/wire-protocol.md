@@ -34,7 +34,8 @@ them.
 - endpoint marker types,
 - request and response structs,
 - topic message types,
-- protocol constants like `MAX_TRANSFER_SIZE`,
+- directional payload constants `MAX_TRANSFER_SIZE` and
+  `MAX_RESPONSE_PAYLOAD`,
 - schema-version constants generated at build time.
 
 The crate also uses the `use-std` feature to switch certain response types
@@ -45,6 +46,24 @@ between owned host buffers and borrowed firmware buffers:
 
 That lets the host own received data while the firmware can answer from a shared
 scratch buffer without heap allocation.
+
+The two payload constants are independent and selected by byte direction:
+
+| Direction | Constant | Value |
+|---|---|---:|
+| host → device | `MAX_TRANSFER_SIZE` | 4096 |
+| device → host | `MAX_RESPONSE_PAYLOAD` | 1014 |
+
+`MAX_RESPONSE_PAYLOAD` is derived from postcard-rpc's 1024-byte host inbound
+USB buffer: 1024 − 7 bytes of response header (1 discriminant, 2 key, 4
+sequence) − 1 postcard `Result` discriminant − 2 bytes of varint length prefix
+= 1014. It is a host-transport property that firmware cannot observe.
+Full-duplex `spi/transfer` proves why both constants are needed: its one length
+travels in both directions, so the tighter response ceiling applies.
+
+Issue #158 added local validation and firmware bounds without changing an
+endpoint, request or response type. It is therefore not a wire change and did
+not require a schema change or version bump.
 
 ## Endpoints and topics
 
@@ -103,7 +122,7 @@ a whole and cannot be attributed to one operation, so it reports
 
 | Index | Variant | Meaning |
 |-------|---------|---------|
-| 0 | `BufferTooLong` | Request exceeds the firmware buffer limit |
+| 0 | `BufferTooLong` | Argument exceeds its directional payload ceiling |
 | 1 | `Other` | Unspecified firmware-reported SPI failure |
 | 2 | `InvalidCsPin` | Chip-select index outside `0..DeviceInfo::num_gpios` |
 | 3 | `CsPinUnavailable` | Chip-select pin is explicitly configured as an input |
