@@ -4755,12 +4755,16 @@ mod tests {
     /// the same ceiling rather than a per-operation limit.
     #[test]
     fn the_measured_multi_op_edge_lands_on_the_same_ceiling() {
+        // Fixed-size arrays rather than `Vec`, so this runs without the
+        // `use-std` feature too — CI checks each crate on its own, where
+        // `alloc` is not in scope (AGENTS.md §13.14).
         let accepted = [0xA5u8; 634];
         let dropped = [0xA5u8; 635];
-        fn eight<'a>(d: &'a [u8]) -> Vec<I2cBatchOp<'a>> {
-            (0..8).map(|_| I2cBatchOp::Write { data: d }).collect()
-        }
-        assert!(i2c_batch_request_frame_len(&eight(&accepted)) <= MAX_REQUEST_FRAME);
-        assert!(i2c_batch_request_frame_len(&eight(&dropped)) > MAX_REQUEST_FRAME);
+        let eight_accepted =
+            core::array::from_fn::<_, 8, _>(|_| I2cBatchOp::Write { data: &accepted });
+        let eight_dropped =
+            core::array::from_fn::<_, 8, _>(|_| I2cBatchOp::Write { data: &dropped });
+        assert!(i2c_batch_request_frame_len(&eight_accepted) <= MAX_REQUEST_FRAME);
+        assert!(i2c_batch_request_frame_len(&eight_dropped) > MAX_REQUEST_FRAME);
     }
 }
