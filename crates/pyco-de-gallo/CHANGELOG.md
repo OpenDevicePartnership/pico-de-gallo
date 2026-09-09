@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Documented the two aggregate size limits on `i2c_batch` and `spi_batch`:
+  the 1014-byte response ceiling and the 5119-byte request frame. Part of
+  #186.
+
+  Both docstrings previously described only per-operation validity, so a
+  caller had no way to know that a batch of individually legal operations
+  could be refused — or, before #186, silently dropped.
+
+### Changed
+
 - Corrected the docstrings for `i2c_read`, `i2c_write_read`, `spi_read`, and
   `spi_transfer`, which stated a 4096-byte limit that was wrong twice over:
   no limit was enforced, and device-to-host responses are bounded at 1014

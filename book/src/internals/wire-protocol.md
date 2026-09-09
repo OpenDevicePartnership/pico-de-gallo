@@ -61,9 +61,13 @@ sequence) − 1 postcard `Result` discriminant − 2 bytes of varint length pref
 Full-duplex `spi/transfer` proves why both constants are needed: its one length
 travels in both directions, so the tighter response ceiling applies.
 
-Issue #158 added local validation and firmware bounds without changing an
-endpoint, request or response type. It is therefore not a wire change and did
-not require a schema change or version bump.
+A third constant, `MAX_REQUEST_FRAME` (5119), bounds the whole request *frame*
+rather than any one argument. It only binds the batch endpoints; the section
+below derives it.
+
+Issues #158 and #186 added local validation and firmware bounds without
+changing an endpoint, request or response type. Neither is therefore a wire
+change, and neither required a schema change or version bump.
 
 ## The request frame ceiling
 
@@ -123,14 +127,24 @@ For an endpoint whose request is a single byte slice, that works out to:
 
 **No supported single-argument call can reach this.** Since #158 every host
 surface caps a write argument at `MAX_TRANSFER_SIZE`, which puts the worst-case
-frame a little over 4110 bytes — a kilobyte clear of the ceiling. Batches are
-the exception: nothing bounds a batch's aggregate *write* bytes, so `i2c/batch`
-and `spi/batch` can still build an over-ceiling frame and lose it silently. See
+frame a little over 4110 bytes — a kilobyte clear of the ceiling.
+`pico-de-gallo-internal` asserts that ordering at compile time, so it cannot
+quietly stop being true.
+
+Batches were the exception, because nothing bounded their aggregate *write*
+bytes: `i2c/batch` and `spi/batch` could build an over-ceiling frame and lose
+it silently. Since #186 both are bounded host-side against `MAX_REQUEST_FRAME`
+before transmission, using the **wide** header so the answer does not depend on
+whether the client has received a reply yet. The firmware cannot help here — it
+never sees the frame — which is what makes this the one ceiling with no
+device-side counterpart. See
 [Transaction Batching](../interfaces/batching.md#the-request-frame-ceiling).
 
 Measured on board `49742081C885AC69` (hw-rev2, firmware
 `firmware-v0.11.0-79-gc3c6a3e07bec`) under Linux/nusb, and previously on
-`5256657D8A5D7F03` under Windows/WinUSB with identical edges — issue #180.
+`5256657D8A5D7F03` under Windows/WinUSB with identical edges — issue #180. The
+5119/5120 edge was re-measured on `firmware-v0.11.0-88-gfcb38de3a1ff` for
+issue #186, with the new host guard stubbed out, and was unchanged.
 
 ## Endpoints and topics
 

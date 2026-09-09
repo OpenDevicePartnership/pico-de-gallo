@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- `i2c_batch` and `spi_batch` now bound their aggregate *outgoing* bytes
+  against `MAX_REQUEST_FRAME`, locally and before transmission, reporting
+  `BufferTooLong` with `failed_op = 0`. Closes #186.
+
+  A batch's outgoing bytes were bounded by nothing. `check_i2c_batch_ops`
+  walked the operations for zero-length writes and then checked only the
+  *read* aggregate; `check_spi_batch_ops` checked only the read/transfer
+  aggregate. A batch could therefore build a request frame larger than the
+  firmware's receive buffer, which postcard-rpc's `receive()` discards
+  before any handler runs — so nothing was sent back at all and the caller
+  saw `Timeout`, an error naming neither the argument at fault nor a size
+  that would work. On `spi_batch` it was worse: a batch carrying no
+  `DelayNs` is bounded by the firmware's 30-minute handler ceiling, so the
+  caller waited over half an hour.
+
+  This is the one ceiling with no firmware counterpart, and cannot have one:
+  the device never receives the frame. It is also the last route from a
+  supported host surface into the request-frame ceiling, since #158 capped
+  every single-argument write at `MAX_TRANSFER_SIZE`.
+
+  The bound assumes the widest request header, so the answer does not depend
+  on whether the client has received a reply yet — postcard-rpc narrows its
+  key from 8 bytes to 2 only after a first reply, and the field is private.
+  A warm connection is therefore refused up to six bytes earlier than the
+  wire strictly requires, which is the deliberate price of a bound that does
+  not vary with what the process did beforehand.
+
+  Individual batch operations remain *unbounded* by `MAX_TRANSFER_SIZE`, and
+  deliberately so: a batch `Write` streams straight out of the received
+  frame and never enters the firmware's scratch buffer, so unlike
+  `i2c_write` there is no buffer contract to honour. The frame is its real
+  limit.
+
+### Added
+
+- Re-exports `MAX_REQUEST_FRAME`, `i2c_batch_request_frame_len` and
+  `spi_batch_request_frame_len` so callers can size a batch without
+  modelling postcard overhead by hand. Part of #186.
+
+### Fixed
+
 - Every payload-carrying entry point now enforces a size ceiling locally,
   before anything is transmitted, instead of documenting one and enforcing
   nothing. Part of #158.

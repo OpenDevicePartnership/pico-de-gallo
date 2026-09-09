@@ -9,6 +9,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `encoding::validate_request_frame_len`, wired into `i2c_batch` and
+  `spi_batch` before either connects to a board. Part of #186.
+
+  The library refuses an over-ceiling batch too, but its refusal reaches an
+  agent through `map_pdg_err` as `invalid_params("device error: buffer
+  exceeds firmware limit")` — wrong twice over here, since the device never
+  received the request and the limit is the transport's rather than the
+  firmware buffer's. The local refusal names the encoded size, the limit,
+  the overshoot and the remedy.
+
+### Changed
+
+- `spi_batch` now builds its borrowed operations before connecting, so the
+  request-frame bound costs no device access. The documented step order was
+  updated to match. Part of #186.
+
+- The "deliberately NOT size-checked" comments on both batch tools, which
+  cited #158's scope, now describe what actually bounds a batch write: the
+  aggregate request frame, not `MAX_TRANSFER_SIZE`. Part of #186.
+
+### Added
+
 - `encoding.rs` now provides `validate_read_count`, `validate_response_len`,
   and `validate_write_payload`, wired into every I²C, SPI, UART, and 1-Wire
   tool that accepts a count or payload, including aggregate batch lengths.

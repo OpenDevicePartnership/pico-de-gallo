@@ -69,6 +69,7 @@ firmware enforces instead of hard-coding copies:
 ```c
 #define GALLO_MAX_TRANSFER_SIZE 4096
 #define GALLO_MAX_RESPONSE_PAYLOAD 1014
+#define GALLO_MAX_REQUEST_FRAME 5119
 #define GALLO_MAX_BATCH_OPS 64
 #define GALLO_NUM_GPIOS 4
 ```
@@ -78,7 +79,11 @@ The direction of the bytes selects the limit. `GALLO_MAX_TRANSFER_SIZE` is the
 `GALLO_MAX_RESPONSE_PAYLOAD` is the 1014-byte limit for data the device must
 return, including the aggregate returned by a batch. A full-duplex
 `gallo_spi_transfer` uses the response limit for its entire length because each
-byte travels in both directions. Exceeding either limit yields
+byte travels in both directions. `GALLO_MAX_REQUEST_FRAME` is the 5119-byte
+limit on a whole request frame; it binds only `gallo_i2c_batch` and
+`gallo_spi_batch`, whose aggregate outgoing bytes nothing else bounds — an
+individual batch `Write` is deliberately *not* capped at
+`GALLO_MAX_TRANSFER_SIZE`. Exceeding any of the three yields
 `Status::BufferTooLong` locally, before transmission. See
 [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
 Exceeding `GALLO_MAX_BATCH_OPS` in `gallo_i2c_batch` or `gallo_spi_batch`

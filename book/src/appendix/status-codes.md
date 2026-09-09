@@ -119,9 +119,11 @@ a blind retry there can repeat side effects.
 `BufferTooLong` (−22) is also a host-side refusal. Data returned by the device
 is limited to `GALLO_MAX_RESPONSE_PAYLOAD` (1014 bytes), while data sent to it
 is limited to `GALLO_MAX_TRANSFER_SIZE` (4096 bytes). Full-duplex SPI transfer
-uses the tighter response ceiling. The same status still represents a
+uses the tighter response ceiling. A batch is bounded a third way, by
+`GALLO_MAX_REQUEST_FRAME` (5119 bytes) on its whole request frame — the only
+bound on its aggregate outgoing bytes. The same status still represents a
 device-side buffer refusal, but an over-ceiling argument is rejected locally
-before transmission. Issue #158 added no new `Status` value.
+before transmission. Issues #158, #179 and #186 added no new `Status` value.
 
 `SpiInvalidCsPin` (−71) and `SpiNoGpios` (−74) are host-side refusals: the
 chip-select was rejected before anything was transmitted, and no pin was

@@ -965,6 +965,16 @@ impl PycoDeGallo {
     /// Requires firmware built from schema 0.7 or newer. Older firmware
     /// executes each operation as its own transaction.
     ///
+    /// Two aggregate size limits apply, both refused locally before
+    /// anything is transmitted. The ``Read`` operations may return at most
+    /// 1014 bytes in total (MAX_RESPONSE_PAYLOAD), and the whole request —
+    /// header and postcard overhead included — must fit one 5119-byte frame
+    /// (MAX_REQUEST_FRAME). Neither bounds an individual operation: a batch
+    /// of individually modest writes can still overrun the request frame,
+    /// and unlike :meth:`i2c_write` a single batch ``Write`` is not capped
+    /// at 4096 bytes. Keep a batch's total payload comfortably under 5000
+    /// bytes, or split it.
+    ///
     /// Args:
     ///     address (int): 7-bit I2C target address.
     ///     ops (list[I2cBatchOp]): Sequence of read/write operations,
@@ -974,8 +984,9 @@ impl PycoDeGallo {
     ///     bytes: Concatenated data from every ``Read`` operation, in order.
     ///
     /// Raises:
-    ///     RuntimeError: On a bus failure, or if any ``Write`` operation is
-    ///         zero-length. The whole batch is validated before anything is
+    ///     RuntimeError: On a bus failure, if any ``Write`` operation is
+    ///         zero-length, or if either aggregate size limit above is
+    ///         exceeded. The whole batch is validated before anything is
     ///         driven onto the bus, so a rejected batch performs no I2C
     ///         traffic at all.
     fn i2c_batch(&self, py: Python<'_>, address: u8, ops: Vec<I2cBatchOp>) -> PyResult<Vec<u8>> {
@@ -1059,6 +1070,15 @@ impl PycoDeGallo {
     /// chip-select drives no pin. The first call performs one implicit
     /// ``device/info`` round-trip; afterwards the count is cached.
     ///
+    /// Two aggregate size limits apply, both refused locally before
+    /// anything is transmitted. ``Read`` and ``Transfer`` may return at
+    /// most 1014 bytes in total (MAX_RESPONSE_PAYLOAD), and the whole
+    /// request — header and postcard overhead included — must fit one
+    /// 5119-byte frame (MAX_REQUEST_FRAME), which ``Write`` and
+    /// ``Transfer`` payloads consume. Neither bounds an individual
+    /// operation. Keep a batch's total payload comfortably under 5000
+    /// bytes, or split it.
+    ///
     /// Args:
     ///     cs_pin (int): GPIO pin number to use as chip-select. Must be in
     ///         ``0..num_gpios``. Values outside ``0..=255`` raise
@@ -1073,7 +1093,8 @@ impl PycoDeGallo {
     ///     RuntimeError: If the GPIO count could not be determined (the
     ///         message starts with ``failed to determine num_gpios``), if
     ///         the device reports zero GPIOs, if ``cs_pin`` is at or beyond
-    ///         the reported count, or if the batch itself fails.
+    ///         the reported count, if either aggregate size limit above is
+    ///         exceeded, or if the batch itself fails.
     fn spi_batch(&self, py: Python<'_>, cs_pin: u8, ops: Vec<SpiBatchOp>) -> PyResult<Vec<u8>> {
         // Resolve the bound before converting the operation objects: a
         // refused chip-select must cost nothing and transmit nothing.
