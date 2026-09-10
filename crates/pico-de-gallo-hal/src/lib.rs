@@ -1879,9 +1879,15 @@ impl embedded_hal_async::delay::DelayNs for Delay {
 /// UART handle implementing enabled `embedded-io` traits (0.6 by default).
 ///
 /// Obtained from [`Hal::uart`]. Supports blocking and async read/write.
-/// **Baud rate is fixed at the firmware default** and cannot be changed
-/// through this HAL — to change baud, depend on `pico-de-gallo-lib`
-/// directly and call `PicoDeGallo::uart_set_config`.
+/// **UART configuration cannot be changed through this HAL.** The handle uses
+/// whatever baud rate and framing the device is currently configured for. To
+/// reconfigure it, depend on `pico-de-gallo-lib` directly and call
+/// `PicoDeGallo::uart_set_config`.
+///
+/// Reconfiguration through another handle must not race reads or writes made
+/// through this one: the device applies the baud divisor before the framing
+/// and drains neither direction, so callers must quiesce both directions
+/// across that call.
 ///
 /// **Read timeout**: UART reads use a configurable timeout (in
 /// milliseconds) to avoid blocking the USB bridge indefinitely. The
