@@ -345,6 +345,51 @@ poll costs a USB round trip rather than a round trip plus a millisecond.
 This is scoped to `timeout_ms == 0`. The non-zero path keeps its existing
 `progress::bounded` behaviour.
 
+#### Correction, from M2: `read_ready()` is unsafe here
+
+The paragraph above is wrong and the implementation does **not** do that.
+Verified against `embassy-rp-0.10.0/src/uart/buffered.rs`:
+
+- `read_ready` is `Ok(!state.rx_buf.is_empty())` and nothing more (`:337`).
+- On a framing, parity, break or overrun error the ISR latches `rx_error` **and
+  disables the RX interrupts**, `uartimsc().write_clear()` on `rxim`/`rtim`
+  (`:588-593`).
+- `try_read` is the only consumer of `rx_error` (`:275`) and the only thing
+  that re-enables those interrupts (`:283-288`).
+
+So a client that polls only with `timeout_ms == 0` would, after a single RX
+error, find the ring empty forever, never reach `try_read`, and have RX dead
+until reboot. That is precisely the Zephyr `uart_poll_in` consumer this section
+exists to serve, and this branch *raises* the trigger probability by letting
+callers select framing and get it wrong.
+
+The shipped implementation polls the read future exactly once
+(`embassy_futures::poll_once`). That reaches `try_read`, which on an empty ring
+with an error set returns `Poll::Ready(Err(e))` rather than `Pending`
+(`:274-281`) and re-enables the interrupts on the way out. Full performance
+win, hazard closed, and no new dependency — `embassy-futures` was already
+direct.
+
+Note also that `embassy-rp` implements `embedded_io_async::ReadReady` (`:650`),
+not `embedded_io::ReadReady`, so the trait named above was the wrong generation
+regardless.
+
+#### Correction, from M2: the reconfiguration is not atomic
+
+§5.1 said "baud, then framing, in one handler invocation" so the two never
+disagree. That is false. `set_baudrate` restores an **enabled** `UARTCR` before
+returning (`mod.rs:1070-1075`), so there is a brief window carrying the new
+divisor with the old framing. Callers should quiesce both directions across a
+reconfiguration. The handler and `Context` field docs now say so; neither claim
+of atomicity survives.
+
+The window is bounded: `set_baudrate_inner` clamps `IBRD` to 65535
+(`mod.rs:1062-1068`), so the lowest achievable baud is about 143 and the
+worst-case delay is roughly 105 ms per call, about 210 ms for baud plus
+framing. The undeclared dispatch budget is 10 s and the supervisor's
+discontinuity threshold is 500 ms, so no reachable baud rate can trip the
+progress supervisor.
+
 ### 5.3 Stored configuration
 
 `Context::uart_baud_rate: u32` (`context.rs:88`) becomes a struct holding all
@@ -622,7 +667,7 @@ If that proves unreliable in practice, the honest fallback is a logic-analyser
 capture in the style of the 2026-09-03 I2C measurement, and the design should
 say so rather than claim a verification it did not perform.
 
-Also required: a firmware A/B for the §5.2 `read_ready()` fast path, showing
+Also required: a firmware A/B for the §5.2 single-poll fast path, showing
 the idle-poll cost dropping from ~1422 µs, and confirmation of the §4.5
 request-key claim.
 

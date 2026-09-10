@@ -4,7 +4,7 @@
 
 **Goal:** Extend the UART wire configuration from baud-rate-only to full framing (data bits, parity, stop bits), apply it on the RP2350, and surface it through every host crate — so that Phase B's Zephyr `uart_configure()` has something honest to call.
 
-**Architecture:** Three new postcard enums in `pico-de-gallo-internal`, sized to what the RP2350's PL011 can actually produce. The firmware applies them by writing `UARTLCR_H` through the public `embassy_rp::pac`, replicating embassy's own disable / 15-baud-delay / modify / restore sequence, because `BufferedUart` exposes `set_baudrate` and nothing else. A second, independent firmware change gives `uart/read` a `read_ready()` fast path so an idle poll costs a USB round trip instead of a round trip plus a millisecond.
+**Architecture:** Three new postcard enums in `pico-de-gallo-internal`, sized to what the RP2350's PL011 can actually produce. The firmware applies them by writing `UARTLCR_H` through the public `embassy_rp::pac`, replicating embassy's own disable / 15-baud-delay / modify / restore sequence, because `BufferedUart` exposes `set_baudrate` and nothing else. A second, independent firmware change gives `uart/read` a single-poll fast path so an idle poll costs a USB round trip instead of a round trip plus a millisecond.
 
 **Tech Stack:** Rust (no_std firmware on `thumbv8m.main-none-eabihf`, std host crates), postcard-rpc 0.12, embassy-rp 0.10, rp-pac 7.0, PyO3, cbindgen.
 
@@ -45,7 +45,7 @@ A hidden `wsl … sleep infinity` process keeps the distro alive; killing it det
 |---|---|---|
 | `crates/pico-de-gallo-internal/src/lib.rs` | Wire enums `UartDataBits`/`UartParity`/`UartStopBits`; extended request and info structs | Modify |
 | `crates/pico-de-gallo-firmware/src/context.rs` | Replace `uart_baud_rate: u32` with a four-field config | Modify |
-| `crates/pico-de-gallo-firmware/src/handlers/uart.rs` | `UARTLCR_H` framing apply; `read_ready()` fast path; full get-config | Modify |
+| `crates/pico-de-gallo-firmware/src/handlers/uart.rs` | `UARTLCR_H` framing apply; single-poll read fast path; full get-config | Modify |
 | `crates/pico-de-gallo-lib/src/lib.rs` | `uart_set_config` takes framing | Modify |
 | `crates/pico-de-gallo-ffi/src/lib.rs` | `GalloUart*` enums; extended signatures | Modify |
 | `crates/pico-de-gallo-ffi/cbindgen.toml` | Export the new enums or cbindgen prunes them | Modify |
@@ -841,17 +841,58 @@ with:
 
 ```rust
     if req.timeout_ms == 0 {
-        // Non-blocking. Ask the ring first: without this, an empty poll waits
-        // out the full 1 ms below and costs about 1422 us end to end, which a
+        // Non-blocking. Poll the read exactly once instead of waiting out a
+        // 1 ms timeout: an empty poll cost about 1422 us end to end, which a
         // Zephyr uart_poll_in loop pays on every idle iteration.
-        match ReadReady::read_ready(&mut context.uart) {
-            Ok(false) => return Ok(&[]),
-            Ok(true) => {}
-            // Fall through to the timed read rather than reporting an error:
-            // read_ready is an optimisation, and the read itself is the
-            // authority on whether data is available.
-            Err(_) => {}
+        //
+        // Deliberately NOT ReadReady::read_ready(). That inspects only the
+        // software RX ring, and on a framing/parity/break/overrun error the
+        // ISR records rx_error and disables RX interrupts; only try_read
+        // consumes the error and re-enables them. Returning early on an empty
+        // ring would leave the error latched and RX dead for a client that
+        // only ever polls with timeout_ms == 0. A single poll runs try_read,
+        // so the error surfaces here instead.
+        //
+        // Dropping the future on Pending is safe: try_read never pops bytes
+        // and then returns Pending, and poll_once's no-op waker registration
+        // is replaced by the next read.
+        match poll_once(AsyncRead::read(&mut context.uart, buf)) {
+            Poll::Ready(Ok(n)) => Ok(&context.buf[..n]),
+            Poll::Ready(Err(_)) => Err(UartError::Other),
+            Poll::Pending => Ok(&[]),
         }
+    } else {
+```
+
+> **CORRECTED AFTER M2.** This task originally prescribed
+> `ReadReady::read_ready()`, which is **unsafe for this consumer** and would
+> have shipped a latent RX-death bug. The reasoning, verified against
+> `embassy-rp-0.10.0/src/uart/buffered.rs`:
+>
+> - `read_ready` is `Ok(!state.rx_buf.is_empty())` and nothing more (`:337`).
+> - On any RX error the ISR latches `rx_error` **and disables the RX
+>   interrupts** — `uartimsc().write_clear()` on `rxim`/`rtim` (`:588-593`).
+> - `try_read` is the **only** thing that re-enables them (`:283-288`), and it
+>   is also the only consumer of `rx_error` (`:275`).
+>
+> So after one framing/parity/break/overrun error, a client that only ever
+> polls with `timeout_ms == 0` would find the ring empty forever and never
+> reach `try_read`. RX would be permanently dead until reboot — for exactly
+> the `uart_poll_in` consumer this optimisation targets. Worse, this branch
+> *raises* the trigger probability, because callers can now select framing and
+> get it wrong.
+>
+> `poll_once` reaches `try_read`, which on an empty ring with an error set
+> returns `Poll::Ready(Err(e))` rather than `Pending` (`:274-281`) and
+> re-enables the interrupts on the way out. Full performance win, hazard
+> closed.
+>
+> Two incidental corrections came with it. The original also said to add
+> `embedded-io = "0.6"`; that was wrong twice over — `embedded-io-async`
+> resolves to **0.7.1**, and `embassy-rp` implements
+> `embedded_io_async::ReadReady` (`:650`), a different trait generation. The
+> `poll_once` form needs neither: `embassy-futures` was already a direct
+> dependency. **No manifest or lockfile change is required for this task.**
 
         // Well inside the default dispatch budget, so no declaration needed.
         match with_timeout(Duration::from_millis(1), AsyncRead::read(&mut context.uart, buf)).await {
@@ -862,22 +903,22 @@ with:
     } else {
 ```
 
-- [ ] **Step 2: Add the import**
+- [ ] **Step 2: Add the imports**
 
-Extend line 8 of `handlers/uart.rs`:
+Extend the `hw-rev2` import block at the top of `handlers/uart.rs`:
 
 ```rust
 #[cfg(feature = "hw-rev2")]
-use embedded_io_async::{Read as AsyncRead, Write as AsyncWrite};
+use core::task::Poll;
 #[cfg(feature = "hw-rev2")]
-use embedded_io::ReadReady;
+use embassy_futures::poll_once;
+#[cfg(feature = "hw-rev2")]
+use embedded_io_async::{Read as AsyncRead, Write as AsyncWrite};
 ```
 
-If `embedded-io` is not already a direct dependency of the firmware crate, add
-it to `crates/pico-de-gallo-firmware/Cargo.toml` with the same version
-`embedded-io-async` resolves to (0.6), then run `cargo check` and commit
-`Cargo.toml` and `Cargo.lock` together per AGENTS.md §7.1. Do **not** delete
-the lockfile to regenerate it.
+**No manifest change.** `embassy-futures` is already a direct dependency of the
+firmware crate and is already used in `main.rs`. Do not add `embedded-io`; see
+the correction note above for why the original instruction to do so was wrong.
 
 - [ ] **Step 3: Build and lint both revisions**
 
@@ -902,14 +943,17 @@ so an empty poll always waited out the full millisecond. Measured
 in-process against board 5256657D8A5D7F03, one such poll cost 1422 us
 against 335 us for a single-byte write.
 
-BufferedUart implements embedded_io::ReadReady, so ask the ring first
-and return an empty slice when it is empty. A read_ready error falls
-through to the timed read rather than failing: it is an optimisation,
-and the read is the authority.
+Poll the read future exactly once instead. Deliberately not
+ReadReady::read_ready(): that inspects only the software RX ring, and
+on an RX error the ISR latches rx_error and disables the RX interrupts,
+which only try_read consumes and re-enables. A client polling solely
+with timeout_ms == 0 would then find the ring empty forever and never
+reach try_read, leaving RX dead until reboot -- for exactly the
+uart_poll_in consumer this optimisation targets. A single poll runs
+try_read, so the error surfaces instead of latching.
 
-This matters because Zephyr's uart_poll_in is documented non-blocking
-and the console drains it in a tight loop, so the idle cost is paid on
-every iteration.
+Dropping the future on Pending is safe: try_read never pops bytes and
+then returns Pending.
 
 Assisted-by: OpenCode:claude-opus-5
 Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
