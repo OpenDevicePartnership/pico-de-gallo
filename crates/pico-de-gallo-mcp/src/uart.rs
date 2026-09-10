@@ -334,10 +334,12 @@ mod tests {
         assert_eq!(parse_stop_bits(Some("2")).unwrap(), UartStopBits::Two);
     }
 
-    /// Omitted fields must yield the 8N1 power-on values, so an agent that
-    /// only wants to change the baud rate does not silently reframe the
-    /// port. All four parameters are applied together on the wire; there
-    /// is no partial update.
+    /// Omitted fields select their 8N1 power-on value, which **overwrites**
+    /// whatever framing was previously configured. `uart_set_config` replaces
+    /// the complete configuration; all four parameters are applied together on
+    /// the wire and there is no partial update. The overwrite is not silent:
+    /// the tool returns the applied configuration, so an agent that changed
+    /// only the baud rate can see the framing it also just set.
     #[test]
     fn parse_framing_defaults_to_8n1() {
         assert_eq!(parse_data_bits(None).unwrap(), UartDataBits::Eight);

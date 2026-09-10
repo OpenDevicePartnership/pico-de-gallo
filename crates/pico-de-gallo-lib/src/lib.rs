@@ -4174,10 +4174,15 @@ mod tests {
     }
 
     #[test]
-    fn uart_set_config_request_is_built_from_all_four_arguments() {
-        // `uart_set_config` is a pure forward of its four arguments into the
-        // request struct; this pins that the field mapping is positional-safe
-        // (e.g. parity and stop bits are not transposed).
+    fn uart_set_configuration_request_carries_all_four_fields() {
+        // This pins the shape of the request struct only: that it carries all
+        // four fields and that they are distinguishable (e.g. parity and stop
+        // bits are not the same type and cannot be silently transposed here).
+        //
+        // It does NOT exercise `uart_set_config`'s argument forwarding: the
+        // method is never invoked. Catching an omitted, duplicated or
+        // transposed argument inside `uart_set_config` would require the
+        // scripted transport to decode and inspect the transmitted request.
         let req = UartSetConfigurationRequest {
             baud_rate: 9600,
             data_bits: UartDataBits::Seven,
