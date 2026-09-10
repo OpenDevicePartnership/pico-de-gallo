@@ -459,6 +459,60 @@ pub enum GalloGpioEdge {
     Any = 2,
 }
 
+/// UART word length, as accepted by [`gallo_uart_set_config`] and reported
+/// by [`gallo_uart_get_config`].
+///
+/// Values are stable C ABI and mirror `pico_de_gallo_lib::UartDataBits`,
+/// whose variant order is itself wire ABI (AGENTS.md §6.1).
+/// `uart_config_enums_match_wire_enums` pins the correspondence.
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloUartDataBits {
+    /// Five data bits.
+    Five = 0,
+    /// Six data bits.
+    Six = 1,
+    /// Seven data bits.
+    Seven = 2,
+    /// Eight data bits. The power-on default.
+    Eight = 3,
+}
+
+/// UART parity mode, as accepted by [`gallo_uart_set_config`] and reported
+/// by [`gallo_uart_get_config`].
+///
+/// Values are stable C ABI and mirror `pico_de_gallo_lib::UartParity`.
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloUartParity {
+    /// No parity bit. The power-on default.
+    None = 0,
+    /// Odd parity.
+    Odd = 1,
+    /// Even parity.
+    Even = 2,
+    /// Parity bit always 1.
+    Mark = 3,
+    /// Parity bit always 0.
+    Space = 4,
+}
+
+/// UART stop-bit count, as accepted by [`gallo_uart_set_config`] and
+/// reported by [`gallo_uart_get_config`].
+///
+/// Values are stable C ABI and mirror `pico_de_gallo_lib::UartStopBits`.
+/// cbindgen:prefix-with-name=true
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GalloUartStopBits {
+    /// One stop bit. The power-on default.
+    One = 0,
+    /// Two stop bits.
+    Two = 1,
+}
+
 /// Variant tag for [`GalloSpiBatchOp::tag`].
 /// cbindgen:prefix-with-name=true
 #[repr(u8)]
@@ -2663,10 +2717,69 @@ pub unsafe extern "C" fn gallo_uart_flush(gallo: *const PicoDeGallo) -> Status {
 
 // ----------------------------- UART Set config endpoint -----------------------------
 
-/// gallo_uart_set_config - Set the UART baud rate.
+/// Maps the C `uint8_t` onto the wire enum, or `None` if out of range.
 ///
-/// `baud_rate` must be greater than 0. Returns `Status::InvalidArgument`
-/// for a zero baud rate.
+/// Extracted rather than inlined so the *accepting* half of the range can
+/// be tested with no device attached: a valid triple falls through to the
+/// pointer dereference in [`gallo_uart_set_config`], so the FFI entry point
+/// cannot be used to prove which values are accepted. This is the same
+/// extracted-policy pattern AGENTS.md §13.17 records for the #136 / #158
+/// host guards.
+fn uart_data_bits_from_u8(v: u8) -> Option<lib::UartDataBits> {
+    match v {
+        0 => Some(lib::UartDataBits::Five),
+        1 => Some(lib::UartDataBits::Six),
+        2 => Some(lib::UartDataBits::Seven),
+        3 => Some(lib::UartDataBits::Eight),
+        _ => None,
+    }
+}
+
+/// Maps the C `uint8_t` onto the wire enum, or `None` if out of range.
+///
+/// Extracted for the same reason as [`uart_data_bits_from_u8`]: the
+/// accepting half of the range is untestable through the FFI entry point,
+/// because a valid value falls through to the pointer dereference.
+fn uart_parity_from_u8(v: u8) -> Option<lib::UartParity> {
+    match v {
+        0 => Some(lib::UartParity::None),
+        1 => Some(lib::UartParity::Odd),
+        2 => Some(lib::UartParity::Even),
+        3 => Some(lib::UartParity::Mark),
+        4 => Some(lib::UartParity::Space),
+        _ => None,
+    }
+}
+
+/// Maps the C `uint8_t` onto the wire enum, or `None` if out of range.
+///
+/// Extracted for the same reason as [`uart_data_bits_from_u8`]: the
+/// accepting half of the range is untestable through the FFI entry point,
+/// because a valid value falls through to the pointer dereference.
+fn uart_stop_bits_from_u8(v: u8) -> Option<lib::UartStopBits> {
+    match v {
+        0 => Some(lib::UartStopBits::One),
+        1 => Some(lib::UartStopBits::Two),
+        _ => None,
+    }
+}
+
+/// gallo_uart_set_config - Replace the complete UART configuration.
+///
+/// `baud_rate` must be non-zero. `data_bits`, `parity` and `stop_bits` must
+/// use values from `GalloUartDataBits`, `GalloUartParity` and
+/// `GalloUartStopBits` respectively; any other value returns
+/// `Status::InvalidArgument`.
+///
+/// There is no partial update and the C API supplies no defaults: every
+/// framing parameter must be given on every call. To change only the baud
+/// rate, call `gallo_uart_get_config` first and pass its values back. The
+/// device power-on configuration is 115200 8N1.
+///
+/// Reconfiguration is not atomic at the UART pins. The firmware applies the
+/// baud divisor first and the framing second, so the port is briefly enabled
+/// with the new baud rate and the previous framing, and neither direction is
+/// drained. Quiesce both transmit and receive traffic across this call.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
 ///
@@ -2678,6 +2791,9 @@ pub unsafe extern "C" fn gallo_uart_flush(gallo: *const PicoDeGallo) -> Status {
 pub unsafe extern "C" fn gallo_uart_set_config(
     gallo: *const PicoDeGallo,
     baud_rate: u32,
+    data_bits: u8,
+    parity: u8,
+    stop_bits: u8,
 ) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
@@ -2689,11 +2805,30 @@ pub unsafe extern "C" fn gallo_uart_set_config(
         return Status::InvalidArgument;
     }
 
+    let Some(data_bits) = uart_data_bits_from_u8(data_bits) else {
+        eprintln!("Invalid data_bits: {data_bits}");
+        return Status::InvalidArgument;
+    };
+
+    let Some(parity) = uart_parity_from_u8(parity) else {
+        eprintln!("Invalid parity: {parity}");
+        return Status::InvalidArgument;
+    };
+
+    let Some(stop_bits) = uart_stop_bits_from_u8(stop_bits) else {
+        eprintln!("Invalid stop_bits: {stop_bits}");
+        return Status::InvalidArgument;
+    };
+
     // Safety: caller must ensure that `gallo` is a valid opaque
     // pointer to `PicoDeGallo` returned by `gallo_init()`.
     let gallo = unsafe { &*gallo };
 
-    let result = block_on(gallo.0.uart_set_config(baud_rate));
+    let result = block_on(
+        gallo
+            .0
+            .uart_set_config(baud_rate, data_bits, parity, stop_bits),
+    );
 
     match result {
         Ok(()) => Status::Ok,
@@ -2705,27 +2840,43 @@ pub unsafe extern "C" fn gallo_uart_set_config(
 
 /// gallo_uart_get_config - Query the current UART configuration.
 ///
-/// On success, writes the current baud rate to `*out_baud_rate`.
+/// On success writes the last successfully **requested** baud rate and the
+/// corresponding `GalloUartDataBits`, `GalloUartParity` and
+/// `GalloUartStopBits` values to the four output pointers. Nothing is written
+/// unless the device call succeeds.
+///
+/// This is firmware software-shadow state, not a register read-back: the
+/// reported baud rate is the value that was asked for, not the rate the
+/// divisor achieves after rounding.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.
 ///
 /// # Safety
 ///
 /// Caller must ensure that `gallo` is a valid, opaque pointer to
-/// `PicoDeGallo` returned by `gallo_init()`, and that `out_baud_rate`
-/// is a valid pointer to a `u32`.
+/// `PicoDeGallo` returned by `gallo_init()`, and that `out_baud_rate`,
+/// `out_data_bits`, `out_parity` and `out_stop_bits` are all non-NULL,
+/// valid, writable and suitably aligned pointers to a `u32`, `u8`, `u8`
+/// and `u8` respectively.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn gallo_uart_get_config(
     gallo: *const PicoDeGallo,
     out_baud_rate: *mut u32,
+    out_data_bits: *mut u8,
+    out_parity: *mut u8,
+    out_stop_bits: *mut u8,
 ) -> Status {
     if gallo.is_null() {
         eprintln!("Unexpected NULL context");
         return Status::Uninitialized;
     }
 
-    if out_baud_rate.is_null() {
-        eprintln!("Unexpected NULL out_baud_rate pointer");
+    if out_baud_rate.is_null()
+        || out_data_bits.is_null()
+        || out_parity.is_null()
+        || out_stop_bits.is_null()
+    {
+        eprintln!("Unexpected NULL output pointer");
         return Status::InvalidArgument;
     }
 
@@ -2737,8 +2888,13 @@ pub unsafe extern "C" fn gallo_uart_get_config(
 
     match result {
         Ok(info) => {
+            // Safety: all four pointers were null-checked above, and the
+            // caller contract requires them to be valid and writable.
             unsafe {
                 *out_baud_rate = info.baud_rate;
+                *out_data_bits = info.data_bits as u8;
+                *out_parity = info.parity as u8;
+                *out_stop_bits = info.stop_bits as u8;
             }
             Status::Ok
         }
@@ -5033,21 +5189,315 @@ mod tests {
 
     #[test]
     fn uart_set_config_null_device_returns_uninitialized() {
-        let status = unsafe { gallo_uart_set_config(std::ptr::null_mut(), 115200) };
+        let status = unsafe { gallo_uart_set_config(std::ptr::null_mut(), 115200, 3, 0, 0) };
         assert_eq!(status, Status::Uninitialized);
     }
 
+    // ============================================================
+    // UART framing configuration (issue #152)
+    // ============================================================
+    //
+    // Every range test below passes `bad_device()`. The assertion is
+    // twofold: the returned `Status`, and — implicitly, by not
+    // segfaulting — that the argument guard runs *before* the
+    // `unsafe { &*gallo }` deref.
+
+    /// Both halves of this are load-bearing and neither is sufficient alone.
+    ///
+    /// The cross-check against the wire enum catches a divergence between
+    /// the two numberings. It does **not** catch a reorder, because both
+    /// sides carry explicit `= N` discriminants and would move together
+    /// while postcard's variant *index* — the actual wire ABI, AGENTS.md
+    /// §6.1 — changed underneath.
+    ///
+    /// The literal pins in `uart_config_enum_values_are_stable` catch that.
+    /// The two layers together are what make the C ABI safe.
+    ///
+    /// Do not delete either half.
     #[test]
-    fn uart_set_config_zero_baud_returns_uninitialized() {
-        // null check fires first
-        let status = unsafe { gallo_uart_set_config(std::ptr::null_mut(), 0) };
+    fn uart_config_enums_match_wire_enums() {
+        assert_eq!(GalloUartDataBits::Five as u8, lib::UartDataBits::Five as u8);
+        assert_eq!(GalloUartDataBits::Six as u8, lib::UartDataBits::Six as u8);
+        assert_eq!(
+            GalloUartDataBits::Seven as u8,
+            lib::UartDataBits::Seven as u8
+        );
+        assert_eq!(
+            GalloUartDataBits::Eight as u8,
+            lib::UartDataBits::Eight as u8
+        );
+
+        assert_eq!(GalloUartParity::None as u8, lib::UartParity::None as u8);
+        assert_eq!(GalloUartParity::Odd as u8, lib::UartParity::Odd as u8);
+        assert_eq!(GalloUartParity::Even as u8, lib::UartParity::Even as u8);
+        assert_eq!(GalloUartParity::Mark as u8, lib::UartParity::Mark as u8);
+        assert_eq!(GalloUartParity::Space as u8, lib::UartParity::Space as u8);
+
+        assert_eq!(GalloUartStopBits::One as u8, lib::UartStopBits::One as u8);
+        assert_eq!(GalloUartStopBits::Two as u8, lib::UartStopBits::Two as u8);
+    }
+
+    /// The C literal values, pinned independently of the wire enum.
+    /// These are published in `pico_de_gallo.h` and are permanent ABI.
+    #[test]
+    fn uart_config_enum_values_are_stable() {
+        assert_eq!(GalloUartDataBits::Five as u8, 0);
+        assert_eq!(GalloUartDataBits::Six as u8, 1);
+        assert_eq!(GalloUartDataBits::Seven as u8, 2);
+        assert_eq!(GalloUartDataBits::Eight as u8, 3);
+
+        assert_eq!(GalloUartParity::None as u8, 0);
+        assert_eq!(GalloUartParity::Odd as u8, 1);
+        assert_eq!(GalloUartParity::Even as u8, 2);
+        assert_eq!(GalloUartParity::Mark as u8, 3);
+        assert_eq!(GalloUartParity::Space as u8, 4);
+
+        assert_eq!(GalloUartStopBits::One as u8, 0);
+        assert_eq!(GalloUartStopBits::Two as u8, 1);
+    }
+
+    /// cbindgen emits only types reachable from an exported signature, and
+    /// `gallo_uart_set_config` takes `uint8_t`. Without an explicit
+    /// `[export] include` entry in `cbindgen.toml` these three enums are
+    /// **silently pruned** from the generated header — no warning, no
+    /// error, and every C consumer loses the only published statement of
+    /// what the magic integers mean. AGENTS.md §8.
+    ///
+    /// Assert on the *type* names, not on `gallo_uart_set_config`: the
+    /// function is emitted either way, so it proves nothing.
+    #[test]
+    fn header_declares_uart_framing_enums() {
+        let path = std::path::Path::new(env!("OUT_DIR"))
+            .join("include")
+            .join("pico_de_gallo.h");
+        let header = std::fs::read_to_string(&path).expect("generated header must exist");
+        for needle in ["GalloUartDataBits", "GalloUartParity", "GalloUartStopBits"] {
+            assert!(
+                header.contains(needle),
+                "{needle} missing from {} — check cbindgen.toml's [export] include",
+                path.display()
+            );
+        }
+    }
+
+    /// The enumerator spellings are ABI too: a C consumer writes
+    /// `GalloUartParity_Mark`. Renaming a variant compiles fine on the
+    /// Rust side and silently breaks every C caller.
+    #[test]
+    fn header_declares_uart_framing_enumerators() {
+        let path = std::path::Path::new(env!("OUT_DIR"))
+            .join("include")
+            .join("pico_de_gallo.h");
+        let header = std::fs::read_to_string(&path).expect("generated header must exist");
+        for needle in [
+            "GalloUartDataBits_Five",
+            "GalloUartDataBits_Eight",
+            "GalloUartParity_None",
+            "GalloUartParity_Mark",
+            "GalloUartParity_Space",
+            "GalloUartStopBits_One",
+            "GalloUartStopBits_Two",
+        ] {
+            assert!(
+                header.contains(needle),
+                "{needle} missing from generated header"
+            );
+        }
+    }
+
+    // --- gallo_uart_set_config: range validation ---
+
+    /// Boundary and far-out-of-range, for each parameter independently,
+    /// with the other two held at valid values so a single failing arm is
+    /// identifiable.
+    #[test]
+    fn uart_set_config_rejects_out_of_range_data_bits() {
+        for bad in [4u8, 5, 9, 255] {
+            let status = unsafe { gallo_uart_set_config(bad_device(), 115_200, bad, 0, 0) };
+            assert_eq!(
+                status,
+                Status::InvalidArgument,
+                "data_bits={bad} was not refused"
+            );
+        }
+    }
+
+    #[test]
+    fn uart_set_config_rejects_out_of_range_parity() {
+        for bad in [5u8, 6, 255] {
+            let status = unsafe { gallo_uart_set_config(bad_device(), 115_200, 3, bad, 0) };
+            assert_eq!(
+                status,
+                Status::InvalidArgument,
+                "parity={bad} was not refused"
+            );
+        }
+    }
+
+    #[test]
+    fn uart_set_config_rejects_out_of_range_stop_bits() {
+        for bad in [2u8, 3, 255] {
+            let status = unsafe { gallo_uart_set_config(bad_device(), 115_200, 3, 0, bad) };
+            assert_eq!(
+                status,
+                Status::InvalidArgument,
+                "stop_bits={bad} was not refused"
+            );
+        }
+    }
+
+    /// The other half of the boundary: everything inside the range must be
+    /// *accepted* by the range check. Without this, a guard written as
+    /// `if data_bits != 3 { return InvalidArgument }` would pass every
+    /// rejection test above.
+    ///
+    /// A valid triple falls through to `unsafe { &*gallo }`, so this test
+    /// must NOT use `bad_device()`. It therefore asserts on the mapping
+    /// function rather than on the FFI entry point.
+    #[test]
+    fn uart_framing_from_u8_accepts_exactly_the_valid_range() {
+        for v in 0u8..=3 {
+            assert!(
+                uart_data_bits_from_u8(v).is_some(),
+                "data_bits={v} must be accepted"
+            );
+        }
+        for v in 4u8..=255 {
+            assert!(
+                uart_data_bits_from_u8(v).is_none(),
+                "data_bits={v} must be refused"
+            );
+        }
+
+        for v in 0u8..=4 {
+            assert!(
+                uart_parity_from_u8(v).is_some(),
+                "parity={v} must be accepted"
+            );
+        }
+        for v in 5u8..=255 {
+            assert!(
+                uart_parity_from_u8(v).is_none(),
+                "parity={v} must be refused"
+            );
+        }
+
+        for v in 0u8..=1 {
+            assert!(
+                uart_stop_bits_from_u8(v).is_some(),
+                "stop_bits={v} must be accepted"
+            );
+        }
+        for v in 2u8..=255 {
+            assert!(
+                uart_stop_bits_from_u8(v).is_none(),
+                "stop_bits={v} must be refused"
+            );
+        }
+    }
+
+    /// The accepted values must map to the *right* variant, not merely be
+    /// accepted. This is the arm a transposed `3 => Mark` / `4 => Space`
+    /// would break, and nothing else catches it.
+    #[test]
+    fn uart_framing_from_u8_maps_to_the_right_variant() {
+        use lib::{UartDataBits, UartParity, UartStopBits};
+
+        assert_eq!(uart_data_bits_from_u8(0), Some(UartDataBits::Five));
+        assert_eq!(uart_data_bits_from_u8(1), Some(UartDataBits::Six));
+        assert_eq!(uart_data_bits_from_u8(2), Some(UartDataBits::Seven));
+        assert_eq!(uart_data_bits_from_u8(3), Some(UartDataBits::Eight));
+
+        assert_eq!(uart_parity_from_u8(0), Some(UartParity::None));
+        assert_eq!(uart_parity_from_u8(1), Some(UartParity::Odd));
+        assert_eq!(uart_parity_from_u8(2), Some(UartParity::Even));
+        assert_eq!(uart_parity_from_u8(3), Some(UartParity::Mark));
+        assert_eq!(uart_parity_from_u8(4), Some(UartParity::Space));
+
+        assert_eq!(uart_stop_bits_from_u8(0), Some(UartStopBits::One));
+        assert_eq!(uart_stop_bits_from_u8(1), Some(UartStopBits::Two));
+    }
+
+    #[test]
+    fn uart_set_config_rejects_zero_baud_rate() {
+        // Framing all valid, so the baud guard is the only thing that can
+        // fire before the deref.
+        let status = unsafe { gallo_uart_set_config(bad_device(), 0, 3, 0, 0) };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    /// Documented ordering contract: the handle check precedes every
+    /// argument check, which is what makes the later `unsafe { &*gallo }`
+    /// sound.
+    #[test]
+    fn uart_set_config_null_handle_takes_precedence_over_argument_checks() {
+        // Every argument here is invalid. If any range check ran first the
+        // answer would be InvalidArgument.
+        let status = unsafe { gallo_uart_set_config(std::ptr::null(), 0, 255, 255, 255) };
         assert_eq!(status, Status::Uninitialized);
+    }
+
+    // --- gallo_uart_get_config: per-pointer null checks ---
+    //
+    // The implementation fuses the four checks into one `||`. A fused
+    // check tested with only one NULL leaves three arms unexercised, so
+    // each is nulled individually below with the other three valid.
+
+    #[test]
+    fn uart_get_config_null_baud_rate_returns_invalid_argument() {
+        let (mut d, mut p, mut s) = (0u8, 0u8, 0u8);
+        let status = unsafe {
+            gallo_uart_get_config(bad_device(), std::ptr::null_mut(), &mut d, &mut p, &mut s)
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn uart_get_config_null_data_bits_returns_invalid_argument() {
+        let (mut b, mut p, mut s) = (0u32, 0u8, 0u8);
+        let status = unsafe {
+            gallo_uart_get_config(bad_device(), &mut b, std::ptr::null_mut(), &mut p, &mut s)
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn uart_get_config_null_parity_returns_invalid_argument() {
+        let (mut b, mut d, mut s) = (0u32, 0u8, 0u8);
+        let status = unsafe {
+            gallo_uart_get_config(bad_device(), &mut b, &mut d, std::ptr::null_mut(), &mut s)
+        };
+        assert_eq!(status, Status::InvalidArgument);
+    }
+
+    #[test]
+    fn uart_get_config_null_stop_bits_returns_invalid_argument() {
+        let (mut b, mut d, mut p) = (0u32, 0u8, 0u8);
+        let status = unsafe {
+            gallo_uart_get_config(bad_device(), &mut b, &mut d, &mut p, std::ptr::null_mut())
+        };
+        assert_eq!(status, Status::InvalidArgument);
     }
 
     #[test]
     fn uart_get_config_null_device_returns_uninitialized() {
-        let mut baud = 0u32;
-        let status = unsafe { gallo_uart_get_config(std::ptr::null_mut(), &mut baud as *mut u32) };
+        let (mut b, mut d, mut p, mut s) = (0u32, 0u8, 0u8, 0u8);
+        let status =
+            unsafe { gallo_uart_get_config(std::ptr::null(), &mut b, &mut d, &mut p, &mut s) };
+        assert_eq!(status, Status::Uninitialized);
+    }
+
+    #[test]
+    fn uart_get_config_null_handle_takes_precedence_over_null_outputs() {
+        let status = unsafe {
+            gallo_uart_get_config(
+                std::ptr::null(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
         assert_eq!(status, Status::Uninitialized);
     }
 

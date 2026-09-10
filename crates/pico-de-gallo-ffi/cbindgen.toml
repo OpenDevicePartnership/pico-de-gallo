@@ -43,4 +43,7 @@ include = [
     "GalloI2cBatchOpTag",
     "GalloI2cFrequency",
     "GalloSpiBatchOpTag",
+    "GalloUartDataBits",
+    "GalloUartParity",
+    "GalloUartStopBits",
 ]
