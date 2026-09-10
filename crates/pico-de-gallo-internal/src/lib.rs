@@ -1226,17 +1226,26 @@ pub struct UartWriteRequest<'a> {
 
 /// Request to reconfigure UART bus parameters.
 ///
-/// Takes effect immediately. The firmware applies the new baud rate before
-/// processing the next UART operation.
+/// Takes effect immediately. The firmware applies the new configuration
+/// before processing the next UART operation.
 ///
-/// **Note:** In v1, only `baud_rate` is configurable at runtime. Data bits,
-/// parity, and stop bits are set to 8N1 at boot and cannot be changed
-/// dynamically. These fields are reserved for future use and must be set
-/// to their default values (`Eight`, `None`, `One`).
+/// All four parameters are applied together; there is no partial update. A
+/// caller that wants to change only the baud rate must read the current
+/// configuration with `uart/get-config` first and echo the framing fields
+/// back.
+///
+/// The framing values are limited to what the RP2350 PL011 can produce. See
+/// [`UartDataBits`], [`UartParity`] and [`UartStopBits`].
 #[derive(Serialize, Deserialize, Schema, Debug, PartialEq)]
 pub struct UartSetConfigurationRequest {
-    /// UART baud rate in bits per second.
+    /// UART baud rate in bits per second. Must be non-zero.
     pub baud_rate: u32,
+    /// Word length in data bits.
+    pub data_bits: UartDataBits,
+    /// Parity mode.
+    pub parity: UartParity,
+    /// Stop-bit count.
+    pub stop_bits: UartStopBits,
 }
 
 /// Error returned when UART configuration fails.
@@ -1249,10 +1258,20 @@ pub type UartConfigError = UartError;
 ///
 /// Returned by `uart/get-config`. Reflects the last successfully applied
 /// configuration.
+///
+/// This is a software shadow of what was requested, not a register
+/// read-back, so `baud_rate` is the value that was asked for rather than the
+/// value the divisor actually achieves after rounding.
 #[derive(Serialize, Deserialize, Schema, Debug, Clone, PartialEq, Eq)]
 pub struct UartConfigurationInfo {
     /// UART baud rate in bits per second.
     pub baud_rate: u32,
+    /// Word length in data bits.
+    pub data_bits: UartDataBits,
+    /// Parity mode.
+    pub parity: UartParity,
+    /// Stop-bit count.
+    pub stop_bits: UartStopBits,
 }
 
 /// Current SPI bus configuration as reported by the firmware.
@@ -3192,7 +3211,12 @@ mod tests {
 
     #[test]
     fn uart_set_configuration_request_round_trip() {
-        let req = UartSetConfigurationRequest { baud_rate: 115_200 };
+        let req = UartSetConfigurationRequest {
+            baud_rate: 115_200,
+            data_bits: UartDataBits::Seven,
+            parity: UartParity::Mark,
+            stop_bits: UartStopBits::Two,
+        };
         let bytes = to_allocvec(&req).unwrap();
         let decoded: UartSetConfigurationRequest = from_bytes(&bytes).unwrap();
         assert_eq!(req, decoded);
@@ -3201,7 +3225,12 @@ mod tests {
     #[test]
     fn uart_set_configuration_request_common_baud_rates() {
         for baud in [9600, 19200, 38400, 57600, 115200, 230400, 460800, 921600] {
-            let req = UartSetConfigurationRequest { baud_rate: baud };
+            let req = UartSetConfigurationRequest {
+                baud_rate: baud,
+                data_bits: UartDataBits::Eight,
+                parity: UartParity::None,
+                stop_bits: UartStopBits::One,
+            };
             let bytes = to_allocvec(&req).unwrap();
             let decoded: UartSetConfigurationRequest = from_bytes(&bytes).unwrap();
             assert_eq!(req, decoded);
@@ -3210,7 +3239,12 @@ mod tests {
 
     #[test]
     fn uart_configuration_info_round_trip() {
-        let info = UartConfigurationInfo { baud_rate: 115_200 };
+        let info = UartConfigurationInfo {
+            baud_rate: 115_200,
+            data_bits: UartDataBits::Eight,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+        };
         let bytes = to_allocvec(&info).unwrap();
         let decoded: UartConfigurationInfo = from_bytes(&bytes).unwrap();
         assert_eq!(info, decoded);
@@ -3398,6 +3432,105 @@ mod tests {
         assert!(from_bytes::<UartStopBits>(&[0xFF]).is_err());
     }
 
+    /// A valid baud rate must not rescue a request whose framing byte is out
+    /// of range: the whole request has to fail rather than decode the baud
+    /// and leave the framing at some default.
+    #[test]
+    fn uart_set_configuration_request_rejects_out_of_range_framing() {
+        // 115200 varint, then data_bits = 4 (one past Eight).
+        assert!(
+            from_bytes::<UartSetConfigurationRequest>(&[0x80, 0x84, 0x07, 0x04, 0x00, 0x00])
+                .is_err()
+        );
+        // parity = 5 (one past Space).
+        assert!(
+            from_bytes::<UartSetConfigurationRequest>(&[0x80, 0x84, 0x07, 0x03, 0x05, 0x00])
+                .is_err()
+        );
+        // stop_bits = 2 (one past Two).
+        assert!(
+            from_bytes::<UartSetConfigurationRequest>(&[0x80, 0x84, 0x07, 0x03, 0x00, 0x02])
+                .is_err()
+        );
+    }
+
+    /// The old one-field encoding is a prefix of the new one. Decoding it as
+    /// the new shape must fail rather than synthesise framing from nothing —
+    /// this is the firmware/host skew scenario in miniature, with no hardware.
+    #[test]
+    fn uart_config_types_refuse_the_old_truncated_encoding() {
+        // What the pre-framing request encoded for 115200: baud varint only.
+        let old = [0x80u8, 0x84, 0x07];
+        assert!(from_bytes::<UartSetConfigurationRequest>(&old).is_err());
+        assert!(from_bytes::<UartConfigurationInfo>(&old).is_err());
+    }
+
+    /// The old one-field request encoded to 3 bytes for 115200. The new one
+    /// appends three single-byte enum indices. This pins the encoding so a
+    /// field reorder or rename is caught here rather than on a board.
+    ///
+    /// Two pins, deliberately. The 8N1 case documents the power-on default,
+    /// but its parity and stop bytes are both `0x00`, so swapping those two
+    /// field declarations would be invisible to it. The second case uses
+    /// three *pairwise distinct* framing indices, so any swap of any two of
+    /// the three framing fields changes the encoding. Note that a triple like
+    /// 7E2 would not do: `Seven` and `Even` are both index 2, so a
+    /// data_bits/parity swap would still encode identically.
+    #[test]
+    fn uart_set_configuration_request_encoding_is_pinned() {
+        // The baud varint is postcard's LEB128: 7-bit groups, low group
+        // first, high bit set on every group but the last.
+        //
+        //   115200 = 7*128^2 + 4*128 + 0
+        //          = 0b111_0000100_0000000
+        //
+        // so the groups low-to-high are 0, 4, 7, emitted as
+        // 0x00|0x80 = 0x80, then 0x04|0x80 = 0x84, then 0x07 (last, no
+        // continuation bit).
+        //
+        // Then WLEN = Eight = 3, parity = None = 0, stop = One = 0.
+        let default_8n1 = UartSetConfigurationRequest {
+            baud_rate: 115_200,
+            data_bits: UartDataBits::Eight,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+        };
+        assert_eq!(
+            to_allocvec(&default_8n1).unwrap(),
+            [0x80, 0x84, 0x07, 0x03, 0x00, 0x00]
+        );
+
+        // 7M2: Seven = 2, Mark = 3, Two = 1. Pairwise distinct, so no
+        // permutation of the three framing fields yields these bytes.
+        let seven_mark_two = UartSetConfigurationRequest {
+            baud_rate: 115_200,
+            data_bits: UartDataBits::Seven,
+            parity: UartParity::Mark,
+            stop_bits: UartStopBits::Two,
+        };
+        assert_eq!(
+            to_allocvec(&seven_mark_two).unwrap(),
+            [0x80, 0x84, 0x07, 0x02, 0x03, 0x01]
+        );
+    }
+
+    /// Same reasoning as the request pin, for the response payload: the
+    /// framing indices are pairwise distinct so a field reorder cannot hide.
+    #[test]
+    fn uart_configuration_info_encoding_is_pinned() {
+        // 7M2: Seven = 2, Mark = 3, Two = 1.
+        let info = UartConfigurationInfo {
+            baud_rate: 115_200,
+            data_bits: UartDataBits::Seven,
+            parity: UartParity::Mark,
+            stop_bits: UartStopBits::Two,
+        };
+        assert_eq!(
+            to_allocvec(&info).unwrap(),
+            [0x80, 0x84, 0x07, 0x02, 0x03, 0x01]
+        );
+    }
+
     #[test]
     fn uart_error_variants_round_trip() {
         for err in [
@@ -3453,7 +3586,14 @@ mod tests {
 
     #[test]
     fn uart_set_configuration_request_wire_stability() {
-        let req = UartSetConfigurationRequest { baud_rate: 115_200 };
+        // Non-default framing in every field, so re-encoding a decoded value
+        // has something to get wrong.
+        let req = UartSetConfigurationRequest {
+            baud_rate: 115_200,
+            data_bits: UartDataBits::Five,
+            parity: UartParity::Mark,
+            stop_bits: UartStopBits::Two,
+        };
         let bytes = to_allocvec(&req).unwrap();
         let canonical = bytes.clone();
         let decoded: UartSetConfigurationRequest = from_bytes(&bytes).unwrap();
@@ -3463,7 +3603,12 @@ mod tests {
 
     #[test]
     fn uart_configuration_info_wire_stability() {
-        let info = UartConfigurationInfo { baud_rate: 115_200 };
+        let info = UartConfigurationInfo {
+            baud_rate: 115_200,
+            data_bits: UartDataBits::Five,
+            parity: UartParity::Mark,
+            stop_bits: UartStopBits::Two,
+        };
         let bytes = to_allocvec(&info).unwrap();
         let canonical = bytes.clone();
         let decoded: UartConfigurationInfo = from_bytes(&bytes).unwrap();
