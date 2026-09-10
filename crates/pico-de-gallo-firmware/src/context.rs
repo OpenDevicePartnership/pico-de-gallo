@@ -15,7 +15,10 @@ use embassy_rp::{
 };
 #[cfg(feature = "hw-rev2")]
 use pico_de_gallo_internal::NUM_ADC_GPIO_CHANNELS;
-use pico_de_gallo_internal::{I2cError, I2cFrequency, MAX_TRANSFER_SIZE, SpiPhase, SpiPolarity};
+use pico_de_gallo_internal::{
+    I2cError, I2cFrequency, MAX_TRANSFER_SIZE, SpiPhase, SpiPolarity, UartConfigurationInfo, UartDataBits, UartParity,
+    UartStopBits,
+};
 
 // Re-exported so the rest of the firmware keeps reaching this through
 // `crate::context`, while the value itself lives in the wire crate where
@@ -84,8 +87,14 @@ pub struct Context {
     pub(crate) spi_frequency: u32,
     pub(crate) spi_phase: SpiPhase,
     pub(crate) spi_polarity: SpiPolarity,
+    /// Software shadow of the applied UART configuration.
+    ///
+    /// Not a register read-back: `uart/get-config` returns what was last
+    /// requested, not what the divisor rounds to. Updated only after both
+    /// hardware reconfiguration steps in `uart_set_config_handler` complete,
+    /// so it cannot report a configuration that was not attempted.
     #[cfg_attr(not(feature = "hw-rev2"), allow(dead_code))]
-    pub(crate) uart_baud_rate: u32,
+    pub(crate) uart_config: UartConfigurationInfo,
     #[cfg(feature = "hw-rev2")]
     pub(crate) onewire: PioOneWire<'static, PIO0, 0>,
     #[cfg(feature = "hw-rev2")]
@@ -122,7 +131,14 @@ impl Context {
             spi_frequency: 1_000_000,
             spi_phase: SpiPhase::CaptureOnFirstTransition,
             spi_polarity: SpiPolarity::IdleLow,
-            uart_baud_rate: 115_200,
+            // Matches uart::Config::default() as applied by BufferedUart::new
+            // in main.rs: 115200 8N1, no flow control.
+            uart_config: UartConfigurationInfo {
+                baud_rate: 115_200,
+                data_bits: UartDataBits::Eight,
+                parity: UartParity::None,
+                stop_bits: UartStopBits::One,
+            },
             onewire,
             onewire_search: PioOneWireSearch::new(),
             buf: [0; MAX_TRANSFER_SIZE],
@@ -150,7 +166,14 @@ impl Context {
             spi_frequency: 1_000_000,
             spi_phase: SpiPhase::CaptureOnFirstTransition,
             spi_polarity: SpiPolarity::IdleLow,
-            uart_baud_rate: 115_200,
+            // Matches uart::Config::default() as applied by BufferedUart::new
+            // in main.rs: 115200 8N1, no flow control.
+            uart_config: UartConfigurationInfo {
+                baud_rate: 115_200,
+                data_bits: UartDataBits::Eight,
+                parity: UartParity::None,
+                stop_bits: UartStopBits::One,
+            },
             buf: [0; MAX_TRANSFER_SIZE],
         }
     }
