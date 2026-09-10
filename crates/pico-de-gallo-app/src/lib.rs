@@ -39,6 +39,7 @@ use pico_de_gallo_lib::{
     AdcChannel, DeviceInfo, GpioEdge, I2cFrequency, PicoDeGallo, SpiPhase, SpiPolarity, ValidateError, list_devices,
 };
 use pico_de_gallo_lib::{GpioDirection, GpioPull, GpioState};
+use pico_de_gallo_lib::{UartDataBits, UartParity, UartStopBits};
 use std::num::ParseIntError;
 use std::time::Duration;
 use tabled::builder::Builder;
@@ -162,6 +163,91 @@ impl From<GpioLevelArg> for GpioState {
         match arg {
             GpioLevelArg::High => GpioState::High,
             GpioLevelArg::Low => GpioState::Low,
+        }
+    }
+}
+
+/// UART word length for CLI argument parsing.
+///
+/// The RP2350's `UARTLCR_H.WLEN` field is two bits wide, so there is no
+/// 9-bit mode and 9 is deliberately not offered. The variants are renamed
+/// to their digits so the user-facing spelling is `--data-bits 5|6|7|8`.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UartDataBitsArg {
+    /// Five data bits per character
+    #[value(name = "5")]
+    Five,
+    /// Six data bits per character
+    #[value(name = "6")]
+    Six,
+    /// Seven data bits per character
+    #[value(name = "7")]
+    Seven,
+    /// Eight data bits per character
+    #[value(name = "8")]
+    Eight,
+}
+
+impl From<UartDataBitsArg> for UartDataBits {
+    fn from(arg: UartDataBitsArg) -> Self {
+        match arg {
+            UartDataBitsArg::Five => UartDataBits::Five,
+            UartDataBitsArg::Six => UartDataBits::Six,
+            UartDataBitsArg::Seven => UartDataBits::Seven,
+            UartDataBitsArg::Eight => UartDataBits::Eight,
+        }
+    }
+}
+
+/// UART parity mode for CLI argument parsing.
+///
+/// `mark` and `space` use the PL011's stick-parity bit.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UartParityArg {
+    /// No parity bit
+    None,
+    /// Odd parity
+    Odd,
+    /// Even parity
+    Even,
+    /// Stick parity, always 1
+    Mark,
+    /// Stick parity, always 0
+    Space,
+}
+
+impl From<UartParityArg> for UartParity {
+    fn from(arg: UartParityArg) -> Self {
+        match arg {
+            UartParityArg::None => UartParity::None,
+            UartParityArg::Odd => UartParity::Odd,
+            UartParityArg::Even => UartParity::Even,
+            UartParityArg::Mark => UartParity::Mark,
+            UartParityArg::Space => UartParity::Space,
+        }
+    }
+}
+
+/// UART stop bits for CLI argument parsing.
+///
+/// The PL011 has a single `STP2` bit, so half stop bits are not
+/// representable and are not offered. The variants are renamed to their
+/// digits so the user-facing spelling is `--stop-bits 1|2`.
+#[derive(ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UartStopBitsArg {
+    /// One stop bit
+    #[value(name = "1")]
+    One,
+    /// Two stop bits
+    #[value(name = "2")]
+    Two,
+}
+
+impl From<UartStopBitsArg> for UartStopBits {
+    fn from(arg: UartStopBitsArg) -> Self {
+        match arg {
+            UartStopBitsArg::One => UartStopBits::One,
+            UartStopBitsArg::Two => UartStopBits::Two,
         }
     }
 }
@@ -499,10 +585,31 @@ enum UartCommands {
     Flush,
 
     /// Set UART bus parameters
+    ///
+    /// This replaces the complete UART configuration. Omitting a framing flag
+    /// selects its 8N1 power-on value and will overwrite whatever framing was
+    /// previously configured, so a baud-only change must repeat the framing
+    /// flags. The applied configuration is echoed on success.
+    ///
+    /// Reconfiguration is not atomic at the UART pins: the device applies the
+    /// baud divisor before the framing, and drains neither direction. Quiesce
+    /// transmit and receive traffic while this command runs.
     SetConfig {
         /// Baud rate in bits per second (e.g. 9600, 115200)
         #[arg(long)]
         baud_rate: u32,
+
+        /// Data bits per character
+        #[arg(long, value_enum, default_value_t = UartDataBitsArg::Eight)]
+        data_bits: UartDataBitsArg,
+
+        /// Parity mode
+        #[arg(long, value_enum, default_value_t = UartParityArg::None)]
+        parity: UartParityArg,
+
+        /// Stop bits
+        #[arg(long, value_enum, default_value_t = UartStopBitsArg::One)]
+        stop_bits: UartStopBitsArg,
     },
 
     /// Query the current UART bus configuration
@@ -811,7 +918,21 @@ impl Cli {
                 UartCommands::Read { count, timeout } => self.uart_read(&pg, *count, *timeout).await,
                 UartCommands::Write { bytes } => self.uart_write(&pg, bytes).await,
                 UartCommands::Flush => self.uart_flush(&pg).await,
-                UartCommands::SetConfig { baud_rate } => self.uart_set_config(&pg, *baud_rate).await,
+                UartCommands::SetConfig {
+                    baud_rate,
+                    data_bits,
+                    parity,
+                    stop_bits,
+                } => {
+                    self.uart_set_config(
+                        &pg,
+                        *baud_rate,
+                        (*data_bits).into(),
+                        (*parity).into(),
+                        (*stop_bits).into(),
+                    )
+                    .await
+                }
                 UartCommands::GetConfig => self.uart_get_config(&pg).await,
             },
             Commands::Pwm { command } => match command {
@@ -1258,12 +1379,22 @@ impl Cli {
         Ok(())
     }
 
-    async fn uart_set_config(&self, pg: &PicoDeGallo, baud_rate: u32) -> Result<()> {
-        pg.uart_set_config(baud_rate)
+    async fn uart_set_config(
+        &self,
+        pg: &PicoDeGallo,
+        baud_rate: u32,
+        data_bits: UartDataBits,
+        parity: UartParity,
+        stop_bits: UartStopBits,
+    ) -> Result<()> {
+        pg.uart_set_config(baud_rate, data_bits, parity, stop_bits)
             .await
             .map_err(|e| eyre!("{:?}", e).wrap_err("uart set-config failed"))?;
 
-        println!("UART baud rate set to {baud_rate}");
+        println!(
+            "UART configuration set to {baud_rate} {}",
+            describe_framing(data_bits, parity, stop_bits)
+        );
         Ok(())
     }
 
@@ -1273,7 +1404,11 @@ impl Cli {
             .await
             .map_err(|e| eyre!("{:?}", e).wrap_err("uart get-config failed"))?;
 
-        println!("UART baud rate: {} bps", info.baud_rate);
+        println!(
+            "UART: {} bps {}",
+            info.baud_rate,
+            describe_framing(info.data_bits, info.parity, info.stop_bits)
+        );
         Ok(())
     }
 
@@ -1652,6 +1787,31 @@ fn parse_spi_batch_ops(ops: &[String]) -> Result<Vec<(SpiBatchKind, Vec<u8>)>> {
         .collect()
 }
 
+/// Render UART framing in the conventional `8N1` shorthand.
+///
+/// The three characters are the data-bits digit, the parity letter
+/// (`N`/`O`/`E`/`M`/`S`) and the stop-bits digit, e.g. `8N1`, `7E2`, `6M2`.
+fn describe_framing(data_bits: UartDataBits, parity: UartParity, stop_bits: UartStopBits) -> String {
+    let d = match data_bits {
+        UartDataBits::Five => '5',
+        UartDataBits::Six => '6',
+        UartDataBits::Seven => '7',
+        UartDataBits::Eight => '8',
+    };
+    let p = match parity {
+        UartParity::None => 'N',
+        UartParity::Odd => 'O',
+        UartParity::Even => 'E',
+        UartParity::Mark => 'M',
+        UartParity::Space => 'S',
+    };
+    let s = match stop_bits {
+        UartStopBits::One => '1',
+        UartStopBits::Two => '2',
+    };
+    format!("{d}{p}{s}")
+}
+
 /// Print a hex dump of data in the common `offset: hex  ascii` format.
 fn print_hex_dump(data: &[u8]) {
     for (i, chunk) in data.chunks(16).enumerate() {
@@ -1935,6 +2095,280 @@ mod tests {
     fn cli_spi_set_config_missing_frequency_fails() {
         let result = Cli::try_parse_from(["gallo", "spi", "set-config"]);
         assert!(result.is_err());
+    }
+
+    // --- UART framing flags (issue #152) ---
+
+    #[test]
+    fn cli_uart_set_config_parses_framing() {
+        let cli = Cli::try_parse_from([
+            "gallo",
+            "uart",
+            "set-config",
+            "--baud-rate",
+            "9600",
+            "--data-bits",
+            "7",
+            "--parity",
+            "even",
+            "--stop-bits",
+            "2",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Uart {
+                command:
+                    UartCommands::SetConfig {
+                        baud_rate,
+                        data_bits,
+                        parity,
+                        stop_bits,
+                    },
+            } => {
+                assert_eq!(baud_rate, 9600);
+                assert_eq!(data_bits, UartDataBitsArg::Seven);
+                assert_eq!(parity, UartParityArg::Even);
+                assert_eq!(stop_bits, UartStopBitsArg::Two);
+            }
+            _ => panic!("expected Uart SetConfig command"),
+        }
+    }
+
+    /// Framing flags omitted must yield 8N1, so every existing scripted
+    /// `gallo uart set-config --baud-rate N` invocation keeps its meaning.
+    /// This is a compatibility contract, not a convenience.
+    #[test]
+    fn cli_uart_set_config_defaults_to_8n1() {
+        let cli = Cli::try_parse_from(["gallo", "uart", "set-config", "--baud-rate", "115200"]).unwrap();
+        match cli.command {
+            Commands::Uart {
+                command:
+                    UartCommands::SetConfig {
+                        data_bits,
+                        parity,
+                        stop_bits,
+                        ..
+                    },
+            } => {
+                assert_eq!(data_bits, UartDataBitsArg::Eight);
+                assert_eq!(parity, UartParityArg::None);
+                assert_eq!(stop_bits, UartStopBitsArg::One);
+            }
+            _ => panic!("expected Uart SetConfig command"),
+        }
+    }
+
+    /// Every value the RP2350 PL011 can produce must parse. Without this,
+    /// a `#[value(name = "8")]` typo'd to `"eight"` ships green: the
+    /// rejection tests below would still pass.
+    #[test]
+    fn cli_uart_set_config_accepts_every_representable_value() {
+        for (arg, want) in [
+            ("5", UartDataBitsArg::Five),
+            ("6", UartDataBitsArg::Six),
+            ("7", UartDataBitsArg::Seven),
+            ("8", UartDataBitsArg::Eight),
+        ] {
+            let cli = Cli::try_parse_from(["gallo", "uart", "set-config", "--baud-rate", "9600", "--data-bits", arg])
+                .unwrap_or_else(|e| panic!("--data-bits {arg} must parse: {e}"));
+            match cli.command {
+                Commands::Uart {
+                    command: UartCommands::SetConfig { data_bits, .. },
+                } => assert_eq!(data_bits, want),
+                _ => panic!("expected Uart SetConfig command"),
+            }
+        }
+
+        for (arg, want) in [
+            ("none", UartParityArg::None),
+            ("odd", UartParityArg::Odd),
+            ("even", UartParityArg::Even),
+            ("mark", UartParityArg::Mark),
+            ("space", UartParityArg::Space),
+        ] {
+            let cli = Cli::try_parse_from(["gallo", "uart", "set-config", "--baud-rate", "9600", "--parity", arg])
+                .unwrap_or_else(|e| panic!("--parity {arg} must parse: {e}"));
+            match cli.command {
+                Commands::Uart {
+                    command: UartCommands::SetConfig { parity, .. },
+                } => assert_eq!(parity, want),
+                _ => panic!("expected Uart SetConfig command"),
+            }
+        }
+
+        for (arg, want) in [("1", UartStopBitsArg::One), ("2", UartStopBitsArg::Two)] {
+            let cli = Cli::try_parse_from(["gallo", "uart", "set-config", "--baud-rate", "9600", "--stop-bits", arg])
+                .unwrap_or_else(|e| panic!("--stop-bits {arg} must parse: {e}"));
+            match cli.command {
+                Commands::Uart {
+                    command: UartCommands::SetConfig { stop_bits, .. },
+                } => assert_eq!(stop_bits, want),
+                _ => panic!("expected Uart SetConfig command"),
+            }
+        }
+    }
+
+    /// The RP2350's `UARTLCR_H.WLEN` is two bits wide, so there is no
+    /// 9-bit mode, and the PL011 has a single `STP2` bit, so half stop
+    /// bits are unrepresentable. Both must fail at *parse* time — a
+    /// device round trip that returns `Ok` for an unrepresentable request
+    /// would be the silent-wrong-answer shape this repo keeps hitting.
+    #[test]
+    fn cli_uart_set_config_rejects_unrepresentable_framing() {
+        for (flag, value) in [
+            ("--data-bits", "9"),
+            ("--data-bits", "4"),
+            ("--data-bits", "0"),
+            ("--data-bits", "16"),
+            ("--stop-bits", "0"),
+            ("--stop-bits", "3"),
+            ("--stop-bits", "1.5"),
+            ("--stop-bits", "0.5"),
+            ("--parity", "ultra"),
+            ("--parity", ""),
+        ] {
+            let result = Cli::try_parse_from(["gallo", "uart", "set-config", "--baud-rate", "115200", flag, value]);
+            assert!(
+                result.is_err(),
+                "{flag} {value:?} is not representable on the RP2350 and must not parse"
+            );
+        }
+    }
+
+    /// clap's `ValueEnum` matching is case-sensitive unless a value is
+    /// annotated `ignore_case`. Pinned so it cannot drift silently in
+    /// either direction: a clap upgrade that flipped the default, or an
+    /// `ignore_case = true` added for one flag and not the others, both
+    /// change the accepted surface without touching any of the tests
+    /// above.
+    ///
+    /// If this fails, decide deliberately whether case-insensitivity is
+    /// wanted and change it for *all three* flags. Do not just invert the
+    /// assertion.
+    #[test]
+    fn cli_uart_set_config_value_matching_is_case_sensitive() {
+        for value in ["EVEN", "Even", "eVeN"] {
+            assert!(
+                Cli::try_parse_from(["gallo", "uart", "set-config", "--baud-rate", "9600", "--parity", value,])
+                    .is_err(),
+                "--parity {value:?} parsed; value matching is no longer case-sensitive"
+            );
+        }
+    }
+
+    /// `-s` is `--serial-number` at the top level (`Cli::serial_number`),
+    /// and it is *not* `global = true`, so a subcommand may legally reuse
+    /// it with a different meaning — clap does not panic. That is exactly
+    /// why it is dangerous: `gallo -s ABCD uart set-config` and
+    /// `gallo uart set-config -s 2` differ only in position.
+    ///
+    /// This test pins that `set-config` derives NO short options, which is
+    /// the safe shape. If a short is added, this fails; the existing
+    /// `GpioLevelArg` comment records the same "withhold the short"
+    /// precedent. Do not relax this without deciding what `-s` means.
+    #[test]
+    fn cli_uart_set_config_derives_no_ambiguous_short_flags() {
+        for short in ["-b", "-d", "-p", "-s"] {
+            let result = Cli::try_parse_from(["gallo", "uart", "set-config", "--baud-rate", "9600", short, "2"]);
+            assert!(
+                result.is_err(),
+                "{short} parsed on `uart set-config`; a short flag here collides in meaning \
+                 with the top-level -s/--serial-number, or shadows it for readers"
+            );
+        }
+    }
+
+    /// The top-level `-s` must keep working with a subcommand that now has
+    /// framing flags. Guards against a future `global = true` or a
+    /// subcommand short that steals it.
+    #[test]
+    fn cli_uart_set_config_still_accepts_the_global_serial_number() {
+        let cli = Cli::try_parse_from([
+            "gallo",
+            "-s",
+            "ABCD1234",
+            "uart",
+            "set-config",
+            "--baud-rate",
+            "9600",
+            "--stop-bits",
+            "2",
+        ])
+        .expect("global -s must still resolve to --serial-number");
+        match cli.command {
+            Commands::Uart {
+                command: UartCommands::SetConfig { stop_bits, .. },
+            } => assert_eq!(stop_bits, UartStopBitsArg::Two),
+            _ => panic!("expected Uart SetConfig command"),
+        }
+    }
+
+    /// `describe_framing` is what the user actually reads out of
+    /// `get-config`. A transposed arm renders 7E1 as 7O1 with no error
+    /// anywhere — the caller would then "confirm" a setting that is not in
+    /// force. Pin every combination that has a conventional spelling.
+    #[test]
+    fn describe_framing_renders_conventional_shorthand() {
+        use pico_de_gallo_lib::{UartDataBits, UartParity, UartStopBits};
+
+        assert_eq!(
+            describe_framing(UartDataBits::Eight, UartParity::None, UartStopBits::One),
+            "8N1"
+        );
+        assert_eq!(
+            describe_framing(UartDataBits::Seven, UartParity::Even, UartStopBits::Two),
+            "7E2"
+        );
+        assert_eq!(
+            describe_framing(UartDataBits::Five, UartParity::Odd, UartStopBits::One),
+            "5O1"
+        );
+        assert_eq!(
+            describe_framing(UartDataBits::Six, UartParity::Mark, UartStopBits::Two),
+            "6M2"
+        );
+        assert_eq!(
+            describe_framing(UartDataBits::Eight, UartParity::Space, UartStopBits::One),
+            "8S1"
+        );
+    }
+
+    /// Every rendered triple must be distinct, so the shorthand is
+    /// actually diagnostic. An arm that returned the same character for
+    /// two variants would pass the spot checks above if neither was named.
+    #[test]
+    fn describe_framing_is_injective() {
+        use pico_de_gallo_lib::{UartDataBits, UartParity, UartStopBits};
+
+        let d = [
+            UartDataBits::Five,
+            UartDataBits::Six,
+            UartDataBits::Seven,
+            UartDataBits::Eight,
+        ];
+        let p = [
+            UartParity::None,
+            UartParity::Odd,
+            UartParity::Even,
+            UartParity::Mark,
+            UartParity::Space,
+        ];
+        let s = [UartStopBits::One, UartStopBits::Two];
+
+        let mut seen = std::collections::HashSet::new();
+        for &db in &d {
+            for &pa in &p {
+                for &sb in &s {
+                    let rendered = describe_framing(db, pa, sb);
+                    assert_eq!(rendered.chars().count(), 3, "{rendered:?} is not 3 chars");
+                    assert!(
+                        seen.insert(rendered.clone()),
+                        "{rendered:?} is produced by two distinct framings"
+                    );
+                }
+            }
+        }
+        assert_eq!(seen.len(), 40);
     }
 
     #[test]
