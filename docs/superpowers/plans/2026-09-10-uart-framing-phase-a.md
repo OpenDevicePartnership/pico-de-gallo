@@ -1957,6 +1957,56 @@ Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>"
 
 ---
 
+## Corrections from M3
+
+Tasks 7-12 were executed and their literal code contained twelve defects. Four
+would have shipped real bugs. Recorded so the plan is not read as correct.
+
+1. **Task 7's `pub use` literal was destructive.** `pico-de-gallo-lib` has
+   **four** separate re-export blocks. Pasting the plan's single block would
+   have deleted `UartError`, `MAX_REQUEST_FRAME` and the batch helpers,
+   breaking every downstream crate. Extend the correct block; do not replace.
+
+2. **`UartParity.None` is a Python `SyntaxError`, not valid as the plan
+   claimed.** `None` is a keyword, so the member is exposed to Python as
+   **`NoParity`** — renamed, never renumbered, still wire index 0. Verified
+   empirically rather than reasoned about. The wire enum, the FFI enum and the
+   C header all keep `None`.
+
+3. **Task 8's FFI range test was vacuous.** It passed a null context, so the
+   null check answered first and no range check ever ran. A transposed
+   `3 => Mark` / `4 => Space` would have shipped green.
+
+4. **`#[pyo3(get)]` was omitted** from the Python field guidance, so the three
+   new fields would have compiled and been invisible from Python.
+
+Smaller: `McpError::invalid_params` does not exist (it is `ErrorData` via
+`invalid_arg`); one MCP code fence was malformed; the CLI and pyco
+error-mapping idioms do not compile against the real files; Tasks 9/10/11 never
+mentioned imports; `pub enum` is wrong for a pyco `#[pyclass]`; a `Debug`
+derive was missing; and Task 8 Step 7's verification command used Unix `find`
+on a Windows host.
+
+**Two deliberate departures from the plan**, both upheld:
+
+- **The CLI framing flags are long-only.** The plan's `#[arg(short, long)]`
+  derives `-s` for `--stop-bits`, which collides in meaning with the top-level
+  `-s`/`--serial-number`. That flag is not `global`, so clap does not panic —
+  it just means different things at different levels, which is worse. Pinned
+  by a test.
+- **The 8N1 defaults were kept** over both reviewers calling them a silent
+  behavioural regression. Before M1 framing was unreachable, so no caller can
+  ever have been in 7E1; this is a least-surprise question about a new
+  capability, not a compatibility break. Bought down by making the applied
+  framing observable: the CLI echoes it and the MCP tool returns the applied
+  configuration rather than a bare `"ok"`.
+
+**One coverage gap left open deliberately:** nothing proves `uart_set_config`
+*forwards* its four arguments correctly onto the wire — that needs the scripted
+transport to decode the transmitted request. The test that falsely implied such
+coverage was renamed rather than left misleading.
+
+---
 ## Task 13: Full host gate
 
 - [ ] **Step 1: Run everything CI runs**

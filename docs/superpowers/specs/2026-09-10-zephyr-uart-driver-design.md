@@ -599,6 +599,19 @@ the same reasoning recorded at `pdg_i2c.c:476-492`.
 | `pyco-de-gallo` | enums exposed as `#[pyclass]`, deriving `Clone` |
 | `pico-de-gallo-hal` | **no functional change** — see below |
 
+**Python naming exception, from M3.** `UartParity`'s `None` variant is exposed
+to Python as **`NoParity`**. `None` is a Python keyword, so a member literally
+named `None` makes `UartParity.None` a `SyntaxError` at the call site —
+verified, not assumed. The variant is **renamed, never renumbered**: it still
+maps to and from wire index 0. This is a Python-surface spelling only; the wire
+enum, the FFI enum and the C header all keep `None`.
+
+**CLI flag exception, from M3.** The framing flags are **long-only**. Deriving
+short flags would give `-s` to `--stop-bits`, colliding in meaning with the
+top-level `-s`/`--serial-number`. Because that top-level flag is not `global`,
+clap does *not* panic on the collision — it silently means different things at
+different levels, which is worse than a crash. Pinned by a test.
+
 `pico-de-gallo-hal` needs no code change. Its `Uart` (`lib.rs:1896`) exposes no
 configuration surface at all, only `set_timeout_ms`, and its doc comment
 already directs callers to depend on `pico-de-gallo-lib` and call
