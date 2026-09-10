@@ -1,9 +1,14 @@
 //! UART endpoint handlers.
 
 #[cfg(feature = "hw-rev2")]
+use core::task::Poll;
+
+#[cfg(feature = "hw-rev2")]
 use defmt::{debug, warn};
 #[cfg(feature = "hw-rev2")]
-use embassy_time::{Duration, with_timeout};
+use embassy_futures::poll_once;
+#[cfg(feature = "hw-rev2")]
+use embassy_time::Duration;
 #[cfg(feature = "hw-rev2")]
 use embedded_io_async::{Read as AsyncRead, Write as AsyncWrite};
 #[cfg(feature = "hw-rev2")]
@@ -20,7 +25,7 @@ use crate::context::Context;
 ///
 /// Reads up to `count` bytes. `req.timeout_ms` is clamped to
 /// [`MAX_HANDLER_TIMEOUT`](crate::progress::MAX_HANDLER_TIMEOUT); a value of
-/// `0` still selects the non-blocking 1 ms poll. Returns whatever bytes are
+/// `0` selects a single non-blocking poll. Returns whatever bytes are
 /// available (1 to count), or an empty slice on timeout.
 #[cfg(feature = "hw-rev2")]
 pub(crate) async fn uart_read_handler<'a>(
@@ -36,12 +41,25 @@ pub(crate) async fn uart_read_handler<'a>(
     let buf = &mut context.buf[..count];
 
     if req.timeout_ms == 0 {
-        // Non-blocking: try to read whatever is buffered. Well inside the
-        // default dispatch budget, so no declaration is needed.
-        match with_timeout(Duration::from_millis(1), AsyncRead::read(&mut context.uart, buf)).await {
-            Ok(Ok(n)) => Ok(&context.buf[..n]),
-            Ok(Err(_)) => Err(UartError::Other),
-            Err(_) => Ok(&[]),
+        // Non-blocking. Poll the read exactly once instead of waiting out a
+        // 1 ms timeout: an empty poll cost about 1422 us end to end, which a
+        // Zephyr uart_poll_in loop pays on every idle iteration.
+        //
+        // Deliberately NOT ReadReady::read_ready(). That inspects only the
+        // software RX ring, and on a framing/parity/break/overrun error the
+        // ISR records rx_error and disables RX interrupts; only try_read
+        // consumes the error and re-enables them. Returning early on an empty
+        // ring would leave the error latched and RX dead for a client that
+        // only ever polls with timeout_ms == 0. A single poll runs try_read,
+        // so the error surfaces here instead.
+        //
+        // Dropping the future on Pending is safe: try_read never pops bytes
+        // and then returns Pending, and poll_once's no-op waker registration
+        // is replaced by the next read.
+        match poll_once(AsyncRead::read(&mut context.uart, buf)) {
+            Poll::Ready(Ok(n)) => Ok(&context.buf[..n]),
+            Poll::Ready(Err(_)) => Err(UartError::Other),
+            Poll::Pending => Ok(&[]),
         }
     } else {
         match crate::progress::bounded(req.timeout_ms, AsyncRead::read(&mut context.uart, buf)).await {
