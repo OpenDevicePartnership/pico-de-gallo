@@ -699,16 +699,19 @@ fn classify_cs(cs: u8, num_gpios: u8) -> Result<(), String> {
 /// after rounding.
 #[pyclass]
 struct UartConfigurationInfo {
-    /// Active UART baud rate, in bits per second.
+    /// Last requested UART baud rate, in bits per second.
+    ///
+    /// This is the value that was asked for, not the rate the divisor
+    /// achieves after rounding.
     #[pyo3(get)]
     baud_rate: u32,
-    /// Active UART word length.
+    /// Last requested UART word length.
     #[pyo3(get)]
     data_bits: UartDataBits,
-    /// Active UART parity mode.
+    /// Last requested UART parity mode.
     #[pyo3(get)]
     parity: UartParity,
-    /// Active UART stop-bit count.
+    /// Last requested UART stop-bit count.
     #[pyo3(get)]
     stop_bits: UartStopBits,
 }
@@ -1719,8 +1722,14 @@ impl PycoDeGallo {
 
     /// Query the current UART configuration.
     ///
+    /// All four values are the last configuration successfully requested from
+    /// the firmware. This is software-shadow state, not a register read-back:
+    /// the reported baud rate is the value that was asked for, not the rate
+    /// the divisor achieves after rounding.
+    ///
     /// Returns:
-    ///     UartConfigurationInfo: Active baud rate. Default is 115200.
+    ///     UartConfigurationInfo: The last requested baud rate, word length,
+    ///     parity mode and stop-bit count. The power-on default is 115200 8N1.
     ///
     /// Raises:
     ///     RuntimeError: If the firmware's hardware revision does not support UART.
