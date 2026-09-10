@@ -290,7 +290,7 @@ fn uart_set_configuration_request_encoding_is_pinned() {
     // 115200 is a 3-byte postcard varint, then WLEN=3, parity=0, stop=0.
     assert_eq!(
         postcard::to_allocvec(&req).unwrap(),
-        [0x80, 0x87, 0x07, 0x03, 0x00, 0x00]
+        [0x80, 0x84, 0x07, 0x03, 0x00, 0x00]
     );
 }
 ```

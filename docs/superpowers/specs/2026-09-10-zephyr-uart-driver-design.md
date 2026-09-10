@@ -231,6 +231,45 @@ the new request rather than accepting it. If it turns out `REQ_KEY` does not
 gate dispatch, this section is wrong and the change needs a different
 mitigation.
 
+#### Correction, from M1: the two endpoints are not symmetric
+
+The paragraph above is right for `uart/set-config` and **wrong for
+`uart/get-config`**. M1 pinned both cases in
+`crates/pico-de-gallo-internal/tests/req_key_changes_with_request_shape.rs`.
+
+`uart/get-config`'s request type is `()`. It does not change, so its `REQ_KEY`
+does not move and an old firmware **dispatches the request perfectly happily**.
+What moves is `RESP_KEY`, because `UartConfigurationInfo` gained fields. The old
+firmware replies under the old `RESP_KEY`, the new host is waiting on the new
+one, the frame is dropped unmatched, and the caller sees an opaque **timeout**
+— indistinguishable from a dead board.
+
+So the honest statement is:
+
+| Endpoint | Request shape moved? | Skew presents as |
+|---|---|---|
+| `uart/set-config` | yes → `REQ_KEY` moves | firmware never dispatches; loud and specific |
+| `uart/get-config` | no (`()`) → `REQ_KEY` fixed | reply dropped unmatched; **opaque timeout** |
+
+This is the same blind spot as the `DeviceInfo` hazard in the 2026-09-01 row,
+scoped smaller: the endpoint that would report the incompatibility is itself
+the one that cannot. It is acceptable — a timeout is not silent corruption, and
+`set-config` still fails loudly — but it must not be described as "fails
+loudly" without qualification.
+
+The *dangerous* direction is also worth naming precisely, because it is the
+reverse of the intuitive one. A **new host talking to old firmware** is the
+hazard: postcard ignores trailing bytes, so an old one-field decoder reads
+`baud_rate` correctly, never looks at the three framing bytes, and returns
+success. A caller asking for 7M2 would be left transmitting 8N1 with no error
+anywhere. The reverse — an old host's 3-byte request reaching new firmware — is
+three bytes short and fails the decode loudly. The endpoint key is what closes
+the dangerous direction, which is why M1 gates on it.
+
+**Still owed:** M1's evidence is static (two shapes compiled into one test
+binary). The two-image firmware A/B this section originally asked for has not
+been performed and belongs to a hardware milestone.
+
 ---
 
 ## 5. Firmware
