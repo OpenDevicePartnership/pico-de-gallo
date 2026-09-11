@@ -68,6 +68,7 @@ die() {
 PDG_TARGETS=(
 "i2c_bridge|pass|zephyr/samples/i2c_bridge||pdg_mfd.c,pdg_i2c.c|gallo_registry,pdg_i2c_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_I2C_PICO_DE_GALLO"
 "spi_nor_id|pass|zephyr/samples/spi_nor_id||pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
+"uart_bridge|pass|zephyr/samples/uart_bridge||pdg_mfd.c,pdg_uart.c|gallo_registry,pdg_uart_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_UART_PICO_DE_GALLO"
 "spi_bridge|basefail|zephyr/samples/spi_bridge||||"
 "combined_i2c_spi_bridge|basefail|zephyr/samples/combined_i2c_spi_bridge||||"
 "m5_reset|pass|zephyr/tests/pdg_mfd_m5/reset_subscriptions|zephyr/tests/pdg_mfd_m5/reset_subscriptions/reset.overlay|pdg_mfd.c|gallo_registry,m5_bottom|CONFIG_MFD_PICO_DE_GALLO"
@@ -76,6 +77,19 @@ PDG_TARGETS=(
 "m5_acceptance|pass|zephyr/tests/pdg_mfd_m5/acceptance|zephyr/tests/pdg_mfd_m5/acceptance/acceptance.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
 "m5_teardown|pass|zephyr/tests/pdg_mfd_m5/recovery_teardown|zephyr/tests/pdg_mfd_m5/recovery_teardown/recovery.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
 "i2c_burst|pass|zephyr/tests/pdg_i2c_burst|zephyr/tests/pdg_i2c_burst/burst.overlay|pdg_mfd.c,pdg_i2c.c|gallo_registry,pdg_i2c_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_I2C_PICO_DE_GALLO"
+# The UART recording-fake suite. BUILT HERE, NOT RUN HERE: twister executes it
+# (its tests.yaml omits build_only, because the bottom layer is replaced by
+# fakes and nothing reaches gallo_init_strict()), but this script only ever
+# builds, exactly as the header says. The two are complementary, not redundant:
+# twister proves the suite passes, this table proves it still links against the
+# production drivers with the module's own -DEXTRA_ZEPHYR_MODULES wiring.
+#
+# ONE build directory, at the default PDG_FAKE_UART_CAPABILITY=1. The suite has
+# a second twister scenario at =0, but that bit is a CMake cache variable and
+# this table has NO field for per-target extra CMake args -- only an overlay.
+# Covering it here would mean inventing a mechanism for a configuration twister
+# already builds; a scenario is not a target.
+"uart_fake|pass|zephyr/tests/pdg_fake/uart|zephyr/tests/pdg_fake/uart/fake.overlay|pdg_mfd.c,pdg_uart.c|gallo_registry,pdg_uart_bottom,pdg_uart_fake_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_UART_PICO_DE_GALLO"
 )
 
 # All five driver translation units. Assertion 3 is two-sided over exactly this
@@ -214,15 +228,15 @@ st_check() {
 self_test() {
 	printf 'ci-build self-test\n'
 
-	st_check "table has 10 targets" "${#PDG_TARGETS[@]}" "10"
+	st_check "table has 12 targets" "${#PDG_TARGETS[@]}" "12"
 	st_check "field 1 is the name" \
 		"$(target_field "${PDG_TARGETS[0]}" 1)" "i2c_bridge"
 	st_check "field 2 is the kind" \
-		"$(target_field "${PDG_TARGETS[2]}" 2)" "basefail"
+		"$(target_field "${PDG_TARGETS[3]}" 2)" "basefail"
 	st_check "empty overlay field yields empty string" \
 		"$(target_field "${PDG_TARGETS[0]}" 4)" ""
 	st_check "named overlay field is preserved" \
-		"$(target_field "${PDG_TARGETS[4]}" 4)" \
+		"$(target_field "${PDG_TARGETS[5]}" 4)" \
 		"zephyr/tests/pdg_mfd_m5/reset_subscriptions/reset.overlay"
 
 	# --- undefined_ords ---
@@ -256,9 +270,9 @@ self_test() {
 		"$(unknown_targets "i2c_bridge,typo")" "typo"
 	st_check "unknown_targets accepts an all-valid list" \
 		"$(unknown_targets "i2c_bridge,m5_jumper")" ""
-	st_check "select_targets with an empty selection means all ten" \
+	st_check "select_targets with an empty selection means all twelve" \
 		"$(select_targets "")" \
-		"i2c_bridge spi_nor_id spi_bridge combined_i2c_spi_bridge m5_reset uart_driver m5_jumper m5_acceptance m5_teardown i2c_burst"
+		"i2c_bridge spi_nor_id uart_bridge spi_bridge combined_i2c_spi_bridge m5_reset uart_driver m5_jumper m5_acceptance m5_teardown i2c_burst uart_fake"
 	st_check "select_targets picks exactly the named subset, in table order" \
 		"$(select_targets "m5_jumper,i2c_bridge")" "i2c_bridge m5_jumper"
 
