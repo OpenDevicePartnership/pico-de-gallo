@@ -258,18 +258,19 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 
 ### 5.5 Test baseline
 
-About **714 unit tests + 8 doctests** across the host workspace,
-measured 2026-09-09 after #186:
+About **776 unit tests + 10 integration tests + 8 doctests** across the
+host workspace, measured 2026-09-11 on the `issue-152` UART framing
+working tree:
 
-| Crate                    | Passing | `#[ignore]`d |
-|--------------------------|---------|--------------|
-| `pico-de-gallo-internal` | 183     | 0            |
-| `pico-de-gallo-ffi`      | 141     | 0            |
-| `pico-de-gallo-lib`      | 137     | 17           |
-| `gallo-mcp`              | 122     | 7            |
-| `gallo`                  | 75      | 0            |
-| `pico-de-gallo-hal`      | 47      | 0            |
-| `pyco-de-gallo`          | 9       | 0            |
+| Crate                    | Unit passing | Integration passing | `#[ignore]`d |
+|--------------------------|--------------|---------------------|--------------|
+| `pico-de-gallo-internal` | 197          | 10                  | 0            |
+| `pico-de-gallo-ffi`      | 156          | 0                   | 0            |
+| `pico-de-gallo-lib`      | 140          | 0                   | 17           |
+| `gallo-mcp`              | 133          | 0                   | 7            |
+| `gallo`                  | 84           | 0                   | 0            |
+| `pico-de-gallo-hal`      | 47           | 0                   | 0            |
+| `pyco-de-gallo`          | 19           | 0                   | 0            |
 
 The previous revision of this table said 687 with `pico-de-gallo-ffi`
 at 136 and `pico-de-gallo-hal` at 46. Both were stale: re-measuring
@@ -280,10 +281,11 @@ from them.
 Counts are measured from the workspace root (`cargo test --locked`),
 which unifies features and therefore enables `pico-de-gallo-internal`'s
 `use-std` tests. Running `cargo test -p pico-de-gallo-internal` alone
-reports 144, because some tests are gated on that feature — see §13.14.
+reports fewer tests, because some tests are gated on that feature — see
+§13.14.
 Feature unification cuts both ways: `cargo test -p pico-de-gallo-hal`
-reports 48 against the table's 46, so per-crate and workspace runs are
-not interchangeable for counting.
+can report a different figure from the table, so per-crate and workspace
+runs are not interchangeable for counting.
 
 Doctests: `pico-de-gallo-lib` 5, `pico-de-gallo-hal` 2,
 `pico-de-gallo-internal` 1.
@@ -379,8 +381,8 @@ same commit**.
 | `"uart/read"`            | UART read with timeout                                  |
 | `"uart/write"`           | UART write                                              |
 | `"uart/flush"`           | Flush UART TX buffer                                    |
-| `"uart/set-config"`      | Configure UART (baud rate)                              |
-| `"uart/get-config"`      | Query current UART configuration                        |
+| `"uart/set-config"`      | Configure UART (baud rate, data bits, parity, stop bits) |
+| `"uart/get-config"`      | Query current UART baud rate and framing                 |
 | `"gpio/get"`             | Read GPIO pin                                           |
 | `"gpio/put"`             | Set GPIO pin                                            |
 | `"gpio/wait-high"`       | Wait for GPIO high                                      |
