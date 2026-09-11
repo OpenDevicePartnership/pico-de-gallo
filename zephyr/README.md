@@ -95,10 +95,10 @@ Zephyr is used if you have stale entries in `~/.cmake/packages/Zephyr`.
 touches `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/`,
 either root Cargo file, or its own `.github/workflows/zephyr.yml` definition.
 It pins Zephyr to the commit recorded above and drives
-`zephyr/scripts/ci-build.sh`, which builds ten targets: the two viable samples,
+`zephyr/scripts/ci-build.sh`, which builds twelve targets: three viable samples,
 the two IS31 samples (asserted to fail exactly as they do at baseline), the
-four M5 test applications, the UART driver build target, and the I2C
-gather-write regression image.
+four M5 test applications, the UART driver build target, the I2C gather-write
+regression image, and the UART recording-fake image.
 
 To reproduce a CI failure locally, with a Zephyr workspace already set up:
 
@@ -111,25 +111,27 @@ zephyr/scripts/ci-build.sh --targets i2c_bridge
 `--self-test` runs the assertion parsers against checked-in fixtures and needs
 no Zephyr workspace at all.
 
-**This gate is build-only.** It never runs a produced binary, because doing so
-reaches `gallo_init_strict()` and needs an attached board. A green run means the
-module still compiles and links - it says nothing about whether it still works
-against hardware. That remains `tests/pdg_mfd_m5/run-m5.sh` and
-`tests/pdg_i2c_burst`, run by hand with a board and, for the M5 images, the
-physical jumpers in place.
+The `ci-build.sh` job is build-only. Twister also builds every board-attached
+image, but executes the I2C and UART recording-fake scenarios because their
+bottom layers replace USB and the C FFI. A green workflow therefore proves that
+the module compiles and links and that those fake-driven top halves pass. It
+does **not** prove that the module works against hardware. That remains
+`tests/pdg_mfd_m5/run-m5.sh` and `tests/pdg_i2c_burst`, run by hand with a board
+and, for the M5 images, the physical jumpers in place.
 
-For the UART driver specifically, M5 evidence is only that the module compiles
-and links. Its compile-time mapping and topology assertions were checked by
-review plus a recorded mutation, but `ci-build.sh` has no target kind that
-asserts a `BUILD_ASSERT` fires, so CI does not exercise those negative cases.
-Runtime behaviour is deferred to the M6 recording fake, hardware behaviour to
-M7, and nothing in this driver has been run against a board.
+For the UART driver specifically, M6 adds executed recording-fake evidence for
+top-half control flow and argument transcription. Its compile-time mapping and
+topology assertions were checked by review plus a recorded mutation, but
+`ci-build.sh` has no target kind that asserts a `BUILD_ASSERT` fires, so CI does
+not exercise those negative cases. Hardware behaviour remains an M7 obligation;
+nothing in this driver has been run against a board.
 
 ### Twister metadata
 
-Seven applications carry a `tests.yaml` — the two viable samples and the five
-board-attached test images. A second CI job runs twister over
-`zephyr/samples` and `zephyr/tests`.
+Ten applications carry a `tests.yaml`: three samples, five board-attached test
+images, and the I2C and UART recording-fake suites. Together they declare eleven
+scenarios. A second CI job runs twister over `zephyr/samples` and
+`zephyr/tests`.
 
 Three things about that file are easy to get wrong:
 
@@ -138,25 +140,102 @@ Three things about that file are easy to get wrong:
   `filename:testcase.yaml path:tests/drivers` each return zero results against
   `zephyrproject-rtos/zephyr`, while `tests/drivers` alone holds 268
   `tests.yaml` files. Samples keep a `sample:` key *inside* `tests.yaml`.
-- **Every scenario is `build_only: true`.** twister classifies `native_sim` as
-  `type: native` and would otherwise execute the binary, which reaches
-  `gallo_init_strict()` on a runner with no board.
+- **Eight scenarios are `build_only: true`.** Twister classifies `native_sim`
+  as `type: native` and would otherwise execute board-attached binaries, which
+  reach `gallo_init_strict()` on a runner with no board. The three exceptions
+  are the I2C fake scenario and the UART fake's capability-present and
+  capability-absent scenarios.
 - **None declares `depends_on`.** That key is matched against the board's
-  `supported:` list, and `native_sim/native/64` does not name `i2c` or `spi` —
-  only the 32-bit `native_sim` does. A `depends_on: i2c` would filter the
+  `supported:` list, and `native_sim/native/64` does not name `i2c`, `spi` or
+  `uart` — only the 32-bit `native_sim` does. Claiming one would filter the
   scenario away to nothing on the only platform this module targets, and would
   report it as skipped rather than as an error.
 
-twister duplicates most of what `ci-build.sh` already does, and does it with
-weaker assertions — it has no equivalent of the two-sided translation-unit and
-Kconfig checks. It earns its place for two other reasons. It forces
-`CONFIG_COMPILER_WARNINGS_AS_ERRORS=y` **and** `--edtlib-Werror`, so devicetree
+Twister duplicates most of what `ci-build.sh` already does, and does it with
+weaker build assertions — it has no equivalent of the two-sided
+translation-unit and Kconfig checks. It earns its place for two other reasons.
+It forces `CONFIG_COMPILER_WARNINGS_AS_ERRORS=y` **and** `--edtlib-Werror`, so
+devicetree
 *binding* warnings become build failures; this module ships four custom
-bindings and a plain `west build` never checks them that way. And it is the
-only way to run a `type: unit` suite, which is the route issue
-[#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109) takes
-for hardware-free coverage of the drivers' internal helpers.
+bindings and a plain `west build` never checks them that way. It also executes
+the three hardware-free recording-fake scenarios. The measured M6 run passed
+all three configurations and all 19 cases:
 
+```text
+drivers.pico_de_gallo.i2c.fake                 passed   2/2
+drivers.pico_de_gallo.uart.fake                passed  14/14
+drivers.pico_de_gallo.uart.fake_no_capability  passed   3/3
+3 of 3 configurations passed, 19 of 19 test cases passed
+```
+
+The UART scenarios use one source tree and select capability present or absent
+with the compile-time `PDG_FAKE_UART_CAPABILITY` CMake cache variable. This must
+be compile-time policy: `POST_KERNEL` device initialization runs before any
+ztest hook could change a runtime fake.
+
+#### UART recording-fake coverage
+
+The capability-present scenario enables five dedicated UART instances at
+115200, 57600, 38400, 19200 and 9600 baud. Those distinct rates are
+load-bearing: every child borrows the same parent `ctx`, so the recorded baud is
+the only way to attribute an initialization `set_config` call to a child. The
+instances are dedicated because the RX and TX transport latches are permanent
+and cannot be re-armed. Keep `CONFIG_ZTEST_SHUFFLE` disabled.
+
+The executed suite covers:
+
+- capability-gated initialization, including aggregate capability/configuration
+  event ordering — no configuration is ever preceded by fewer capability probes
+  than configurations — and a latched parent close count that remains exactly
+  zero. Per-child ordering is NOT proven: capability events carry no child
+  discriminator, because the shared parent fake hands every child the same
+  context, so that remains source-review evidence;
+- the ISR-context refusal matrix and absence of bottom calls;
+- exact `uart_poll_in() == -1` behaviour for an empty ring, plus one refill
+  serving eight polls with one bottom read and a ninth poll causing the second;
+- one bottom write per output byte;
+- transcription of all supported data-bit, parity (including mark and space),
+  and stop-bit values, with rejected configurations making no bottom call and
+  the cached configuration following acknowledged success only;
+- side-effect-free `-ENOTSUP` behaviour from the asynchronous and wide stubs;
+- RX and TX transport latches that suppress every subsequent call in the
+  bounded tested sequence, including staged-ring discard; device-lifetime
+  permanence is established by source review, not by this suite; and
+- the 10 ms non-transport receive backoff and a successful recovery attempt
+  after its deadline.
+
+#### What the UART recording fake does not prove
+
+**These gaps are M7 obligations.** The recording fake replaces the bottom
+layer, so this run proves top-half control flow and recorded arguments only. In
+particular, it does not prove:
+
+- USB enumeration or transport, firmware execution or rings, postcard framing,
+  host timeouts, real backpressure, or the real FFI `Status`-to-errno mapping;
+  the tests inject errnos directly and bypass `pdg_common_status_to_errno()`;
+- the values of private `tx_dropped`, `rx_errors`, `last_errno`, or
+  `link_failed`; exposing them would widen the production driver, so the suite
+  asserts their externally visible effects instead;
+- that the ISR guard precedes the mutex. It proves only that an ISR-context call
+  returns the documented value and makes no bottom call; moving the guard just
+  after an uncontended lock would still pass;
+- that a successful refill explicitly clears backoff. Success can occur only
+  after the deadline has expired, making that assertion vacuous;
+- `k_is_pre_kernel()` guards, mutex contention, queued-caller behaviour, or the
+  pre-lock/post-lock latch checks with a real waiting thread;
+- the console-reentrancy hazard behind `uart_poll_out()`'s never-log rule; the
+  suite does not make this UART the active console;
+- the measured `timeout_ms = 0` latency (about 359 us versus about 1489 us), the
+  approximately 143-baud clamp, physical framing, firmware ring behaviour, or
+  the indeterminate "byte applied but acknowledgement lost" case; and
+- per-child capability-before-configuration ordering. Capability events carry no
+  child discriminator, because the shared parent fake hands every child the same
+  context, so only the aggregate running-prefix invariant is asserted;
+- that the RX and TX transport latches are permanent for the device's lifetime.
+  The suite proves suppression only across the bounded sequence of immediate
+  follow-up calls it makes; permanence is a source-review property;
+- a real read result greater than 1014 bytes, which real firmware cannot
+  produce. Only the defensive top-half handling of an injected value is tested.
 
 ---
 
@@ -220,6 +299,26 @@ bound the run or slow it to wall-clock time:
 
 Simulated time otherwise advances as fast as the host allows, which makes
 `k_sleep()`-based sampling loops run far faster than the wall clock.
+
+## Running the UART sample
+
+`samples/uart_bridge` is a bounded polling example for `uart_poll_out()` and
+`uart_poll_in()`. It sends a fixed greeting one byte at a time, makes at most 64
+receive attempts, prints any received bytes, and exits. Set the parent
+`serial-number` in `app.overlay`, connect a UART peer to the board's TX/RX pins,
+then build and run it:
+
+```bash
+cd zephyr/samples/uart_bridge
+west build -p always -b native_sim/native/64 -- -DSHIELD=pico_de_gallo
+west build -t run
+```
+
+The sample's Twister scenario is **build-only**. Running the image reaches
+`gallo_init_strict()` and opens a USB device, so CI never executes it. The UART
+recording-fake suite described under *Continuous integration* is the
+hardware-free runtime coverage; it does not execute this sample or its real
+bottom layer.
 
 ### The other two samples do not build yet
 
@@ -561,9 +660,9 @@ write may therefore already have queued the byte: the driver never retries, and
 blind retry is unsafe.
 
 The driver records private `tx_dropped`, `rx_errors`, `last_errno` and
-`link_failed` diagnostics. In M5 they are inspectable only through a debugger
-or source-level test access. There is no public API, shell command or statistics
-surface; deciding whether and how to expose them is deferred to M6.
+`link_failed` diagnostics. There is no public API, shell command or statistics
+surface. M6 deliberately kept them private and tested their externally visible
+effects instead; direct observation remains outside the current interface.
 
 #### Configuration and initialization cost
 

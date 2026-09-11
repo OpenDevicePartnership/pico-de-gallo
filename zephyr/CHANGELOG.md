@@ -52,6 +52,44 @@ The format is based on
 
 ### Added
 
+- Added `samples/uart_bridge`, a bounded, polling-only example for
+  `uart_poll_out()` and `uart_poll_in()`. Its Twister scenario is build-only:
+  running it reaches `gallo_init_strict()` and requires a USB-attached board and
+  UART peer.
+
+- Added the executed `tests/pdg_fake/uart` recording-fake suite with two
+  scenarios: `drivers.pico_de_gallo.uart.fake` (14 cases with UART capability)
+  and `drivers.pico_de_gallo.uart.fake_no_capability` (3 cases without it),
+  selected by the compile-time `PDG_FAKE_UART_CAPABILITY` cache variable. A
+  measured Twister run on `native_sim/native/64`, together with the existing
+  two-case I2C fake, passed 3/3 configurations and 19/19 test cases.
+
+  Five dedicated UART children use distinct 115200, 57600, 38400, 19200 and
+  9600 baud rates so initialization calls can be attributed despite their
+  shared parent context. Dedicated instances isolate permanent transport
+  latches; `CONFIG_ZTEST_SHUFFLE` remains off. The shared parent fake now also
+  records a latched close count, which the suite requires to remain zero because
+  children borrow and must never close the parent connection.
+
+  Executed coverage includes ISR-context refusal results and bottom-call
+  suppression; exact empty-ring `uart_poll_in() == -1`; one refill serving
+  eight polls with one bottom read; one write per byte; accepted and rejected
+  configuration transcription including mark/space parity and both stop-bit
+  counts; cache updates only after acknowledged success; async/wide
+  `-ENOTSUP` stubs; RX/TX transport latches that suppress every subsequent call
+  in the bounded tested sequence, including staged-ring discard;
+  10 ms non-transport backoff with a post-deadline recovery attempt; and the
+  capability gate, whose capability/configuration ordering is asserted in
+  aggregate only.
+
+  This is top-half control-flow and argument-recording evidence only. The fake
+  bypasses USB, firmware, postcard framing and real FFI status mapping. It does
+  not observe the private diagnostics, prove ISR-guard-before-mutex ordering,
+  prove explicit backoff clearing, reach pre-kernel guards, contend the mutex,
+  exercise console reentrancy, or establish physical timing, framing,
+  backpressure, firmware-ring, baud-clamp or lost-ack behaviour. Those remain
+  M7 board-attached obligations.
+
 - Added the polling-only `odp,pico-de-gallo-uart` controller as a direct child
   of the `odp,pico-de-gallo` MFD parent, with its devicetree binding, Kconfig,
   disabled shield node and build wiring. The child borrows the parent-owned
@@ -142,10 +180,10 @@ The format is based on
   refill bound because the M6 fake bypasses the transport and unplug produces
   a fast `-ECOMM`.
 
-  **M5 evidence is compile-and-link only: no runtime test and no hardware test
-  was performed.** Runtime behaviour, including the recording-fake suite, is
-  deferred to M6; hardware bring-up is deferred to M7. The firmware RX-error
-  recovery path on which refilling depends also remains hardware-untested.
+  **M5 evidence was compile-and-link only: no runtime test and no hardware test
+  was performed.** M6 has since added the recording-fake coverage above;
+  hardware bring-up remains deferred to M7. The firmware RX-error recovery path
+  on which refilling depends also remains hardware-untested.
 
 - `pdg_common_status_to_errno()` maps the new `CallTimeout` status to
   `-ETIMEDOUT`. Refs #178.
@@ -364,8 +402,8 @@ The format is based on
 
 ### Added
 
-- **Twister metadata for the seven buildable applications**, and a `twister` job
-  in `.github/workflows/zephyr.yml` that runs them.
+- **Twister metadata, initially for seven buildable applications**, and a
+  `twister` job in `.github/workflows/zephyr.yml` that processes them.
   ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
 
   The file is `tests.yaml`, not `sample.yaml` or `testcase.yaml`. Upstream has
@@ -374,13 +412,13 @@ The format is based on
   return zero results, while `tests/drivers` alone holds 268 `tests.yaml`.
   Samples keep their `sample:` key inside `tests.yaml`.
 
-  Every scenario is `build_only: true`. Twister classifies `native_sim` as
-  `type: native` and would otherwise execute the binary, which reaches
-  `gallo_init_strict()` and needs an attached board. None declares
-  `depends_on`, because that key matches the board's `supported:` list and
-  `native_sim/native/64` names neither `i2c` nor `spi` — only the 32-bit
-  `native_sim` does — so claiming it would silently filter the scenario to
-  nothing on the sole platform this module targets.
+  At introduction, every scenario was `build_only: true`. M6 expands the
+  inventory to ten files and eleven scenarios: eight remain build-only, while
+  the I2C fake and two UART fake scenarios execute without hardware. None
+  declares `depends_on`, because that key matches the board's `supported:` list
+  and `native_sim/native/64` names neither `i2c`, `spi` nor `uart` — only the
+  32-bit `native_sim` does — so claiming one would silently filter the scenario
+  to nothing on the sole platform this module targets.
 
   This is mostly redundant with `zephyr/scripts/ci-build.sh`, and weaker: there
   is no twister equivalent of that script's two-sided translation-unit and
@@ -453,7 +491,8 @@ The format is based on
   Zephyr revision on `native_sim/native/64`, driven by
   `zephyr/scripts/ci-build.sh`. Covers the two viable samples, baseline-failure
   assertions for the two IS31 samples, and the four M5 test applications.
-  Build-only: no produced binary is executed, so this adds no runtime coverage.
+  At introduction this was build-only and added no runtime coverage; M6 later
+  added the executed recording-fake scenarios described above.
   ([#130](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/130))
 
 - Added the `odp,pico-de-gallo-gpio` devicetree compatible and its Zephyr GPIO
@@ -663,11 +702,11 @@ The format is based on
 
 ### Verification
 
-- **#137 is built-only, not behaviourally verified.** No Zephyr environment on
+- **#137 was built-only, not behaviourally verified.** No Zephyr environment on
   the authoring machine, no host-side unit-test harness in the module, and no
-  board. `.github/workflows/zephyr.yml` gates the PR (path-filtered,
-  `zephyr/**` touched) but is **build-only** — it never executes a produced
-  binary — and it builds only the default configuration, so the
+  board. At that time `.github/workflows/zephyr.yml` gated the PR
+  (path-filtered, `zephyr/**` touched) but executed no produced binary, and it
+  built only the default configuration, so the
   `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ=y` arm compiles by construction
   (`IS_ENABLED`, not `#ifdef`) and is never exercised.
 
