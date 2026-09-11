@@ -2582,7 +2582,7 @@ pub unsafe extern "C" fn gallo_spi_get_config(
 /// `timeout_ms` milliseconds, sets `*out_len = 0` and returns
 /// `Status::Ok`.
 ///
-/// `timeout_ms == 0` selects a 1 ms non-blocking poll. Non-zero values above
+/// `timeout_ms == 0` selects a single non-blocking poll. Non-zero values above
 /// the firmware's 30-minute ceiling are clamped to it.
 ///
 /// Returns `Status::Ok` in case of success or various error codes.

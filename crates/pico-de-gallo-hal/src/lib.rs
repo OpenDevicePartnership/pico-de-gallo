@@ -1891,7 +1891,7 @@ impl embedded_hal_async::delay::DelayNs for Delay {
 ///
 /// **Read timeout**: UART reads use a configurable timeout (in
 /// milliseconds) to avoid blocking the USB bridge indefinitely. The
-/// default timeout is 1000 ms. Zero selects a 1 ms non-blocking poll;
+/// default timeout is 1000 ms. Zero selects a single non-blocking poll;
 /// non-zero values above the firmware's 30-minute ceiling are clamped to it.
 /// Adjust with [`Uart::set_timeout_ms`].
 // Fields are unused without either feature.
@@ -1909,7 +1909,7 @@ impl Uart {
     /// Set the read timeout in milliseconds.
     ///
     /// This controls how long [`embedded_io::Read::read`] waits for
-    /// data before returning an empty result. A value of 0 selects a 1 ms
+    /// data before returning an empty result. A value of 0 selects a single
     /// non-blocking poll; non-zero values above the firmware's 30-minute
     /// ceiling are clamped to it.
     pub fn set_timeout_ms(&mut self, timeout_ms: u32) {

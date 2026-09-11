@@ -96,7 +96,7 @@ pub(crate) fn uart_config_json(c: &UartConfigurationInfo) -> serde_json::Value {
 pub struct UartReadParams {
     /// Number of bytes to read.
     pub count: u16,
-    /// Read timeout in milliseconds. Zero selects a 1 ms non-blocking poll;
+    /// Read timeout in milliseconds. Zero selects a single non-blocking poll;
     /// non-zero values above the firmware's 30-minute ceiling are clamped.
     pub timeout_ms: u32,
     /// USB serial number of the board to use. Required when two or more

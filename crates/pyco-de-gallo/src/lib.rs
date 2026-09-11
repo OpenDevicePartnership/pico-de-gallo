@@ -1278,7 +1278,7 @@ impl PycoDeGallo {
     ///
     /// Waits up to ``timeout_ms`` milliseconds for at least one byte. Returns
     /// whatever bytes are available (1 to ``count``), or an empty list on timeout.
-    /// Zero selects a 1 ms non-blocking poll. Non-zero values above the
+    /// Zero selects a single non-blocking poll. Non-zero values above the
     /// firmware's 30-minute ceiling are clamped to it.
     ///
     /// Args:

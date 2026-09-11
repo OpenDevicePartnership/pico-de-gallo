@@ -1211,7 +1211,7 @@ impl core::fmt::Display for UartError {
 pub struct UartReadRequest {
     /// Maximum number of bytes to read (max [`MAX_TRANSFER_SIZE`]).
     pub count: u16,
-    /// Maximum time to wait for data, in milliseconds. Use `0` for a 1 ms
+    /// Maximum time to wait for data, in milliseconds. Use `0` for a single
     /// non-blocking poll that returns only already-buffered data. Non-zero
     /// values above the firmware's 30-minute ceiling are clamped to it.
     pub timeout_ms: u32,

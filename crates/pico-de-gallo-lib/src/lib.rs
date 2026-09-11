@@ -1269,7 +1269,7 @@ impl PicoDeGallo {
     /// If no data is immediately available, it waits up to `timeout_ms`
     /// milliseconds for at least one byte. Returns whatever bytes are
     /// available (1 to `count`), or an empty `Vec` on timeout.
-    /// `timeout_ms == 0` selects a 1 ms non-blocking poll; non-zero values
+    /// `timeout_ms == 0` selects a single non-blocking poll; non-zero values
     /// above the firmware's 30-minute ceiling are clamped to it.
     ///
     /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
