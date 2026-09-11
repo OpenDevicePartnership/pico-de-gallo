@@ -97,6 +97,32 @@ stream); `RUST_LOG` still overrides verbosity when set.
 Calls to different boards run concurrently; calls to the same board queue, so
 a long `gpio_wait_*` holds only the board it addressed.
 
+## UART configuration
+
+`uart_set_config` replaces the complete UART configuration. It requires
+`baud_rate` and accepts these optional string arguments:
+
+| Argument | Accepted values | Default when omitted |
+|---|---|---|
+| `data_bits` | `"5"`, `"6"`, `"7"`, `"8"` | `"8"` |
+| `parity` | `"none"`, `"odd"`, `"even"`, `"mark"`, `"space"` | `"none"` |
+| `stop_bits` | `"1"`, `"2"` | `"1"` |
+| `serial_number` | a board USB serial number | normal target-selection rules |
+
+Omitting a framing field selects its 8N1 default and overwrites the previous
+value; it is not a partial update. Repeat all framing fields when changing only
+the baud rate. The result contains `baud_rate`, `data_bits`, `parity`, and
+`stop_bits` inside the usual `{ "serial_number", "result" }` envelope.
+
+`uart_get_config` returns the same structured fields and spellings, so its
+result can be passed back to `uart_set_config`. These are firmware software-
+shadow values from the last successful request, not a register read-back; the
+reported baud is requested rather than achieved after divisor rounding.
+
+Reconfiguration is not atomic at the UART pins: the device applies the divisor
+before the framing and drains neither direction. Quiesce transmit and receive
+traffic during the call.
+
 ## Use with an MCP client
 
 Add it to your client's MCP configuration. For example, opencode
