@@ -60,7 +60,13 @@ That means coordinating:
 > Nothing enforces wire coupling for you. If a protocol change lands without its
 > matching host and firmware version bumps, users will feel it.
 
-### Schema 0.8 changed `DeviceInfo`, so 0.7 pairs fail opaquely
+### Unreleased schema 0.8 changes
+
+Schema 0.8 is still in flight: `internal-v0.7.0` is the latest published
+protocol tag. Until 0.8 is released, build the host and firmware from the same
+tree rather than treating two builds that both report 0.8.0 as interchangeable.
+
+#### `DeviceInfo` changed, so 0.7 pairs fail opaquely
 
 Schema **0.8** appended `build_id` to `DeviceInfo`. That is an append in the
 encoding, but `DeviceInfo` is not an ordinary wire type: postcard-rpc derives
@@ -85,6 +91,27 @@ stable precisely so one diagnostic survives a `device/info` re-key.
 
 The fix is the usual one — build both sides from the same release. Schema 0.7
 and 0.8 firmware and host components must not be mixed.
+
+#### UART configuration gained framing
+
+The same unreleased schema 0.8 development cycle expanded both
+`UartSetConfigurationRequest` and `UartConfigurationInfo` from a baud rate alone
+to four fields: baud rate, data bits, parity, and stop bits. It also added three
+wire enums, in this exact source order:
+
+- `UartDataBits`: `Five`, `Six`, `Seven`, `Eight`;
+- `UartParity`: `None`, `Odd`, `Even`, `Mark`, `Space`;
+- `UartStopBits`: `One`, `Two`.
+
+That order is ABI. Postcard serializes enum variants by index, so reordering an
+existing variant silently changes the wire protocol even though the Rust enum
+still compiles.
+
+Because these request and response shapes changed while 0.8.0 remains
+unreleased, a host and firmware built from different commits of this in-flight
+schema can disagree while both report version 0.8.0. Build both sides from the
+same tree until schema 0.8.0 is released. The shared version number alone cannot
+distinguish an earlier baud-only 0.8 build from a later framing-aware one.
 
 ## How users check compatibility
 
