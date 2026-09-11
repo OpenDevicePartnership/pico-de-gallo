@@ -109,12 +109,23 @@ extern "C" {
 /* Read up to `count` bytes into `buf`, storing the number actually received in
  * *out_len.
  *
- * `timeout_ms` is the firmware-side read allowance. The driver passes 1, the
- * smallest non-zero value the protocol can express: a non-zero timeout still
- * reaches Embassy's `try_read`, which consumes the RX error latch and
- * re-enables the RX interrupts, so it preserves the error-recovery path that a
- * zero timeout would also preserve but which the host would bound at 30
- * minutes instead of 1 ms.
+ * `timeout_ms` is the firmware-side read allowance. The driver passes zero
+ * (PDG_UART_READ_TIMEOUT_MS in pdg_uart.c), which selects the firmware's
+ * poll_once() branch: it polls the RX ring exactly once and answers
+ * immediately, ~359 us per call, instead of the progress::bounded() branch a
+ * non-zero value selects, which waits out the full millisecond at ~1489 us.
+ * uart_poll_in() is documented non-blocking and the console drains it in a
+ * tight loop, so that 4.15x would be paid on every idle iteration.
+ *
+ * Zero is NOT the host library's 30-minute bounded_for(0) path. That path
+ * exists for gpio/wait-*, where zero means "no caller deadline"; on uart/read
+ * zero means the opposite, and pico-de-gallo-lib special-cases it in
+ * uart_read_bound() so a zero-timeout read is bounded by the ordinary 5 s call
+ * timeout, pinned by uart_read_bound_zero_timeout_is_the_call_bound.
+ *
+ * Zero still preserves the error-recovery path: both firmware branches call
+ * AsyncRead::read(), whose first poll reaches Embassy's try_read(), which
+ * consumes the latched RX error and re-enables the RX interrupts.
  *
  * Returns 0 on success, with *out_len set (possibly to zero, meaning no byte
  * was available). Returns a negative POSIX errno on failure, in which case
