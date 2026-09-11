@@ -1,0 +1,48 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# BUILD ONLY, and not negotiable. This application requires an attached Pico de
+# Gallo whose UART TX and RX pads are physically shorted together. Booting the
+# image initialises the MFD parent, which reaches gallo_init_strict() in
+# zephyr/drivers/common/gallo_registry.c and opens a USB device. twister treats
+# native_sim as `type: native` and would otherwise RUN the binary; on a runner
+# with no board that is a guaranteed failure, and on a developer machine with a
+# board it is an unannounced hardware access.
+#
+# It is also not a ztest suite -- src/main.c is a plain main(). There is
+# deliberately nothing here for twister to execute even if build_only were
+# dropped by accident.
+#
+# There is deliberately no `depends_on: uart`. depends_on is matched against the
+# board's `supported:` list, and boards/native/native_sim/native_sim_native_64.yaml
+# does not name uart -- only the 32-bit native_sim does. Claiming it would filter
+# this scenario down to nothing on the sole platform we target, and would do so
+# SILENTLY: a filtered scenario is reported as skipped, not as an error.
+#
+# No extra_args. CMakeLists.txt sets BOARD and SHIELD as cache defaults and
+# appends the module root to EXTRA_ZEPHYR_MODULES, so the app is self-contained
+# however it is invoked -- `west build <dir>`, zephyr/scripts/ci-build.sh, and
+# twister all drive it identically.
+common:
+  build_only: true
+  tags:
+    - drivers
+    - uart
+    - serial
+    - shield
+    - pico_de_gallo
+tests:
+  # Scenario name: `board.pico_de_gallo.uart.loopback`.
+  #
+  # A third root alongside the two that already exist, because this is a third
+  # kind of thing. `sample.*` is what zephyr/samples/uart_bridge/tests.yaml uses
+  # and belongs to samples. `drivers.pico_de_gallo.uart.fake` is what
+  # zephyr/tests/pdg_fake/uart/tests.yaml uses, and it is RUNNABLE precisely
+  # because a fake bottom layer removes the hardware dependency -- the opposite
+  # of this scenario's defining property. `board.` names that defining property
+  # directly: it needs a board. `.loopback` names the wiring precondition.
+  board.pico_de_gallo.uart.loopback:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64

@@ -90,6 +90,15 @@ PDG_TARGETS=(
 # Covering it here would mean inventing a mechanism for a configuration twister
 # already builds; a scenario is not a target.
 "uart_fake|pass|zephyr/tests/pdg_fake/uart|zephyr/tests/pdg_fake/uart/fake.overlay|pdg_mfd.c,pdg_uart.c|gallo_registry,pdg_uart_bottom,pdg_uart_fake_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_UART_PICO_DE_GALLO"
+# The board-attached UART configuration application. BUILD ONLY HERE AND
+# EVERYWHERE: its tests.yaml sets build_only, and running it needs an attached
+# board with TX and RX physically shorted. Unlike uart_fake there is no fake
+# bottom layer, so the built image reaches gallo_init_strict() exactly as the
+# uart_bridge sample does -- which is why the row below is shaped like the
+# uart_bridge row and not like the uart_fake row.
+#
+# No overlay field: app.overlay is picked up by west, same as uart_bridge.
+"board_uart|pass|zephyr/tests/pdg_board/uart||pdg_mfd.c,pdg_uart.c|gallo_registry,pdg_uart_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_UART_PICO_DE_GALLO"
 )
 
 # All five driver translation units. Assertion 3 is two-sided over exactly this
@@ -228,7 +237,7 @@ st_check() {
 self_test() {
 	printf 'ci-build self-test\n'
 
-	st_check "table has 12 targets" "${#PDG_TARGETS[@]}" "12"
+	st_check "table has 13 targets" "${#PDG_TARGETS[@]}" "13"
 	st_check "field 1 is the name" \
 		"$(target_field "${PDG_TARGETS[0]}" 1)" "i2c_bridge"
 	st_check "field 2 is the kind" \
@@ -270,9 +279,9 @@ self_test() {
 		"$(unknown_targets "i2c_bridge,typo")" "typo"
 	st_check "unknown_targets accepts an all-valid list" \
 		"$(unknown_targets "i2c_bridge,m5_jumper")" ""
-	st_check "select_targets with an empty selection means all twelve" \
+	st_check "select_targets with an empty selection means all thirteen" \
 		"$(select_targets "")" \
-		"i2c_bridge spi_nor_id uart_bridge spi_bridge combined_i2c_spi_bridge m5_reset uart_driver m5_jumper m5_acceptance m5_teardown i2c_burst uart_fake"
+		"i2c_bridge spi_nor_id uart_bridge spi_bridge combined_i2c_spi_bridge m5_reset uart_driver m5_jumper m5_acceptance m5_teardown i2c_burst uart_fake board_uart"
 	st_check "select_targets picks exactly the named subset, in table order" \
 		"$(select_targets "m5_jumper,i2c_bridge")" "i2c_bridge m5_jumper"
 
