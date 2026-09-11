@@ -8,9 +8,9 @@ upstreaming tracked in
 [#98](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/98) lands.
 
 `pico-de-gallo/zephyr` is a Zephyr module that lets Zephyr applications drive
-real I2C, SPI and GPIO peripherals from `native_sim`. It provides the
+real I2C, SPI, UART and GPIO peripherals from `native_sim`. It provides the
 `pico_de_gallo` [shield](https://docs.zephyrproject.org/latest/hardware/porting/shields.html),
-whose drivers forward Zephyr I2C, SPI and GPIO API calls through the
+whose drivers forward Zephyr I2C, SPI, UART and GPIO API calls through the
 `pico-de-gallo-ffi` C API to a Pico de Gallo board attached to the host over
 USB.
 
@@ -95,9 +95,10 @@ Zephyr is used if you have stale entries in `~/.cmake/packages/Zephyr`.
 touches `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/`,
 either root Cargo file, or its own `.github/workflows/zephyr.yml` definition.
 It pins Zephyr to the commit recorded above and drives
-`zephyr/scripts/ci-build.sh`, which builds nine targets: the two viable samples,
+`zephyr/scripts/ci-build.sh`, which builds ten targets: the two viable samples,
 the two IS31 samples (asserted to fail exactly as they do at baseline), the
-four M5 test applications, and the I2C gather-write regression image.
+four M5 test applications, the UART driver build target, and the I2C
+gather-write regression image.
 
 To reproduce a CI failure locally, with a Zephyr workspace already set up:
 
@@ -116,6 +117,13 @@ module still compiles and links - it says nothing about whether it still works
 against hardware. That remains `tests/pdg_mfd_m5/run-m5.sh` and
 `tests/pdg_i2c_burst`, run by hand with a board and, for the M5 images, the
 physical jumpers in place.
+
+For the UART driver specifically, M5 evidence is only that the module compiles
+and links. Its compile-time mapping and topology assertions were checked by
+review plus a recorded mutation, but `ci-build.sh` has no target kind that
+asserts a `BUILD_ASSERT` fires, so CI does not exercise those negative cases.
+Runtime behaviour is deferred to the M6 recording fake, hardware behaviour to
+M7, and nothing in this driver has been run against a board.
 
 ### Twister metadata
 
@@ -340,9 +348,10 @@ about, such as an FPGA bitstream.
 ## Using the drivers in your own application
 
 The shield declares a `pdg0` multi-function-device parent node and, as its
-direct children, the `pdg_gpio0`, `pdg_i2c0` and `pdg_spi0` controller nodes.
-All four are **disabled by default**. Your application enables `pdg0` *and* the
-controllers it needs, then declares its peripherals as ordinary child nodes.
+direct children, the `pdg_gpio0`, `pdg_i2c0`, `pdg_uart0` and `pdg_spi0`
+controller nodes. All five are **disabled by default**. Your application enables
+`pdg0` *and* the controllers it needs, then declares its peripherals as ordinary
+child nodes.
 
 `pdg0` owns the USB connection to one physical board; the controllers borrow
 it. An enabled controller whose parent is missing, disabled, or of the wrong
@@ -446,6 +455,129 @@ CONFIG_I2C=y
 
 Bus speed comes from the `clock-frequency` property on the controller node
 (the shield defaults to `<400000>`).
+
+### UART
+
+`app.overlay`:
+
+```dts
+&pdg0 {
+	status = "okay";
+	/* REQUIRED: UART drives physical TX and RX pads. */
+	serial-number = "REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL";
+};
+
+&pdg_uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	data-bits = <8>;
+	parity = "none";
+	stop-bits = "1";
+};
+```
+
+`prj.conf`:
+
+```conf
+CONFIG_SERIAL=y
+CONFIG_UART_USE_RUNTIME_CONFIGURE=y
+```
+
+The UART must be a direct child of an enabled `odp,pico-de-gallo` parent, and
+that parent must carry `serial-number`. UART drives two physical pads, so
+transmitting onto the wrong board's TX pin is the same class of mistake as
+driving the wrong board's chip select. A missing, disabled or wrong-compatible
+parent, or a parent without `serial-number`, fails the build with an explanatory
+assertion. Presence is not uniqueness: two parents with the same serial still
+alias one board.
+
+This is a **thread-context-only polling controller**. Every hardware operation
+is a blocking USB round trip. It is not callable from an ISR or before the
+kernel is up: `k_mutex_lock()` asserts `!arch_is_in_isr()`, and USB I/O is not
+ISR-safe. In either prohibited context `uart_poll_in()` returns `-1` and
+`uart_poll_out()` drops and counts the byte without taking the mutex or issuing
+an RPC. Implemented and explicit-stub driver callbacks with integer returns use
+`-EWOULDBLOCK` from an ISR and `-EAGAIN` pre-kernel; NULL slots follow Zephyr's
+wrapper behaviour documented in the limitation matrix below.
+
+It also cannot be an early console. `CONFIG_EARLY_CONSOLE` installs its hook at
+`PRE_KERNEL_1`, while this controller initializes at `POST_KERNEL`, so
+`device_is_ready()` is false when the hook runs. A per-instance `BUILD_ASSERT`
+rejects choosing a Pico de Gallo UART as `zephyr,console` with early console
+enabled; another UART may still fill that role.
+
+#### Receive path and permanent transport faults
+
+`uart_poll_in()` stages reads in a 1014-byte ring. It consumes staged bytes
+without I/O; when the ring is empty it performs one refill with a **1 ms
+firmware timeout**. This is a bounded polling approximation, not literally
+non-blocking in wall-clock time. The non-zero read is load-bearing: the
+firmware path reaches Embassy `try_read()`, which consumes its latched
+`rx_error` and re-enables RX interrupts. That recovery dependency remains
+hardware-untested and is explicitly on M7's test list.
+
+The mutex remains held during a refill. **The approximately 5.001-second
+lost-response mutex bound is derived from constants, not observed: it is the
+1 ms firmware allowance plus the host library's default 5-second call slack.**
+TX and reconfiguration queue behind that call. After a non-transport refill
+error, the driver records the error and waits 10 ms before another refill; it
+does not permanently latch the error, because a later read is required for the
+firmware recovery path.
+
+A confirmed transport error, `-ECOMM` or `-ETIMEDOUT`, instead discards the
+staged ring and **permanently** fails fast for the device lifetime. Every later
+`uart_poll_in()` returns `-1`, every later `uart_poll_out()` drops and counts its
+byte, and neither issues another round trip. There is no reconnect path.
+
+#### Transmit path and diagnostics
+
+Transmission is deliberately unbuffered: every `uart_poll_out()` byte is one
+`uart/write` RPC. The function returns `void`, so a dropped byte is never
+reported to its caller and is never logged. Logging through the same UART would
+re-enter `uart_poll_out()` once per character and could deadlock or recurse
+without bound.
+
+The capability gate prevents an unsupported board from becoming ready, but it
+does not make later delivery reliable. After initialization a byte can still be
+lost because of unplug or detach, a firmware supervisor reset, a half-open
+transport, a host call timeout, a lost acknowledgement after the byte was
+already queued, an endpoint error, schema skew, or a stale handle. A timed-out
+write may therefore already have queued the byte: the driver never retries, and
+blind retry is unsafe.
+
+The driver records private `tx_dropped`, `rx_errors`, `last_errno` and
+`link_failed` diagnostics. In M5 they are inspectable only through a debugger
+or source-level test access. There is no public API, shell command or statistics
+surface; deciding whether and how to expose them is deferred to M6.
+
+#### Configuration and initialization cost
+
+The supported configuration envelope is 5, 6, 7 or 8 data bits; none, odd,
+even, mark or space parity; 1 or 2 stop bits; and no flow control. Every non-zero
+baud is forwarded. The firmware clamps its divisor to a floor of roughly 143
+baud and does not report rounding, so `uart_config_get()` returns a software
+shadow of what was requested, not the achieved line rate.
+
+Reconfiguration is not atomic. The firmware restores an enabled `UARTCR` before
+returning, leaving a brief window with the new divisor and old framing. Quiesce
+and drain **both directions** before calling `uart_configure()`. On acknowledged
+success the driver clears its local RX ring, but bytes decoded under the old
+framing may remain in the firmware ring and arrive afterwards; they cannot be
+distinguished from new-framing bytes.
+
+Initialization gates the driver on `GALLO_CAP_UART` from `device/info`. This is
+**not warm and not cached**: `gallo_get_device_info()` re-validates
+unconditionally, issuing a fresh `device/info` request after the parent has
+already completed its own validation.
+**The capability probe's 300-second ceiling is derived from the host library's
+`DEVICE_INFO_TIMEOUT` constant, not observed.** A clear capability bit returns
+`-ENODEV`; a query failure returns its mapped errno, so unsupported hardware and
+an unreachable device remain distinct outcomes.
+
+`uart_err_check()` returns 0 for a healthy initialized thread-context call and
+never invents `UART_ERROR_*` bits. The firmware collapses every Embassy UART
+error to one `Other` value, so a receive overrun is silent at every layer. The
+driver's private health diagnostics above are not line-error bits.
 
 ### SPI
 
@@ -680,8 +812,8 @@ than one Pico de Gallo attached, pin each parent to a board with the optional
 ```
 
 Every controller under that parent inherits the selection and shares the one
-USB connection, so an I2C and a SPI child on the same board work without your
-code managing that. `serial-number` is **not** accepted on a controller node;
+USB connection, so I2C, UART and SPI children on the same board work without
+your code managing that. `serial-number` is **not** accepted on a controller node;
 a leftover one fails devicetree processing with an undeclared-property error
 naming the node and the binding.
 
@@ -818,6 +950,41 @@ driver silently turning every zero-length write into a read is not.
 The supported way to scan through this bridge remains `gallo i2c scan`, or the
 firmware's `i2c/scan` endpoint, which probes the whole bus in one round trip.
 
+### UART
+
+| Limitation | Result |
+|---|---|
+| Enabled UART whose parent is missing, disabled or not `odp,pico-de-gallo` | **Build fails** with an explanatory assertion |
+| Enabled UART whose parent has no `serial-number` | **Build fails** with an explanatory assertion |
+| Chosen as `zephyr,console` with `CONFIG_EARLY_CONSOLE=y` | **Build fails**; this `POST_KERNEL` device is not ready at the `PRE_KERNEL_1` hook |
+| `uart_poll_in()` from ISR or pre-kernel context | `-1`; no lock or RPC |
+| `uart_poll_out()` from ISR or pre-kernel context | silently drops and counts the byte; no lock, RPC or log |
+| Implemented or explicit-stub integer driver callbacks from ISR / pre-kernel context | `-EWOULDBLOCK` / `-EAGAIN` respectively |
+| Baud rate 0 | `-EINVAL` |
+| 9 data bits | `-ENOTSUP`; use 5, 6, 7 or 8 |
+| 0.5 or 1.5 stop bits | `-ENOTSUP`; use 1 or 2 |
+| `UART_CFG_FLOW_CTRL_RTS_CTS` | `-ENOTSUP`; RTS/CTS pins are not routed |
+| `UART_CFG_FLOW_CTRL_DTR_DSR` | `-ENOTSUP`; modem-control pins are not exposed |
+| `UART_CFG_FLOW_CTRL_RS485` | `-ENOTSUP`; no driver-enable line is exposed |
+| `poll_in`, `poll_out`, `err_check` | implemented polling slots |
+| `configure`, `config_get` | implemented with `CONFIG_UART_USE_RUNTIME_CONFIGURE` |
+| `poll_out_u16` with `CONFIG_UART_WIDE_DATA` | explicit void stub; silently drops and counts |
+| `poll_in_u16` | NULL slot: `-ENOSYS` when wide data is enabled, `-ENOTSUP` when it is disabled |
+| Async `tx`, `tx_abort`, `rx_enable`, `rx_buf_rsp`, `rx_disable` | explicit `-ENOTSUP` stubs when the global async API is enabled |
+| Async wide `tx_u16`, `rx_enable_u16`, `rx_buf_rsp_u16` | explicit `-ENOTSUP` stubs when async and wide APIs are enabled |
+| `callback_set` | NULL slot: `-ENOSYS` when the async API is enabled, `-ENOTSUP` when disabled |
+| Integer FIFO/IRQ wrappers (`fifo_fill`, `fifo_read`, wide `fifo_fill_u16` / `fifo_read_u16`, `irq_tx_ready`, `irq_tx_complete`, `irq_rx_ready`, `irq_is_pending`, `irq_callback_set`) | NULL slots: `-ENOSYS` when interrupt-driven UART is enabled, `-ENOTSUP` when disabled |
+| Void IRQ wrappers (`irq_tx_enable`, `irq_tx_disable`, `irq_rx_enable`, `irq_rx_disable`, `irq_err_enable`, `irq_err_disable`, `irq_update`) | NULL slots: silently no-op; they do **not** return `-ENOSYS` |
+| `line_ctrl_set`, `line_ctrl_get`, `drv_cmd` | NULL slots: integer wrappers return `-ENOSYS` when enabled, `-ENOTSUP` when the corresponding global API is disabled |
+| Confirmed transport failure (`-ECOMM` or `-ETIMEDOUT`) | ring discarded; permanent fail-fast with no reconnect or later RPC |
+| Non-transport RX refill error | `uart_poll_in()` returns `-1`; next refill waits 10 ms |
+
+Parity none, odd, even, mark and space are supported. `uart_err_check()` does
+not expose framing, parity or overrun detail; see the UART section above for the
+firmware limitation and private diagnostics. Unsupported async stubs are
+side-effect-free, but on a failed-init device they report `-ENODEV` first; the
+context errors in the table likewise take precedence.
+
 ### SPI
 
 | Limitation | Result |
@@ -928,7 +1095,7 @@ open, then reinitialize, or power-cycle.
 
 **The application builds but the device is never ready**
 Check that `&pdg0` and every required controller node are `status = "okay"` in
-your overlay. The parent and all three controllers ship disabled, and a controller
+your overlay. The parent and all four controllers ship disabled, and a controller
 whose parent failed to open reports `Pico de Gallo parent ... is not ready`
 rather than a connection error of its own.
 

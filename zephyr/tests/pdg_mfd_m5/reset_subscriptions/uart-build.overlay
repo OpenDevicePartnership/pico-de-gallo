@@ -1,0 +1,50 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * M5 UART build-gate topology: parent okay, UART okay, every other child
+ * explicitly disabled.
+ *
+ * This overlay exists only so `pdg_uart.c` has a compiling/linking build
+ * target. Spec §9: M5 defers the UART sample and the fake-based suite to M6,
+ * and the shield's `pdg_uart0` is disabled by default, so without this overlay
+ * no target would ever compile the driver.
+ *
+ * It reuses the reset_subscriptions application unchanged. That application
+ * depends only on the MFD accessor and the m5_bottom reset shim, and its
+ * BUILD_ASSERTs (`src/main.c:38-46`) require exactly parent okay plus
+ * pdg_gpio0 and pdg_spi0 disabled -- which is what this file emits. It says
+ * nothing about UART, and `prj.conf` does not disable SERIAL, so a
+ * UART-enabled tree still builds. The binary is NEVER run: booting it would
+ * reach gallo_init_strict() and open USB.
+ *
+ * I2C is disabled explicitly rather than by relying on the shield default, so
+ * that ci-build.sh's negative Kconfig assertion for CONFIG_I2C_PICO_DE_GALLO
+ * is unambiguous at the point of use.
+ *
+ * Per fixture-identity.dtsi, topology is deliberately per-image. Do not factor
+ * this into a shared fragment.
+ */
+
+#include "../fixture-identity.dtsi"
+
+&pdg0 {
+	status = "okay";
+};
+
+&pdg_uart0 {
+	status = "okay";
+};
+
+&pdg_gpio0 {
+	status = "disabled";
+};
+
+&pdg_i2c0 {
+	status = "disabled";
+};
+
+&pdg_spi0 {
+	status = "disabled";
+};

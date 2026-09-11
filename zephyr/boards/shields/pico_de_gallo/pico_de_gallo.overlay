@@ -25,6 +25,15 @@
 			status = "disabled";
 		};
 
+		pdg_uart0: uart {
+			compatible = "odp,pico-de-gallo-uart";
+			current-speed = <115200>;
+			data-bits = <8>;
+			parity = "none";
+			stop-bits = "1";
+			status = "disabled";
+		};
+
 		pdg_spi0: spi {
 			compatible = "odp,pico-de-gallo-spi";
 			#address-cells = <1>;

@@ -71,22 +71,23 @@ PDG_TARGETS=(
 "spi_bridge|basefail|zephyr/samples/spi_bridge||||"
 "combined_i2c_spi_bridge|basefail|zephyr/samples/combined_i2c_spi_bridge||||"
 "m5_reset|pass|zephyr/tests/pdg_mfd_m5/reset_subscriptions|zephyr/tests/pdg_mfd_m5/reset_subscriptions/reset.overlay|pdg_mfd.c|gallo_registry,m5_bottom|CONFIG_MFD_PICO_DE_GALLO"
+"uart_driver|pass|zephyr/tests/pdg_mfd_m5/reset_subscriptions|zephyr/tests/pdg_mfd_m5/reset_subscriptions/uart-build.overlay|pdg_mfd.c,pdg_uart.c|gallo_registry,pdg_uart_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_UART_PICO_DE_GALLO"
 "m5_jumper|pass|zephyr/tests/pdg_mfd_m5/jumper_preflight|zephyr/tests/pdg_mfd_m5/jumper_preflight/jumper.overlay|pdg_mfd.c,pdg_gpio.c|gallo_registry,pdg_gpio_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO"
 "m5_acceptance|pass|zephyr/tests/pdg_mfd_m5/acceptance|zephyr/tests/pdg_mfd_m5/acceptance/acceptance.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
 "m5_teardown|pass|zephyr/tests/pdg_mfd_m5/recovery_teardown|zephyr/tests/pdg_mfd_m5/recovery_teardown/recovery.overlay|pdg_mfd.c,pdg_gpio.c,pdg_spi.c|gallo_registry,pdg_gpio_bottom,pdg_spi_bottom,m5_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_GPIO_PICO_DE_GALLO,CONFIG_SPI_PICO_DE_GALLO"
 "i2c_burst|pass|zephyr/tests/pdg_i2c_burst|zephyr/tests/pdg_i2c_burst/burst.overlay|pdg_mfd.c,pdg_i2c.c|gallo_registry,pdg_i2c_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_I2C_PICO_DE_GALLO"
 )
 
-# All four driver translation units. Assertion 3 is two-sided over exactly this
+# All five driver translation units. Assertion 3 is two-sided over exactly this
 # set: a target must compile the ones its overlay enables and none of the rest.
-PDG_ALL_DRIVER_TUS="pdg_mfd.c pdg_gpio.c pdg_i2c.c pdg_spi.c"
+PDG_ALL_DRIVER_TUS="pdg_mfd.c pdg_gpio.c pdg_i2c.c pdg_spi.c pdg_uart.c"
 
-# The Kconfig symbol of each of those four drivers, in the same order. Assertion
+# The Kconfig symbol of each of those five drivers, in the same order. Assertion
 # 5 is two-sided over exactly this set. The translation-unit check above matches
 # substrings in compile_commands.json and could in principle be fooled; a
 # Kconfig file is an exact key=value store and cannot be, so the same gap is
 # closed a second time by a mechanism that does not depend on string matching.
-PDG_ALL_DRIVER_KCONFIGS="CONFIG_MFD_PICO_DE_GALLO CONFIG_GPIO_PICO_DE_GALLO CONFIG_I2C_PICO_DE_GALLO CONFIG_SPI_PICO_DE_GALLO"
+PDG_ALL_DRIVER_KCONFIGS="CONFIG_MFD_PICO_DE_GALLO CONFIG_GPIO_PICO_DE_GALLO CONFIG_I2C_PICO_DE_GALLO CONFIG_SPI_PICO_DE_GALLO CONFIG_UART_PICO_DE_GALLO"
 
 target_field() {
 	printf '%s' "$1" | cut -d'|' -f"$2"
@@ -213,7 +214,7 @@ st_check() {
 self_test() {
 	printf 'ci-build self-test\n'
 
-	st_check "table has 9 targets" "${#PDG_TARGETS[@]}" "9"
+	st_check "table has 10 targets" "${#PDG_TARGETS[@]}" "10"
 	st_check "field 1 is the name" \
 		"$(target_field "${PDG_TARGETS[0]}" 1)" "i2c_bridge"
 	st_check "field 2 is the kind" \
@@ -255,9 +256,9 @@ self_test() {
 		"$(unknown_targets "i2c_bridge,typo")" "typo"
 	st_check "unknown_targets accepts an all-valid list" \
 		"$(unknown_targets "i2c_bridge,m5_jumper")" ""
-	st_check "select_targets with an empty selection means all nine" \
+	st_check "select_targets with an empty selection means all ten" \
 		"$(select_targets "")" \
-		"i2c_bridge spi_nor_id spi_bridge combined_i2c_spi_bridge m5_reset m5_jumper m5_acceptance m5_teardown i2c_burst"
+		"i2c_bridge spi_nor_id spi_bridge combined_i2c_spi_bridge m5_reset uart_driver m5_jumper m5_acceptance m5_teardown i2c_burst"
 	st_check "select_targets picks exactly the named subset, in table order" \
 		"$(select_targets "m5_jumper,i2c_bridge")" "i2c_bridge m5_jumper"
 
@@ -341,7 +342,7 @@ assert_pass() {
 		rc=1
 	fi
 
-	# 3. Two-sided translation-unit check over the four driver units.
+	# 3. Two-sided translation-unit check over the five driver units.
 	#
 	# tu_set is called inside a command substitution deliberately: it calls
 	# die on a missing compile database, and inside $(...) only the subshell

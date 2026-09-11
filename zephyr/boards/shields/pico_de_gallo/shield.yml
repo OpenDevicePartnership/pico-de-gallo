@@ -5,3 +5,4 @@ shield:
   supported_features:
     - i2c
     - spi
+    - uart

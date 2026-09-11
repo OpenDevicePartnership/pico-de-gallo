@@ -1,0 +1,141 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  Pico de Gallo USB-attached UART controller.
+
+  This controller forwards Zephyr UART API calls to a Pico de Gallo USB bridge
+  connected to the host running native_sim. Only the polling API is
+  implemented: uart_poll_in(), uart_poll_out(), uart_err_check(), and, under
+  CONFIG_UART_USE_RUNTIME_CONFIGURE, uart_configure() and uart_config_get().
+
+  Topology. This controller must be a direct child of an enabled
+  odp,pico-de-gallo MFD parent. It borrows the parent's host connection and
+  inherits the parent's board selection; serial-number is not valid on the
+  child controller. A controller that is not a direct child of an enabled
+  odp,pico-de-gallo node is rejected at build time.
+
+  Board identity is mandatory. Because this controller drives two physical
+  pads, the parent of every enabled UART child must define serial-number.
+  Transmitting onto the wrong board's TX pin is the same class of mistake as
+  driving the wrong board's chip select, so UART requires an explicit selector
+  exactly as the SPI and GPIO controllers do; the I2C controller does not. A
+  selector-less parent is rejected at build time. Presence is not uniqueness:
+  two parents carrying the same explicit serial-number still alias to one
+  board. The configured serial-number is logged on successful initialization.
+
+  Thread context only. Every callback rejects interrupt context and pre-kernel
+  context before taking any lock or issuing any USB call; a spinlock held
+  across USB is forbidden. From either context, uart_poll_in() returns -1 and
+  uart_poll_out() silently drops the byte, integer callbacks return
+  -EWOULDBLOCK in interrupt context and -EAGAIN pre-kernel, and no transfer
+  reaches the bridge. A failed initialization makes device_is_ready() false,
+  but the Zephyr UART wrappers still dispatch through the API table, so these
+  guards are primary protection rather than defence in depth.
+
+  This controller cannot serve as an early console. CONFIG_EARLY_CONSOLE
+  installs the UART console hook at PRE_KERNEL_1, while this device initializes
+  at POST_KERNEL; device_is_ready() is therefore false when the hook runs and
+  the hook is not installed. Choosing an enabled Pico de Gallo UART as
+  zephyr,console while CONFIG_EARLY_CONSOLE is set is rejected at build time.
+  The assertion is instance-scoped, so an unrelated UART may still be the early
+  console.
+
+  Receive path. Reads are staged through a local 1014-byte ring. When the ring
+  is empty, one refill issues a single uart/read with a firmware timeout of
+  1 ms, which is the smallest non-zero value the protocol can express and which
+  is required because that path is what consumes the firmware's latched receive
+  error and re-enables its receive interrupts. A refill therefore adds up to
+  1 ms of firmware waiting to each genuinely empty poll on top of the round-trip
+  cost: this bridge is a bounded polling approximation, not a literally
+  non-blocking UART. The mutex is held across the refill, so a lost response can
+  occupy it for approximately 5.001 seconds -- the 1 ms firmware allowance plus
+  the default 5 second host call slack -- during which transmission and
+  reconfiguration wait behind it. This priority inversion is accepted.
+
+  uart_poll_in() returns only 0 or -1 and writes through its output pointer
+  only when returning 0. Every other outcome -- prohibited context, a dead or
+  link-failed controller, an empty ring, an implausible reported length, and
+  any endpoint or transport failure -- returns -1. Exact diagnostics are kept in
+  driver-private counters rather than surfaced through the polling contract.
+
+  Receive backoff. After a non-transport refill error the driver waits 10 ms
+  before issuing another read, so a tight polling loop cannot generate unbounded
+  immediate round trips. Endpoint errors are deliberately not latched, because
+  the next read is what clears the firmware's error state. A successful refill
+  clears the backoff.
+
+  Transport-failure latch. A confirmed transport-class failure (-ECOMM or
+  -ETIMEDOUT) discards the staged ring and permanently fails fast: every later
+  uart_poll_in() returns -1 and every later uart_poll_out() drops its byte,
+  neither issuing another round trip. There is no reconnect path, so the latch
+  lasts for the device lifetime. This bounds the approximately 5.001 second
+  cost above to once per device lifetime rather than once per byte.
+
+  Transmit path. Transmission is deliberately unbuffered: uart_poll_out() makes
+  one uart/write round trip per byte, because the firmware already owns a
+  1024-byte interrupt-drained ring and the polling API offers no flush hook in
+  which a second ring could be emptied. uart_poll_out() returns void, so a
+  dropped byte cannot be reported to the caller: it is counted in a private
+  counter and never logged. Logging from the output callback is forbidden
+  outright, since logging through this same UART would recurse once per
+  character. There is no retry. A write that times out or fails on transport
+  may already have queued its byte, so delivery is indeterminate and must never
+  be retried blindly. The capability gate below only rejects unsupported
+  hardware at initialization; after that, bytes can still be lost on unplug,
+  supervisor reset, half-open transport, a lost acknowledgement, an endpoint
+  error, schema skew, or a stale handle.
+
+  Concurrency. Multiple readers and writers are serialized by the controller
+  mutex but not demultiplexed: concurrent readers consume distinct bytes in
+  scheduler order. An application that needs message ownership must serialize
+  above this driver.
+
+  Supported configuration. Data bits 5, 6, 7 and 8; parity none, odd, even,
+  mark and space; 1 or 2 stop bits; flow control none only. Rejected with
+  -ENOTSUP: 9 data bits, 0.5 and 1.5 stop bits, and all three of
+  UART_CFG_FLOW_CTRL_RTS_CTS, UART_CFG_FLOW_CTRL_DTR_DSR and
+  UART_CFG_FLOW_CTRL_RS485 -- the RTS and CTS pins are not routed on this
+  hardware. A zero baud rate is rejected with -EINVAL.
+
+  Baud rate is requested, not achieved. Every non-zero baud rate is forwarded
+  unchanged, but the firmware silently clamps its divisor to a floor of
+  approximately 143 baud and does not report the rounding it applies.
+  uart_config_get() returns a software shadow of the last configuration that
+  was successfully requested, which is not necessarily the rate the line is
+  running at.
+
+  Reconfiguration is not atomic. The firmware restores an enabled control
+  register before returning, so a brief window carries the new divisor together
+  with the old framing. On acknowledged success the driver updates its cached
+  configuration and clears the local receive ring; bytes already decoded under
+  the old framing may nevertheless still be sitting in the firmware ring and
+  cannot be distinguished from new ones, so callers must quiesce and drain both
+  directions before reconfiguring. On failure the cache and ring are left
+  unchanged unless the failure was transport-class, which clears the ring and
+  latches the failure. There is no rollback.
+
+  Initialization cost. The driver gates itself on the firmware's UART
+  capability bit, read through device/info. That read is not warm and not
+  cached: it performs a fresh device/info request bounded at 300 seconds, paid
+  after the parent has already completed its own validation. An initialization
+  failure of that request returns its mapped errno; a successful read with the
+  capability bit clear returns -ENODEV.
+
+  Unsupported operations. The interrupt-driven, asynchronous, wide-data,
+  line-control and driver-command surfaces are not implemented. Integer FIFO,
+  interrupt-management and callback slots return -ENOSYS, or -ENOTSUP when the
+  corresponding global API is disabled; the void interrupt-management wrappers
+  silently do nothing; the asynchronous slots that Zephyr dispatches without a
+  NULL check return -ENOTSUP; and uart_callback_set() returns -ENOSYS.
+  uart_err_check() reports no line-error detail: it returns 0 for a healthy
+  initialized thread-context call and never invents error bits.
+
+  Diagnostics. The driver keeps private counters for dropped transmissions,
+  receive errors, the most recent errno, and the transport-failure latch. They
+  are inspectable through a debugger or source-level test access only; no
+  public API, shell command or statistics surface is exposed.
+
+compatible: "odp,pico-de-gallo-uart"
+
+include: [uart-controller.yaml, base.yaml]

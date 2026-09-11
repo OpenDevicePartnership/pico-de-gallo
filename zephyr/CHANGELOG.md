@@ -52,6 +52,83 @@ The format is based on
 
 ### Added
 
+- Added the polling-only `odp,pico-de-gallo-uart` controller as a direct child
+  of the `odp,pico-de-gallo` MFD parent, with its devicetree binding, Kconfig,
+  disabled shield node and build wiring. The child borrows the parent-owned
+  connection. Because UART drives two physical pads, every enabled instance
+  requires `serial-number` on its parent, as GPIO and SPI do. Part of #152.
+
+  The implemented API is `uart_poll_in()`, `uart_poll_out()` and
+  `uart_err_check()`, plus `uart_configure()` and `uart_config_get()` under
+  `CONFIG_UART_USE_RUNTIME_CONFIGURE`. The asynchronous and interrupt-driven
+  APIs are unsupported. Async slots that Zephyr dispatches without checking
+  for `NULL` carry side-effect-free `-ENOTSUP` stubs solely to prevent a crash
+  when another driver enables the global async API.
+
+  This controller is thread-context-only: no callback may be used from an ISR
+  or before the kernel is up. It cannot serve as an early console because it
+  initializes at `POST_KERNEL`, while the `CONFIG_EARLY_CONSOLE` hook installs
+  at `PRE_KERNEL_1`; choosing this instance as that console is rejected at
+  build time.
+
+  Receive uses a 1014-byte staging ring. An empty ring causes one refill with a
+  1 ms firmware timeout; a refill can then serve many polling calls. Transmit
+  is deliberately unbuffered at one round trip per byte because the firmware
+  already owns an interrupt-drained TX ring and the polling API provides no
+  flush hook for a second ring.
+
+  `uart_poll_out()` returns `void`, so an unsent or indeterminately delivered
+  byte is counted in a private dropped-byte counter and never logged. Logging
+  through the same UART would recurse once per character. No failed write is
+  retried automatically because its byte may already have been queued before
+  the acknowledgement was lost.
+
+  A confirmed `-ECOMM` or `-ETIMEDOUT` permanently latches transport failure,
+  discards staged receive bytes and makes later polling calls fail fast without
+  another RPC; there is no reconnect path during the device lifetime. A
+  non-transport refill error is not permanently latched, because the next read
+  drives firmware receive-error recovery, but it receives a 10 ms backoff to
+  prevent an unbounded tight loop of RPCs.
+
+  Initialization gates the controller on `GALLO_CAP_UART`, so `hw-rev1` fails
+  with `-ENODEV` instead of silently swallowing transmitted bytes. This is not
+  a cached lookup: it costs a second `device/info` round trip after the parent
+  has already validated the connection.
+
+  Supported configuration is 5--8 data bits, none/odd/even/mark/space parity,
+  1 or 2 stop bits and no flow control; other framing and flow-control values
+  return `-ENOTSUP`. `uart_config_get()` reports the last successfully
+  **requested** configuration, not the achieved one: firmware clamps the baud
+  divisor to a floor of roughly 143 baud. Reconfiguration is not atomic, and
+  clearing the local receive staging cannot identify bytes already decoded in
+  the firmware under the old framing, so callers must quiesce and drain both
+  directions first.
+
+  `uart_err_check()` returns 0 for a healthy initialized thread-context call
+  and never invents `UART_ERROR_*` bits. Firmware collapses all UART line
+  errors into one variant, so receive overrun is silent at every layer; exact
+  driver health remains in private counters rather than the UART error mask.
+
+  The configuration ABI has two compile-time gates. `_Static_assert`s tie the
+  neutral 4 data-bit, 5 parity and 2 stop-bit selectors to the FFI enums, while
+  `BUILD_ASSERT`s pin the Zephyr-to-neutral mapping used at runtime. Reordering
+  a mirrored wire enum therefore fails the build instead of silently selecting
+  different framing.
+
+  `zephyr/scripts/ci-build.sh` now has a tenth target, `uart_driver`, which
+  compiles and links the MFD parent and UART top and bottom halves. Its
+  two-sided translation-unit and Kconfig universes now cover all five drivers,
+  so the other nine targets also prove that UART remains absent when disabled.
+
+  The approximately 5.001 s worst-case mutex hold for a lost refill reply and
+  the capability probe's 300 s ceiling are **derived from constants, not
+  measured**.
+
+  **M5 evidence is compile-and-link only: no runtime test and no hardware test
+  was performed.** Runtime behaviour, including the recording-fake suite, is
+  deferred to M6; hardware bring-up is deferred to M7. The firmware RX-error
+  recovery path on which refilling depends also remains hardware-untested.
+
 - `pdg_common_status_to_errno()` maps the new `CallTimeout` status to
   `-ETIMEDOUT`. Refs #178.
 

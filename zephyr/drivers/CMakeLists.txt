@@ -4,6 +4,7 @@
 add_subdirectory_ifdef(CONFIG_MFD_PICO_DE_GALLO mfd)
 add_subdirectory_ifdef(CONFIG_GPIO_PICO_DE_GALLO gpio)
 add_subdirectory_ifdef(CONFIG_I2C_PICO_DE_GALLO i2c)
+add_subdirectory_ifdef(CONFIG_UART_PICO_DE_GALLO serial)
 add_subdirectory_ifdef(CONFIG_SPI_PICO_DE_GALLO spi)
 
 # common.c is compiled by the native-simulator Makefile, not by CMake, so it
@@ -25,7 +26,8 @@ add_subdirectory_ifdef(CONFIG_SPI_PICO_DE_GALLO spi)
 # pdg_common_status_to_errno() directly, so such a tree would otherwise link
 # against a common.c that was never compiled.
 if(CONFIG_MFD_PICO_DE_GALLO OR CONFIG_GPIO_PICO_DE_GALLO OR
-   CONFIG_I2C_PICO_DE_GALLO OR CONFIG_SPI_PICO_DE_GALLO)
+   CONFIG_I2C_PICO_DE_GALLO OR CONFIG_SPI_PICO_DE_GALLO OR
+   CONFIG_UART_PICO_DE_GALLO)
 	target_sources(native_simulator INTERFACE
 		${CMAKE_CURRENT_LIST_DIR}/common/common.c
 		${CMAKE_CURRENT_LIST_DIR}/common/gallo_registry.c)
