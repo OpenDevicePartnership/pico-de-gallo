@@ -3,7 +3,7 @@
 - **Issue:** [#152](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/152)
 - **Branch:** `issue-152`
 - **Date:** 2026-09-10
-- **Status:** design approved, not implemented
+- **Status:** implemented and hardware-verified with limits; see §8.3
 
 ---
 
@@ -364,11 +364,14 @@ exists to serve, and this branch *raises* the trigger probability by letting
 callers select framing and get it wrong.
 
 The shipped implementation polls the read future exactly once
-(`embassy_futures::poll_once`). That reaches `try_read`, which on an empty ring
-with an error set returns `Poll::Ready(Err(e))` rather than `Pending`
-(`:274-281`) and re-enables the interrupts on the way out. Full performance
-win, hazard closed, and no new dependency — `embassy-futures` was already
-direct.
+(`embassy_futures::poll_once`). Static inspection of embassy's source shows
+that this reaches `try_read`, which on an empty ring with an error set returns
+`Poll::Ready(Err(e))` rather than `Pending` (`:274-281`), consumes `rx_error`,
+and re-enables the interrupts on the way out. The performance win is measured:
+the idle-read median fell from 1422 µs to 324.5 µs, 4.38× faster. The RX-error
+recovery path remains hardware-untested because the campaign could not
+generate a controlled error. No new dependency was needed — `embassy-futures`
+was already direct.
 
 Note also that `embassy-rp` implements `embedded_io_async::ReadReady` (`:650`),
 not `embedded_io::ReadReady`, so the trait named above was the wrong generation
@@ -384,11 +387,14 @@ reconfiguration. The handler and `Context` field docs now say so; neither claim
 of atomicity survives.
 
 The window is bounded: `set_baudrate_inner` clamps `IBRD` to 65535
-(`mod.rs:1062-1068`), so the lowest achievable baud is about 143 and the
-worst-case delay is roughly 105 ms per call, about 210 ms for baud plus
-framing. The undeclared dispatch budget is 10 s and the supervisor's
-discontinuity threshold is 500 ms, so no reachable baud rate can trip the
-progress supervisor.
+(`mod.rs:1062-1068`), so the lowest achievable baud is about 143. The original
+model predicted roughly 105 ms per register-update call, about 210 ms for baud
+plus framing, but `set-config --baud-rate 1` took 0.565 s in host-observed RPC
+latency. Those quantities are not directly comparable to the supervisor's
+device-side dispatch-progress measurement, and the unexplained difference
+shows that the 210 ms cost model is incomplete. The campaign observed no
+supervisor reset at the lowest accepted baud: `ping` and `version` answered
+immediately afterwards and the board never reset.
 
 ### 5.3 Stored configuration
 
@@ -398,9 +404,10 @@ four parameters, initialised to 115200 8N1 to match
 returns all four.
 
 This remains a **software shadow**, not a register read-back, exactly as today.
-It cannot diverge from intent because the shadow update and the register write
-are adjacent and unconditional, but it does not reflect divisor rounding. That
-limitation is pre-existing and is not addressed here.
+The shadow update is adjacent to the register write, but that does not prove
+that the hardware adopted the requested configuration. It also does not
+reflect divisor rounding. That limitation is pre-existing and is not addressed
+here.
 
 The hw-rev1 arms of all five handlers keep returning `UartError::Unsupported`.
 
@@ -664,28 +671,92 @@ issuing one bulk read rather than one read per byte.
 
 ### 8.3 Hardware
 
-Board `5256657D8A5D7F03`, hw-rev2, TX and RX shorted with no series resistors.
+The campaign used board `5256657D8A5D7F03`, hw-rev2, with TX (GPIO 0) and RX
+(GPIO 1) physically shorted and no series resistors. The firmware reported
+`build_id = firmware-v0.11.0-109-g6c4d42fd0796`, firmware 0.12.0 and schema
+0.8.0 at both the start and end of the session. Nine experiments ran serially
+in a fixed order. No STOP condition fired, and the board needed no USB
+re-enumeration or reflash.
 
-The loopback makes framing directly testable: both ends retune together, so any
-setting that round-trips is self-consistent. What loopback **cannot** do is
-prove the framing is what was asked for — a stale `UARTLCR_H` would also
-round-trip. The A/B discriminator is a **deliberate mismatch**: configure the
-firmware for 8N1, transmit, then reconfigure to 7E1 without changing the peer
-and confirm the received bytes differ as predicted. Because both ends share one
-peripheral this requires transmitting under one setting and receiving under
-another, which the RX ring makes possible — bytes queued at the old framing are
-already captured before the reconfiguration lands.
+#### The predicted discriminator was invalid
 
-If that proves unreliable in practice, the honest fallback is a logic-analyser
-capture in the style of the 2026-09-03 I2C measurement, and the design should
-say so rather than claim a verification it did not perform.
+The original procedure proposed transmitting under 8N1, reconfiguring to 7E1,
+and then reading the queued bytes under the new setting. That cannot test the
+register write: bytes in the RX ring were already decoded when captured, and a
+later `UARTLCR_H` change cannot reinterpret them. Two reviewers independently
+identified this defect during execution.
 
-Also required: a firmware A/B for the §5.2 single-poll fast path, showing
-the idle-poll cost dropping from ~1422 µs, and confirmation of the §4.5
-request-key claim.
+Two falsifiable discriminators replaced it:
 
-CI runs `zephyr.yml` build-only, so a green run proves the module compiles and
-links, not that it works.
+1. **Stable matched-framing A/B on word length.** One arm transmitted and
+   received under stable 7N1; the other did so under stable 8N1. The transmitter
+   genuinely shifts only seven data bits in the first arm. A stale `UARTLCR_H`
+   would therefore return the same bytes in both arms. `0x00` and `0x55` are
+   fixed points under seven-bit masking and prove nothing; `0xFF` and `0xAA`
+   are the discriminating probes.
+2. **Frame-length timing.** At a fixed baud, 7N1 occupies 9 bit periods per
+   character, 8N1 occupies 10, 8E1 and 8N2 occupy 11, and 8E2 occupies 12.
+   The harness timed 512-byte in-process transfers at 4800 baud, where the
+   expected transfer time differs by 106.7 ms per framing bit. It collected
+   seven samples per framing and repeated 8N1 non-adjacently as an internal
+   repeatability control.
+
+#### Results
+
+| Claim | Verdict | Evidence |
+|---|---|---|
+| Boot **word length** is 8 | **VERIFIED** | Before any `set-config`, `get-config` returned `115200 bps 8N1`; writing `ff aa` returned **`ff aa`**. A seven-bit boot would have returned `7f 2a`. |
+| Boot **baud** and boot **parity** | **NOT VERIFIED — unverifiable on this hardware** | `get-config` reads a software shadow, not the registers, and there was no independent UART peer. This became permanently unrepeatable once later experiments issued `set-config`. |
+| `WLEN` applied | **VERIFIED** | Stable 7N1 returned **`7f 00 55 2a`**; stable 8N1 returned **`ff 00 55 aa`**. Timing independently separated 9 from 10 bits per character. |
+| `PEN` applied | **VERIFIED** | Timing separated 8N1 at 10 bits per character, 8E1 at 11 and 8E2 at 12. |
+| `STP2` applied | **VERIFIED** | Timing separated 8N1 at 10 bits per character from 8N2 at 11; 8E2 at 12 showed that `PEN` and `STP2` were independently effective. |
+| `EPS` (odd versus even) | **NOT VERIFIED — unobservable** | 8E1 and 8O1 are both 11 bits, so timing cannot separate them; matched loopback round-trips both identically. |
+| `SPS` (mark versus space) | **EXERCISED but NOT PROVEN** | `--parity mark` and `--parity space` both returned rc=0, the shadow echoed `9600 8M1` and `9600 8S1`, and `0x5a` round-tripped. Both are 11-bit frames, however, and matched loopback checks only what the same transmitter generated. This is the only path that would evidence the `SPS` bit being written, and this hardware cannot observe it; proof requires an independent UART peer. |
+| `apply_framing` restores `UARTCR`, no wedge | **VERIFIED** | `set-config --baud-rate 1`, the lowest accepted value, returned rc=0 in **0.565 s**. Embassy clamps IBRD to 65535, so the achieved rate was about 143 baud. `ping` and `version` still answered and `0xc3` round-tripped. `get-config` reporting `1 bps` was the shadow echoing the request, not the achieved rate. |
+| Read fast path | **VERIFIED** | In-process `uart_read(1, empty ring)` had a **324.5 µs** median and 437.4 µs p95, against a **1422 µs** pre-change baseline on this board: **4.38× faster**. `uart_write(1 byte)` had a **329.4 µs** median and 447.9 µs p95, against 335 µs before the change. The nearly identical medians have the expected shape when both operations are one USB round trip with no added wait. |
+| Rejection paths | **VERIFIED** | `--baud-rate 0` exited 1 with `Endpoint(InvalidBaudRate)`. `--data-bits 9` was rejected by clap before a device round trip: exit **2** in **0.378 s**, with `error: invalid value '9' for '--data-bits <DATA_BITS>'`. The software shadow was byte-identical before and after both attempts. |
+| RX error recovery | **INCONCLUSIVE** | A single shorted PL011 cannot generate a controlled RX error. Reframing an in-flight character was the only available mechanism; three bounded attempts, including 8N1 to 8E2 with about 6.7 s of queued wire time, latched zero errors. The post-recovery nonce `0xd1` round-tripped, so RX was not left dead and there is no evidence of a defect, but the error path remains untested. |
+
+The full frame-length timing result was:
+
+| Framing | Median ms | Derived bits/char | Predicted |
+|---|---:|---:|---:|
+| 8N1 | 1074.4 | 10.073 | 10 |
+| 7N1 | 967.8 | 9.073 | 9 |
+| 8E1 | 1181.2 | 11.074 | 11 |
+| 8N2 | 1181.1 | 11.073 | 11 |
+| 8E2 | 1287.9 | 12.074 | 12 |
+| 8N1 (repeat control) | 1074.6 | 10.074 | 10 |
+
+The harness reported `SPREAD_MS = 0.2` against a 10.0 ms limit and
+`ALL_BITS_MATCH = 1`. Every framing carried a uniform offset of about +0.073
+bits per character. The offset was constant rather than proportional: about
+7.8 ms of fixed transfer overhead, not a per-bit timing error. It therefore
+cancelled in every framing comparison and did not weaken the discrimination.
+
+#### Limits and work still owed
+
+- The §4.5 two-image `REQ_KEY` A/B was **not performed**. It needs old-request-
+  shape and new-request-shape firmware images and therefore a physical BOOTSEL
+  press, which was unavailable. The static M1 evidence remains the only evidence
+  for that claim.
+- `EPS` and `SPS` proof still requires a second, independent UART peer. Matched
+  one-peripheral loopback cannot distinguish odd from even or mark from space.
+- RX error recovery remains untested because the setup could not generate a
+  controlled error. The successful nonce only showed that the attempted
+  triggers did not leave RX dead.
+
+Two secondary observations came from the campaign. First,
+`set-config --baud-rate 1` took 0.565 s where §5.2's model predicts about
+210 ms, roughly 2.7 times longer. It passed comfortably, but the stated cost
+model appears incomplete. Second, the `gallo` CLI's `--timeout` help still says
+`0 = 1 ms non-blocking poll`; that is stale because the firmware now polls
+exactly once with `poll_once`. This milestone did not fix that source-level
+help-text drift.
+
+CI still runs `zephyr.yml` build-only, so a green run proves the module compiles
+and links, not that it works. The verdicts above come only from this manual
+board-attached campaign and retain the stated limits.
 
 ---
 
@@ -738,6 +809,6 @@ Recorded so the boundaries are deliberate rather than accidental.
 |---|---|
 | §4.5's request-key claim is a code reading, and a similar assumption was wrong twice on the #159 branch | Verify by mutation before relying on it; if false, redesign the skew mitigation |
 | Direct `UARTLCR_H` writes race the `BufferedUart` ISR | Replicate embassy's disable/delay/restore exactly; embassy's own `set_baudrate` has identical exposure and ships |
-| The loopback cannot distinguish correct framing from stale framing | Use the deliberate-mismatch A/B (§8.3); fall back to a logic analyser rather than overclaim |
+| The loopback cannot distinguish every framing bit from stale framing | Use stable matched-framing word-length A/B plus frame-length timing; `EPS` and `SPS` require an independent UART peer (§8.3) |
 | A `pdg_fake/uart` suite that misses a bottom function passes the fake token to the real FFI | Enumerate every bottom entry point on the init path; the fake overrides are exhaustive per topology, not per driver |
 | `zephyr.yml` is build-only and path-filtered | Behavioural claims come from the board-attached procedure only; confirm the workflow actually ran |
