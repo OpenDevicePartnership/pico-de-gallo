@@ -220,20 +220,32 @@ LOG_MODULE_REGISTER(uart_pico_de_gallo, CONFIG_UART_LOG_LEVEL);
 /*
  * Firmware-side read allowance, in milliseconds, for every RX refill.
  *
- * One, not zero, and the difference is not cosmetic. A zero timeout selects the
- * host library's `bounded_for(0)` path, which uses the maximum handler timeout
- * -- 30 minutes -- plus call slack, so a lost reply would hold this driver's
- * mutex for half an hour. A timeout of 1 bounds the same lost reply at roughly
- * 5.001 seconds (1 ms firmware allowance plus the default 5 s host call slack).
+ * Zero, and the difference is not cosmetic. Zero selects the firmware's
+ * poll_once() branch: it polls the RX ring exactly once and answers
+ * immediately, measured at ~359 us per call on board 5256657D8A5D7F03. One
+ * selects the progress::bounded() branch instead, which waits out the full
+ * millisecond and measured 1489 us -- marginally worse than the 1422 us this
+ * path cost before the firmware fast path existed. Since uart_poll_in() is
+ * documented non-blocking and the Zephyr console drains it in a tight loop,
+ * that 4.15x is paid on every idle iteration.
  *
- * One is also the smallest non-zero value the protocol can express, and it
- * preserves the load-bearing recovery path: both firmware branches call
- * AsyncRead::read(), so a non-zero timeout still reaches Embassy's try_read(),
- * which consumes the latched rx_error and re-enables the RX interrupts. This is
+ * This value was 1 in the first draft, to dodge the host library's
+ * bounded_for(0) path, which used the 30-minute maximum handler timeout and so
+ * would have held this driver's mutex for half an hour on a lost reply. That
+ * was a real hazard but the wrong fix: bounded_for's zero case exists for
+ * gpio/wait-*, where zero means "no caller deadline". On uart/read zero means
+ * the opposite. pico-de-gallo-lib now special-cases it in uart_read_bound(),
+ * pinned by uart_read_bound_zero_timeout_is_the_call_bound, so a zero-timeout
+ * read is bounded by the ordinary 5 s call timeout.
+ *
+ * Zero preserves the load-bearing recovery path. Both firmware branches call
+ * AsyncRead::read(), and its first poll reaches Embassy's try_read(), which
+ * consumes the latched rx_error and re-enables the RX interrupts. This is
  * invariant RX-RECOVERY; there is deliberately no read_ready() shortcut and no
- * separate readiness probe.
+ * separate readiness probe, because read_ready() inspects only the software
+ * ring and would leave that error latched forever.
  */
-#define PDG_UART_READ_TIMEOUT_MS 1U
+#define PDG_UART_READ_TIMEOUT_MS 0U
 
 /*
  * Backoff, in milliseconds, after a non-transport RX refill error.
@@ -242,8 +254,9 @@ LOG_MODULE_REGISTER(uart_pico_de_gallo, CONFIG_UART_LOG_LEVEL);
  * read is precisely what clears the firmware's error state -- latching would
  * make the condition self-perpetuating. But a tight poll_in() loop would then
  * issue an unbounded stream of immediate RPCs, so the next refill is deferred
- * by this interval. Ten milliseconds is larger than the 1 ms firmware poll and
- * short enough to stay interactive. A successful refill clears it.
+ * by this interval. Ten milliseconds is comfortably larger than the ~359 us
+ * refill round trip and short enough to stay interactive. A successful refill
+ * clears it.
  */
 #define PDG_UART_RX_ERROR_BACKOFF_MS 10
 

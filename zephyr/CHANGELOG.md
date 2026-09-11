@@ -71,11 +71,16 @@ The format is based on
   at `PRE_KERNEL_1`; choosing this instance as that console is rejected at
   build time.
 
-  Receive uses a 1014-byte staging ring. An empty ring causes one refill with a
-  1 ms firmware timeout; a refill can then serve many polling calls. Transmit
-  is deliberately unbuffered at one round trip per byte because the firmware
-  already owns an interrupt-drained TX ring and the polling API provides no
-  flush hook for a second ring.
+  Receive uses a 1014-byte staging ring. An empty ring causes one refill with
+  `timeout_ms = 0`, selecting the firmware's single-poll branch; a refill can
+  then serve many polling calls. On board `5256657D8A5D7F03`, firmware
+  `firmware-v0.11.0-109-g6c4d42fd0796`, an empty refill measured about 359 us,
+  versus about 1489 us with `timeout_ms = 1` and about 1422 us before the
+  firmware fast path. The superseded 1 ms design therefore cost 4.15x as much
+  per idle poll and retained -6% of the optimization. Transmit is deliberately
+  unbuffered at one round trip per byte because the firmware already owns an
+  interrupt-drained TX ring and the polling API provides no flush hook for a
+  second ring.
 
   `uart_poll_out()` returns `void`, so an unsent or indeterminately delivered
   byte is counted in a private dropped-byte counter and never logged. Logging
@@ -87,8 +92,13 @@ The format is based on
   discards staged receive bytes and makes later polling calls fail fast without
   another RPC; there is no reconnect path during the device lifetime. A
   non-transport refill error is not permanently latched, because the next read
-  drives firmware receive-error recovery, but it receives a 10 ms backoff to
-  prevent an unbounded tight loop of RPCs.
+  drives firmware receive-error recovery, but it receives a 10 ms backoff --
+  larger than the approximately 359 us refill round trip -- to prevent an
+  unbounded tight loop of RPCs. Both firmware branches call
+  `AsyncRead::read()`, whose first poll reaches Embassy `try_read()`, consumes
+  the latched `rx_error` and re-enables RX interrupts. There is deliberately no
+  `read_ready()` shortcut because it inspects only the software ring and would
+  leave the error latched forever.
 
   Initialization gates the controller on `GALLO_CAP_UART`, so `hw-rev1` fails
   with `-ENODEV` instead of silently swallowing transmitted bytes. This is not
@@ -120,9 +130,17 @@ The format is based on
   two-sided translation-unit and Kconfig universes now cover all five drivers,
   so the other nine targets also prove that UART remains absent when disabled.
 
-  The approximately 5.001 s worst-case mutex hold for a lost refill reply and
-  the capability probe's 300 s ceiling are **derived from constants, not
-  measured**.
+  The worst-case mutex hold for a lost refill reply is the host library's
+  ordinary call timeout, 5 seconds by default. The previous 30-minute hazard
+  was real: `bounded_for(0)` interpreted zero with the GPIO meaning of "no
+  caller deadline". The host library now special-cases UART in
+  `uart_read_bound()`, pinned by
+  `uart_read_bound_zero_timeout_is_the_call_bound` and
+  `uart_read_bound_nonzero_timeout_still_tracks_the_firmware`. The 5-second
+  mutex bound and the capability probe's 300 s ceiling are **derived from
+  constants in `crates/`, not measured**. No M5, M6 or M7 test can drive the
+  refill bound because the M6 fake bypasses the transport and unplug produces
+  a fast `-ECOMM`.
 
   **M5 evidence is compile-and-link only: no runtime test and no hardware test
   was performed.** Runtime behaviour, including the recording-fake suite, is

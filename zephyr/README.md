@@ -509,20 +509,35 @@ enabled; another UART may still fill that role.
 #### Receive path and permanent transport faults
 
 `uart_poll_in()` stages reads in a 1014-byte ring. It consumes staged bytes
-without I/O; when the ring is empty it performs one refill with a **1 ms
-firmware timeout**. This is a bounded polling approximation, not literally
-non-blocking in wall-clock time. The non-zero read is load-bearing: the
-firmware path reaches Embassy `try_read()`, which consumes its latched
-`rx_error` and re-enables RX interrupts. That recovery dependency remains
-hardware-untested and is explicitly on M7's test list.
+without I/O; when the ring is empty it performs one refill with
+**`timeout_ms = 0`**, selecting the firmware's single-poll branch. On board
+`5256657D8A5D7F03`, firmware
+`firmware-v0.11.0-109-g6c4d42fd0796`, an empty 1014-byte refill measured about
+359 us, versus about 1489 us with `timeout_ms = 1` and about 1422 us before the
+firmware fast path. The 1 ms design therefore imposed a 4.15x idle-poll
+penalty and retained -6% of the optimization.
 
-The mutex remains held during a refill. **The approximately 5.001-second
-lost-response mutex bound is derived from constants, not observed: it is the
-1 ms firmware allowance plus the host library's default 5-second call slack.**
+Zero preserves the load-bearing recovery path. Both firmware branches call
+`AsyncRead::read()`, whose first poll reaches Embassy `try_read()`, consumes
+the latched `rx_error`, and re-enables RX interrupts. There is deliberately no
+`read_ready()` shortcut: it inspects only the software ring and would leave
+the error latched forever. That recovery dependency remains hardware-untested
+and is explicitly on M7's test list.
+
+The mutex remains held during a refill. **The lost-response mutex bound is the
+host library's ordinary call timeout, 5 seconds by default. This bound is
+derived from `DEFAULT_CALL_TIMEOUT` in `crates/` and has not been observed.**
+No M5, M6 or M7 test can drive it: the M6 fake bypasses the transport, while
+unplug produces a fast `-ECOMM`. The previous 30-minute hazard was real:
+`bounded_for(0)` gives zero its GPIO meaning of "no caller deadline". The host
+library now routes zero-timeout UART reads through `uart_read_bound()` instead;
+`uart_read_bound_zero_timeout_is_the_call_bound` and
+`uart_read_bound_nonzero_timeout_still_tracks_the_firmware` pin both cases.
 TX and reconfiguration queue behind that call. After a non-transport refill
-error, the driver records the error and waits 10 ms before another refill; it
-does not permanently latch the error, because a later read is required for the
-firmware recovery path.
+error, the driver records the error and waits 10 ms before another refill. The
+interval remains larger than the approximately 359 us refill round trip and
+prevents a tight RPC loop. The error is not permanently latched, because a
+later read is required for the firmware recovery path.
 
 A confirmed transport error, `-ECOMM` or `-ETIMEDOUT`, instead discards the
 staged ring and **permanently** fails fast for the device lifetime. Every later

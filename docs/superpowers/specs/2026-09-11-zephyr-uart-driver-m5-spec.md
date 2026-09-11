@@ -11,9 +11,36 @@ Phase A is complete: the wire protocol, firmware, library, FFI, CLI, MCP and Pyt
 
 The parent owns one strict, validated host connection (`zephyr/drivers/mfd/pdg_mfd.c:71-90`); child drivers check readiness and borrow it through `pdg_mfd_ctx()` (`zephyr/drivers/mfd/pdg_mfd.h:18-33`). UART follows this ownership model: no open/close pair and no child release.
 
-The decisive receive-timeout answer is **A**. The non-zero firmware branch still polls `AsyncRead::read`: `uart_read_handler` wraps that future in `progress::bounded` (`crates/pico-de-gallo-firmware/src/handlers/uart.rs:64-69`); Embassy's async `Read` delegates to `BufferedUartRx::read` (`embassy-rp-0.10.0/src/uart/buffered.rs:637-646`); that future calls `try_read` on every poll (`:229-240`); and `try_read` consumes `rx_error` and re-enables RX interrupts (`:262-290`). M5 therefore uses **`timeout_ms = 1`**. This preserves the load-bearing error-recovery path while changing the host timeout from 30 minutes plus slack to 1 ms plus the default 5-second call slack (`pico-de-gallo-lib/src/lib.rs:118-157,847-867,1266-1288`).
+The decisive receive-timeout answer is now **zero**. Every empty-ring refill
+uses **`timeout_ms = 0`**, selecting the firmware's `poll_once()` branch. Both
+firmware branches still poll `AsyncRead::read`: Embassy's async `Read`
+delegates to `BufferedUartRx::read`; that future calls `try_read` on its first
+poll; and `try_read` consumes `rx_error` and re-enables RX interrupts. Zero
+therefore preserves the load-bearing error-recovery path. There is deliberately
+no `read_ready()` shortcut, because it inspects only the software ring and
+would leave the error latched forever.
 
-One millisecond is the smallest non-zero value expressible by the protocol. It adds up to 1 ms of firmware waiting to each genuinely empty poll, on top of the measured roughly 300 microsecond round-trip floor. Thus this USB bridge is not literally non-blocking in wall-clock terms; it is a bounded polling approximation. A lost reply can still occupy the UART mutex for approximately **5.001 seconds**; that bound is derived from the 1 ms firmware allowance and the host library's 5-second default call slack, both constants in `crates/`, and has not been observed. No M5, M6 or M7 test can drive this path to the ceiling: the M6 fake bypasses the transport, while unplug produces a fast `-ECOMM`. A transport-fault latch ensures that cost is paid at most once per device lifetime, not once per byte.
+The answer changed after measurement. On board `5256657D8A5D7F03`, firmware
+`firmware-v0.11.0-109-g6c4d42fd0796`, in-process medians over three runs of
+300 calls against an empty RX ring were 358.8 us for
+`uart_read(1014, timeout_ms=0)` and 1488.8 us for
+`uart_read(1014, timeout_ms=1)`. The pre-fast-path baseline was 1422 us. The
+1 ms design was therefore a 4.15x penalty and retained -6% of the firmware
+optimization: non-zero selects `progress::bounded()`, which waits out the full
+millisecond, while zero performs one poll and answers.
+
+A lost reply can occupy the UART mutex for the host library's ordinary call
+timeout, **5 seconds by default**. That bound is derived from
+`DEFAULT_CALL_TIMEOUT` in `crates/` and has not been observed. No M5, M6 or M7
+test can drive this path to the ceiling: the M6 fake bypasses the transport,
+while unplug produces a fast `-ECOMM`. The 30-minute hazard that motivated the
+original 1 ms choice was real, but is now fixed in the host library:
+`uart_read_bound()` gives zero-timeout UART reads the ordinary call bound and
+leaves non-zero reads on `bounded_for()`. Tests
+`uart_read_bound_zero_timeout_is_the_call_bound` and
+`uart_read_bound_nonzero_timeout_still_tracks_the_firmware` pin both cases. A
+transport-fault latch ensures a lost-reply cost is paid at most once per device
+lifetime, not once per byte.
 
 ### 1.1 Inventory
 
@@ -41,7 +68,8 @@ No `book/` edit or chapter. `AGENTS.md` section 15.1 makes README and changelog 
 
 ### 1.2 Out of scope
 
-- Anything under `crates/`; all versions, manifests and locks.
+- Apart from the later `pico-de-gallo-lib` timeout-bound correction described
+  above, anything under `crates/`; all versions, manifests and locks.
 - UART sample and `zephyr/tests/pdg_fake/uart/` (M6).
 - Running an image or touching hardware (M7).
 - Real interrupt, async, line-control, driver-command or wide-data support.
@@ -108,7 +136,12 @@ M5 accepts this documented boot-time cost because the capability gate prevents s
 
 1. **Three omitted wide async hazards.** Design §6.2 omitted `tx_u16`, `rx_enable_u16`, `rx_buf_rsp_u16`; pinned wrappers have no NULL checks (`uart_internal.h:511-579`). M5 adds nested async+wide stubs.
 2. **Capability warmth claim was false.** Design §6.8 says local/no USB (`design.md:567-576`), contradicted by §2.4's fresh `validate()` path.
-3. **Zero-timeout host bound was misread.** Firmware zero is a one-poll operation, but host `bounded_for(0)` selects 1,800,000 ms plus call slack (`lib/lib.rs:847-867`; test `:3064-3073`). M5 uses firmware timeout 1 ms.
+3. **Zero-timeout host bound was misread, then fixed.** Firmware zero is a
+   one-poll operation, but host `bounded_for(0)` selects 1,800,000 ms plus call
+   slack because zero means "no caller deadline" for GPIO waits. The original
+   M5 answer used 1 ms to avoid that hazard. Measurement showed the workaround
+   cost 1488.8 us per empty poll versus 358.8 us for zero, so the host library
+   gained `uart_read_bound()` and M5 now uses zero safely.
 4. **`callback_set` hazard was overstated.** It NULL-checks (`uart_internal.h:477-487`). It remains NULL so Zephyr returns `-ENOSYS`; no stub is needed.
 5. **Existing native include lines are redundant, not broken.** I2C/GPIO/SPI bottom headers are same-directory, so ineffective `target_include_directories` entries do not break them. Cross-directory `common.h` and generated FFI paths are already supplied via compile options (`drivers/CMakeLists.txt:32-34`, `zephyr/CMakeLists.txt:79-96`). UART needs no same-directory `-I`; any future cross-directory native include must use `target_compile_options`.
 6. **One generated header copy is stale.** Build hash `e2c65c3c3be1c5af` still says 1 ms at header `:1940`; current hash `97a8949eaf79088a` says a single poll. Never select arbitrary target output by glob order; use the active Corrosion header.
@@ -244,14 +277,20 @@ A timed-out/communication-failed write may already have queued its byte before t
 
 ## 6. RX and TX data paths
 
-### 6.1 RX: 1014-byte refill with 1 ms firmware timeout
+### 6.1 RX: 1014-byte refill with a single firmware poll
 
-Invariant **RX-RECOVERY**: every empty-ring refill calls `gallo_uart_read(..., timeout_ms=1)`, never `read_ready()` and never a separate readiness probe. Both zero and non-zero firmware branches reach Embassy `try_read`; the non-zero evidence is `uart.rs:64-69` -> `buffered.rs:637-646` -> `:229-240` -> `:262-290`. `try_read` consumes `rx_error` and re-enables RX interrupts. M7 must prove this recovery with controlled fault injection; static evidence is not hardware evidence.
+Invariant **RX-RECOVERY**: every empty-ring refill calls
+`gallo_uart_read(..., timeout_ms=0)`, never `read_ready()` and never a separate
+readiness probe. Both firmware branches call `AsyncRead::read()`, whose first
+poll reaches Embassy `try_read`; `try_read` consumes `rx_error` and re-enables
+RX interrupts. A `read_ready()` shortcut would inspect only the software ring
+and leave the error latched forever. M7 must prove this recovery with
+controlled fault injection; static evidence is not hardware evidence.
 
 Under mutex:
 
 1. If a staged byte exists, return it without RPC.
-2. Otherwise reset indices and issue one `bottom_read(ctx, rx_buf, 1014, 1, &rx_len)`.
+2. Otherwise reset indices and issue one `bottom_read(ctx, rx_buf, 1014, 0, &rx_len)`.
 3. Success with zero bytes returns `-1`.
 4. Success with impossible `rx_len > 1014` increments `rx_errors`, stores `-EIO`, empties ring, returns `-1`.
 5. Any endpoint or transport failure increments `rx_errors`, stores exact errno, empties ring and returns `-1`.
@@ -260,9 +299,15 @@ Under mutex:
 
 This deliberately narrows the public `poll_in` result to Zephyr's polling contract: 0 for one byte, otherwise `-1` for no byte, invalid context, context prohibition or failure. Exact diagnostics remain in private atomics. `p_char` is untouched unless returning 0.
 
-Repeated endpoint errors such as `-EIO` are not permanently latched, because the first read is required to consume Embassy's RX-error latch. To avoid unlimited immediate RPCs in a tight poll loop, after any non-transport refill error set a monotonic retry deadline **10 ms** in the future. Until that deadline, return `-1` without RPC. Ten milliseconds is bounded, larger than the 1 ms firmware poll, and short enough for interactive polling; M6 fake tests use `k_sleep` past the backoff deadline to pin one RPC per backoff interval. `native_sim` advances its clock on `k_sleep`, so no injected-time capability is required. Successful refill clears backoff. Use Zephyr uptime (`k_uptime_get`) only in thread context after the context guards.
+Repeated endpoint errors such as `-EIO` are not permanently latched, because the first read is required to consume Embassy's RX-error latch. To avoid unlimited immediate RPCs in a tight poll loop, after any non-transport refill error set a monotonic retry deadline **10 ms** in the future. Until that deadline, return `-1` without RPC. Ten milliseconds is bounded, larger than the approximately 359 us refill round trip, and short enough for interactive polling; M6 fake tests use `k_sleep` past the backoff deadline to pin one RPC per backoff interval. `native_sim` advances its clock on `k_sleep`, so no injected-time capability is required. Successful refill clears backoff. Use Zephyr uptime (`k_uptime_get`) only in thread context after the context guards.
 
-The mutex is held across the read RPC. The finite blocking bound is approximately 5.001 seconds (1 ms firmware allowance plus default 5 s host slack), derived from constants in `crates/` and not observed; the M6 fake bypasses the transport, and unplug produces a fast `-ECOMM`, so no M5, M6 or M7 test can drive this path to the ceiling. Configuration/TX can wait behind it. This priority inversion is accepted and documented; a future asynchronous architecture would be needed to remove it.
+The mutex is held across the read RPC. The finite blocking bound is the host
+library's ordinary call timeout, 5 seconds by default, derived from
+`DEFAULT_CALL_TIMEOUT` in `crates/` and not observed; the M6 fake bypasses the
+transport, and unplug produces a fast `-ECOMM`, so no M5, M6 or M7 test can
+drive this path to the ceiling. Configuration/TX can wait behind it. This
+priority inversion is accepted and documented; a future asynchronous
+architecture would be needed to remove it.
 
 ### 6.2 TX: deliberately unbuffered
 
@@ -388,7 +433,9 @@ README updates overview, topology and CI count; adds UART enablement with explic
 
 - thread-context-only; ISR/pre-kernel RX returns `-1`, TX drops/counts;
 - incompatibility with choosing PDG UART as `CONFIG_EARLY_CONSOLE`;
-- 1014-byte RX staging and 1 ms firmware poll, with an approximately 5.001 s lost-response mutex bound derived from `crates/` constants and not observed or reachable in M5/M6/M7 tests;
+- 1014-byte RX staging and a zero-timeout single firmware poll, measured at
+  about 359 us, with a 5 s default lost-response mutex bound derived from a
+  `crates/` constant and not observed or reachable in M5/M6/M7 tests;
 - one-RPC-per-byte unbuffered TX and complete loss/indeterminate-delivery modes;
 - no logging from `poll_out`; M5 private `tx_dropped`, `rx_errors`, `last_errno`, `link_failed`, public surfacing deferred M6;
 - transport fault is permanent/fail-fast until process/device reinitialization; no reconnect;
@@ -407,7 +454,11 @@ Result table separates:
 - no-NULL async slots -> explicit `-ENOTSUP` stubs;
 - `callback_set` -> NULL and `-ENOSYS`.
 
-Changelog Unreleased/Added records binding/controller, RX/TX architecture, context policy, mapping gates, fault/backoff diagnostics, capability cost, tenth target, and M6/M7 deferrals. No book/crate changelog.
+The Zephyr changelog's Unreleased/Added section records the binding/controller,
+RX/TX architecture, context policy, mapping gates, fault/backoff diagnostics,
+capability cost, tenth target, and M6/M7 deferrals. The later host timeout fix
+also requires an Unreleased/Fixed entry in
+`crates/pico-de-gallo-lib/CHANGELOG.md`. No book change is required.
 
 ## 11. Invariants and failure modes
 
@@ -421,7 +472,9 @@ Changelog Unreleased/Added records binding/controller, RX/TX architecture, conte
 6. No `LOG_*` call appears in `poll_out` or anything it calls; it never retries or buffers, and every drop is counted.
 7. `poll_in` returns only 0 or `-1`, writes output only on 0, and latches exact diagnostics privately.
 8. **RX-RECOVERY:** every refill reaches Embassy `try_read`; no `read_ready()` shortcut.
-9. Firmware read timeout is exactly 1 ms; maximum host wait is approximately 5.001 s with default call slack, derived from constants in `crates/` and not observed or reachable in M5/M6/M7 tests.
+9. Firmware read timeout is zero, selecting one poll; maximum host wait is the
+   ordinary call timeout, 5 seconds by default, derived from a constant in
+   `crates/` and not observed or reachable in M5/M6/M7 tests.
 10. First transport failure discards local RX and permanently fails fast; pre-lock plus post-lock latch checks prevent both fresh and already-queued callers from issuing another RPC.
 11. Endpoint RX errors receive one RPC per 10 ms backoff interval, not unlimited immediate retry.
 12. Successful configure clears local staging; callers quiesce/drain due to firmware residue.
@@ -444,7 +497,7 @@ Scope: M5 claims build/link only; this is not an invariant.
 | Capability clear | distinct `-ENODEV` |
 | Invalid initial config | not ready, no set RPC |
 | Initial set failure | not ready; remote may have applied before lost ACK; no rollback |
-| RX empty | one 1 ms firmware poll, `-1` |
+| RX empty | one zero-timeout firmware poll, about 359 us measured, `-1` |
 | RX endpoint error | exact errno/count latched, ring empty, `-1`, 10 ms backoff |
 | RX transport error | exact errno/count latched, ring discarded, permanent fail-fast, `-1` |
 | TX endpoint error | byte dropped/count, last errno, no retry/log; future traffic allowed |
@@ -468,7 +521,7 @@ The existing `-Werror=switch` remains load-bearing for `common.c`, but provides 
 Deferred sample plus fake coverage:
 
 - ISR/pre-kernel guards never lock/call FFI;
-- empty poll uses timeout 1 and returns `-1`;
+- empty poll uses timeout 0 and returns `-1`;
 - one refill serves many bytes; impossible length;
 - transport failure latches once, clears ring, later and already-mutex-queued calls make zero RPCs;
 - endpoint error backoff uses `k_sleep` past the deadline, allows one RPC per 10 ms and recovers after success;
@@ -484,8 +537,9 @@ M6 decides how to surface private diagnostics through shell/stat/driver API.
 ### 12.3 M7 hardware risk register
 
 - hw-rev2 ready and hw-rev1 capability refusal;
-- verify the 1 ms non-zero firmware branch still consumes controlled framing/parity/overrun error and RX resumes without reboot;
-- loopback polling/throughput and approximately 1 ms idle cost;
+- verify the zero-timeout single-poll firmware branch still consumes a
+  controlled framing/parity/overrun error and RX resumes without reboot;
+- loopback polling/throughput and approximately 359 us idle cost;
 - independent peer for parity and framing distinctions;
 - unplug/reset during read/write/configure: bounded return, one-time fault latch, no recursive output/logging, ring discard;
 - timed-out TX lost-ACK ambiguity with no duplicate;
@@ -499,7 +553,7 @@ No M5 build result proves runtime behaviour.
 |---|---|---|
 | C-B1 / R-B2 ISR/pre-kernel | Thread-context-only; guards before lock/FFI; RX `-1`, TX drop/count; chosen-console early-console BUILD_ASSERT | §§2.2,5.1,7.3 |
 | C-B2 mapping gate | Keep eleven bottom asserts; add shared-expression top mapping and assertions | §4 |
-| R-B1 30-minute poll | **A**: non-zero 1 ms still reaches `try_read`; host bound ~5.001 s is derived from `crates/` constants, not observed; transport latch pays once | §§1,6.1 |
+| R-B1 30-minute poll | Original answer **A** used non-zero 1 ms because it still reached `try_read`; measurement superseded it. `uart_read_bound()` makes zero safe with the 5 s default call bound, derived from `crates/` and not observed; transport latch pays once | §§1,6.1,15 |
 | R-B3 recursive logging | No logs from `poll_out`; atomics and fail-fast latch | §§5.2,6.2 |
 | R-B4 capability cache | False warm claim removed; second RPC is M6-provable, while its 300 s ceiling is derived from a `crates/` constant and not observed; cache follow-up escalated | §2.4 |
 | C-S1 / R-S6 poll-in contract | 0 only for byte; all other outcomes `-1`; exact errno private | §§5.1,6.1 |
@@ -515,7 +569,7 @@ No M5 build result proves runtime behaviour.
 | R-S5 RX backoff | 10 ms endpoint-error backoff; transport permanent | §6.1 |
 | R-S7 TX loss | Complete loss and lost-ACK/no-retry documentation | §§5.2,10 |
 | R-S8 RX recovery invariant | Named RX-RECOVERY and M7 controlled-fault gate | §§6.1,11.1,12.3 |
-| R-S9 mutex bound | ~5.001 s derived from `crates/` constants, not observed; accepted priority inversion stated | §§1,6.1 |
+| R-S9 mutex bound | 5 s by default, derived from a `crates/` constant and not observed; accepted priority inversion stated | §§1,6.1 |
 | R-S10 failed-init dispatch | NULL guards are primary protection | §§5.1,7.4 |
 | Nit: include directories | Existing entries redundant, not broken; cross-directory rule retained | §§2.5,8 |
 | Nit: prototypes | Exact widths and parameter shapes preserved | §2.3 |
@@ -529,7 +583,7 @@ One coding agent per file. Waves define ordering and parallelism; only integrati
 ### Wave 0 - contracts and topology, parallel
 
 1. **`zephyr/drivers/serial/pdg_uart_bottom.h` - create; scope grew.** Own four-function plain-C surface, response literal, eleven neutral values. Includes bool/int only. Traps: open/close, wrong widths, Zephyr/FFI leak, computed limit.
-2. **`zephyr/dts/bindings/serial/odp,pico-de-gallo-uart.yaml` - create; scope grew.** Own direct-parent/serial contract, thread-only policy, early-console incompatibility, 1 ms/5.001 s bound, 300 s capability cost, loss/backoff/config semantics. Mark both ceilings as derived from `crates/` constants and not observed or test-reachable. Traps: warm claim, atomic claim, achieved-baud claim.
+2. **`zephyr/dts/bindings/serial/odp,pico-de-gallo-uart.yaml` - create; scope grew.** Own direct-parent/serial contract, thread-only policy, early-console incompatibility, zero-timeout single-poll/5 s default bound, 300 s capability cost, loss/backoff/config semantics. Mark both ceilings as derived from `crates/` constants and not observed or test-reachable. Traps: warm claim, atomic claim, achieved-baud claim.
 3. **`zephyr/drivers/serial/Kconfig` - create; scope grew.** Own driver, SERIAL/SERIAL_HAS_DRIVER, priority, thread-only/non-atomic help. Do not select async/IRQ/wide.
 4. **Shield overlay - modify.** Add disabled explicit 115200 8N1 child only.
 5. **`shield.yml` - modify.** Add UART feature only.
@@ -538,7 +592,7 @@ One coding agent per file. Waves define ordering and parallelism; only integrati
 ### Wave 1 - driver implementation, parallel after bottom header
 
 7. **`pdg_uart_bottom.c` - create.** Weak read/write/set/capability adapters, status mapping, eleven enum and size assertions. Capability output only after successful `gallo_get_device_info`. Traps: warm assumption, raw Status, non-weak, reading uninitialized info.
-8. **`pdg_uart.c` - create; scope substantially grew.** Own context guards, early-console assertion, data/ring/config, atomics, 10 ms backoff, transport latch, no-log `poll_out`, 1 ms refill, shared runtime/compile mapping expressions, all API slots, capability/init. Traps: any log in output callback; any mutex before ISR/pre-kernel check; zero timeout; arbitrary poll-in errno; permanent latch on `-EIO`; preserving ring on transport/config success; hand-written mapping separate from assertions.
+8. **`pdg_uart.c` - create; scope substantially grew.** Own context guards, early-console assertion, data/ring/config, atomics, 10 ms backoff, transport latch, no-log `poll_out`, zero-timeout single-poll refill, shared runtime/compile mapping expressions, all API slots, capability/init. Traps: any log in output callback; any mutex before ISR/pre-kernel check; routing zero through the generic 30-minute host bound; arbitrary poll-in errno; permanent latch on `-EIO`; preserving ring on transport/config success; hand-written mapping separate from assertions.
 9. **Serial CMake - create; wording corrected.** Add top library and bottom host source. No same-directory native `-I` needed. Use compile-options only if a genuine cross-directory native header is introduced.
 
 ### Wave 2 - root wiring and gate, parallel
@@ -560,9 +614,20 @@ One coding agent per file. Waves define ordering and parallelism; only integrati
 
 ## 15. Alternatives considered
 
-- Keep timeout zero: rejected because host bound is 30 minutes plus slack; non-zero still reaches `try_read`.
-- More than 1 ms: increases every empty poll with no recovery benefit. One is protocol minimum.
-- Claim true non-blocking: rejected; the derived, unobserved worst-case bound is 5.001 s and normal empty adds up to 1 ms firmware wait.
+- **Superseded decision -- reject timeout zero.** The original reasoning was
+  sound: `bounded_for(0)` used the 30-minute maximum handler timeout plus
+  slack, so a lost reply could hold the driver mutex for half an hour. M5 first
+  chose 1 ms because the non-zero branch still reaches `try_read`. Measurement
+  overturned the result: 1 ms cost 1488.8 us per empty poll against 358.8 us
+  for zero and a 1422 us pre-fast-path baseline. The host library now fixes the
+  latent defect at its source with `uart_read_bound()`, giving zero-timeout
+  UART reads the ordinary 5 s default call bound; zero is therefore the adopted
+  driver value.
+- More than zero: selects `progress::bounded()` and waits out the requested
+  interval on every empty poll without a recovery benefit.
+- Claim true non-blocking: rejected; the derived, unobserved worst-case host
+  bound is 5 s by default, although the normal empty refill measures about
+  359 us.
 - Retry transport per character: no reconnect path; multiplies stalls. Permanent fail-fast instead.
 - Latch every `-EIO`: rejected; endpoint line errors may recover after `try_read` consumes latch.
 - Log output failures: recursive console deadlock/flood. Atomics only.
@@ -575,7 +640,12 @@ One coding agent per file. Waves define ordering and parallelism; only integrati
 
 ## 16. Open questions and escalations
 
-No M5-blocking `crates/` change is required because answer A preserves RX-error recovery with timeout 1.
+The original M5 answer required no `crates/` change because the non-zero branch
+preserved RX-error recovery. Measurement superseded that answer. The required
+host-library correction is now present in `uart_read_bound()` and pinned by
+`uart_read_bound_zero_timeout_is_the_call_bound` and
+`uart_read_bound_nonzero_timeout_still_tracks_the_firmware`; no version or wire
+change is involved.
 
 Formal follow-up escalation: cache full validated `DeviceInfo`/capabilities per handle in `pico-de-gallo-lib`, populate it during strict open/validate, and expose a cached FFI capability query. This removes the UART child's second metadata RPC, whose 300-second ceiling is derived from a `crates/` constant rather than observed. It requires `crates/` changes and is not part of M5.
 

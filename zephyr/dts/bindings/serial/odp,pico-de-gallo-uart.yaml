@@ -42,16 +42,20 @@ description: |
   console.
 
   Receive path. Reads are staged through a local 1014-byte ring. When the ring
-  is empty, one refill issues a single uart/read with a firmware timeout of
-  1 ms, which is the smallest non-zero value the protocol can express and which
-  is required because that path is what consumes the firmware's latched receive
-  error and re-enables its receive interrupts. A refill therefore adds up to
-  1 ms of firmware waiting to each genuinely empty poll on top of the round-trip
-  cost: this bridge is a bounded polling approximation, not a literally
-  non-blocking UART. The mutex is held across the refill, so a lost response can
-  occupy it for approximately 5.001 seconds -- the 1 ms firmware allowance plus
-  the default 5 second host call slack -- during which transmission and
-  reconfiguration wait behind it. This priority inversion is accepted.
+  is empty, one refill issues a single uart/read with timeout_ms = 0, selecting
+  the firmware's single-poll branch. On board 5256657D8A5D7F03, firmware
+  firmware-v0.11.0-109-g6c4d42fd0796, an empty refill measured about 359 us,
+  versus about 1489 us with timeout_ms = 1 and about 1422 us before the firmware
+  fast path. Both firmware branches call AsyncRead::read(), whose first poll
+  reaches Embassy try_read(), consumes the latched receive error and re-enables
+  receive interrupts. There is deliberately no read_ready() shortcut because
+  it inspects only the software ring and would leave the error latched forever.
+  The mutex is held across the refill, so a lost response can occupy it for the
+  host library's ordinary call timeout, 5 seconds by default, during which
+  transmission and reconfiguration wait behind it. This bound is derived from
+  a crates/ constant and has not been observed: the recording fake bypasses the
+  transport, while unplug produces a fast -ECOMM. This priority inversion is
+  accepted.
 
   uart_poll_in() returns only 0 or -1 and writes through its output pointer
   only when returning 0. Every other outcome -- prohibited context, a dead or
@@ -61,16 +65,17 @@ description: |
 
   Receive backoff. After a non-transport refill error the driver waits 10 ms
   before issuing another read, so a tight polling loop cannot generate unbounded
-  immediate round trips. Endpoint errors are deliberately not latched, because
-  the next read is what clears the firmware's error state. A successful refill
+  immediate round trips. The interval is larger than the approximately 359 us
+  refill round trip. Endpoint errors are deliberately not latched, because the
+  next read is what clears the firmware's error state. A successful refill
   clears the backoff.
 
   Transport-failure latch. A confirmed transport-class failure (-ECOMM or
   -ETIMEDOUT) discards the staged ring and permanently fails fast: every later
   uart_poll_in() returns -1 and every later uart_poll_out() drops its byte,
   neither issuing another round trip. There is no reconnect path, so the latch
-  lasts for the device lifetime. This bounds the approximately 5.001 second
-  cost above to once per device lifetime rather than once per byte.
+  lasts for the device lifetime. This bounds the 5 second default cost above to
+  once per device lifetime rather than once per byte.
 
   Transmit path. Transmission is deliberately unbuffered: uart_poll_out() makes
   one uart/write round trip per byte, because the firmware already owns a
