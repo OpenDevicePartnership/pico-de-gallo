@@ -87,8 +87,66 @@ The format is based on
   not observe the private diagnostics, prove ISR-guard-before-mutex ordering,
   prove explicit backoff clearing, reach pre-kernel guards, contend the mutex,
   exercise console reentrancy, or establish physical timing, framing,
-  backpressure, firmware-ring, baud-clamp or lost-ack behaviour. Those remain
-  M7 board-attached obligations.
+  backpressure, firmware-ring, baud-clamp or lost-ack behaviour. M7 later
+  measured a subset of those properties; the board-attached entry below records
+  exactly which ones and which gaps remain.
+
+- Added `tests/pdg_board/uart`, a plain, board-attached `main()` application for
+  `uart_configure()` / `uart_config_get()`, loopback masking, frame-length
+  timing, invalid configuration mapping, and baseline restoration. Its Twister
+  scenario is `board.pico_de_gallo.uart.loopback` with `build_only: true`, and
+  `zephyr/scripts/ci-build.sh` registers it as the thirteenth target,
+  `board_uart`. It requires TX (GPIO 0) physically shorted to RX (GPIO 1).
+
+  The committed `app.overlay` retains a placeholder serial. Operators append a
+  scratch overlay outside the repository with
+  `-DEXTRA_DTC_OVERLAY_FILE=/path/to/serial.overlay`; using
+  `DTC_OVERLAY_FILE` would replace `app.overlay` and lose its UART child.
+  `CONFIG_UART_USE_RUNTIME_CONFIGURE=y` is load-bearing because otherwise
+  `uart_configure()` returns `-ENOSYS`.
+
+- M7 hardware verification ran on board `5256657D8A5D7F03`, firmware
+  `firmware-v0.11.0-109-g6c4d42fd0796` (firmware 0.12.0, schema 0.8.0,
+  `hw-rev2`), with TX and RX shorted. This was the first execution of the driver
+  against real hardware.
+
+  The `uart_bridge` sample echoed all 27 greeting bytes exactly. Runtime
+  configure/get worked; stable 7N1 returned `7f 00 55 2a` and restored 8N1
+  returned `ff 00 55 aa`. All four widths produced the expected masks: 8, 7,
+  6, and 5 bits returned `ff 00 55 aa`, `7f 00 55 2a`, `3f 00 15 2a`, and
+  `1f 00 15 0a`. Invalid baud 0 and unsupported data bits remained distinct at
+  `-EINVAL` (-22) and `-ENOTSUP` (-95).
+
+  Frame-length timing fitted 6.18 ms per bit per character against a physical
+  prediction of 6.67 ms (93%); a stale framing register would have produced a
+  zero slope. The roughly 143-baud divisor floor, previously inferred from
+  embassy-rp, measured about 147 baud, with convergence beginning between 143
+  and 100.
+
+  RX-ring overflow closed the driver's highest-risk unverified premise. Sending
+  1280 bytes without an intervening read against the 1024-byte firmware ring
+  produced one `Endpoint(Other)` and then recovery in all 3 trials; both
+  no-overflow controls had no error. Exactly 1024 bytes arrived in order with
+  four write-boundary discontinuities. A wrong-serial strict open also refused
+  in 511 ms, named the selector, and did not fall back to the attached board.
+
+  Odd/even and mark/space parity remain unverified: one PL011 drives both ends,
+  and all four 11-bit configurations loop back cleanly. Their medians (511.5,
+  511.1, 411.5, and 514.3 ms) were statistically indistinguishable. An
+  independent UART peer or logic analyser is required. A v1.0 board is required
+  for the `hw-rev1` capability refusal. Unplug/re-enumeration/reset,
+  transport-fault and lost-ack injection, TX saturation, active-console faults,
+  and direct observation of embassy's `rx_error` and RX interrupt-enable bits
+  also remain untested; the last item requires RTT or a debugger.
+
+  Two method limits are now recorded. `native_sim` time is simulated under
+  `CONFIG_NATIVE_SIM_SLOWDOWN_TO_REAL_TIME=y`, so drain milliseconds advance
+  through polling sleeps rather than directly measuring wall time, although the
+  slope remains physical. Separate `gallo` write/read processes are unusable
+  for timing because startup costs 200–300 ms, measurements quantize near
+  100 ms, and the line drains between processes; a control produced the
+  9600-versus-115200 difference with the wrong sign. Future timing work must
+  keep write and read in one process.
 
 - Added the polling-only `odp,pico-de-gallo-uart` controller as a direct child
   of the `odp,pico-de-gallo` MFD parent, with its devicetree binding, Kconfig,
@@ -181,9 +239,9 @@ The format is based on
   a fast `-ECOMM`.
 
   **M5 evidence was compile-and-link only: no runtime test and no hardware test
-  was performed.** M6 has since added the recording-fake coverage above;
-  hardware bring-up remains deferred to M7. The firmware RX-error recovery path
-  on which refilling depends also remains hardware-untested.
+  was performed.** M6 later added the recording-fake coverage above, and M7 has
+  now completed the scoped hardware campaign recorded above, including RX-error
+  latch recovery. The listed equipment-dependent gaps remain.
 
 - `pdg_common_status_to_errno()` maps the new `CallTimeout` status to
   `-ETIMEDOUT`. Refs #178.
@@ -412,9 +470,11 @@ The format is based on
   return zero results, while `tests/drivers` alone holds 268 `tests.yaml`.
   Samples keep their `sample:` key inside `tests.yaml`.
 
-  At introduction, every scenario was `build_only: true`. M6 expands the
-  inventory to ten files and eleven scenarios: eight remain build-only, while
-  the I2C fake and two UART fake scenarios execute without hardware. None
+  At introduction, every scenario was `build_only: true`. M6 expanded the
+  inventory to ten files and eleven scenarios. The board-attached UART
+  application later brought it to eleven files and twelve scenarios: nine are
+  build-only, while the I2C fake and two UART fake scenarios execute without
+  hardware. None
   declares `depends_on`, because that key matches the board's `supported:` list
   and `native_sim/native/64` names neither `i2c`, `spi` nor `uart` — only the
   32-bit `native_sim` does — so claiming one would silently filter the scenario

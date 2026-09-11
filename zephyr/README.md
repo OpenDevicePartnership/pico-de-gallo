@@ -95,10 +95,11 @@ Zephyr is used if you have stale entries in `~/.cmake/packages/Zephyr`.
 touches `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/`,
 either root Cargo file, or its own `.github/workflows/zephyr.yml` definition.
 It pins Zephyr to the commit recorded above and drives
-`zephyr/scripts/ci-build.sh`, which builds twelve targets: three viable samples,
+`zephyr/scripts/ci-build.sh`, which builds thirteen targets: three viable samples,
 the two IS31 samples (asserted to fail exactly as they do at baseline), the
 four M5 test applications, the UART driver build target, the I2C gather-write
-regression image, and the UART recording-fake image.
+regression image, the UART recording-fake image, and the board-attached UART
+configuration application.
 
 To reproduce a CI failure locally, with a Zephyr workspace already set up:
 
@@ -117,19 +118,21 @@ bottom layers replace USB and the C FFI. A green workflow therefore proves that
 the module compiles and links and that those fake-driven top halves pass. It
 does **not** prove that the module works against hardware. That remains
 `tests/pdg_mfd_m5/run-m5.sh` and `tests/pdg_i2c_burst`, run by hand with a board
-and, for the M5 images, the physical jumpers in place.
+and, for the M5 images, the physical jumpers in place. The UART-specific manual
+applications are `samples/uart_bridge` and `tests/pdg_board/uart`.
 
 For the UART driver specifically, M6 adds executed recording-fake evidence for
 top-half control flow and argument transcription. Its compile-time mapping and
 topology assertions were checked by review plus a recorded mutation, but
 `ci-build.sh` has no target kind that asserts a `BUILD_ASSERT` fires, so CI does
-not exercise those negative cases. Hardware behaviour remains an M7 obligation;
-nothing in this driver has been run against a board.
+not exercise those negative cases. M7 has since run the driver on hardware; see
+[UART hardware verification](#uart-hardware-verification) for the measured
+results and the remaining equipment-dependent gaps.
 
 ### Twister metadata
 
-Ten applications carry a `tests.yaml`: three samples, five board-attached test
-images, and the I2C and UART recording-fake suites. Together they declare eleven
+Eleven applications carry a `tests.yaml`: three samples, six board-attached test
+images, and the I2C and UART recording-fake suites. Together they declare twelve
 scenarios. A second CI job runs twister over `zephyr/samples` and
 `zephyr/tests`.
 
@@ -140,7 +143,7 @@ Three things about that file are easy to get wrong:
   `filename:testcase.yaml path:tests/drivers` each return zero results against
   `zephyrproject-rtos/zephyr`, while `tests/drivers` alone holds 268
   `tests.yaml` files. Samples keep a `sample:` key *inside* `tests.yaml`.
-- **Eight scenarios are `build_only: true`.** Twister classifies `native_sim`
+- **Nine scenarios are `build_only: true`.** Twister classifies `native_sim`
   as `type: native` and would otherwise execute board-attached binaries, which
   reach `gallo_init_strict()` on a runner with no board. The three exceptions
   are the I2C fake scenario and the UART fake's capability-present and
@@ -206,9 +209,10 @@ The executed suite covers:
 
 #### What the UART recording fake does not prove
 
-**These gaps are M7 obligations.** The recording fake replaces the bottom
-layer, so this run proves top-half control flow and recorded arguments only. In
-particular, it does not prove:
+The recording fake replaces the bottom layer, so that run proves top-half
+control flow and recorded arguments only. M7 later closed some of these gaps on
+hardware, but not through the fake itself. In particular, the fake does not
+prove:
 
 - USB enumeration or transport, firmware execution or rings, postcard framing,
   host timeouts, real backpressure, or the real FFI `Status`-to-errno mapping;
@@ -226,8 +230,8 @@ particular, it does not prove:
 - the console-reentrancy hazard behind `uart_poll_out()`'s never-log rule; the
   suite does not make this UART the active console;
 - the measured `timeout_ms = 0` latency (about 359 us versus about 1489 us), the
-  approximately 143-baud clamp, physical framing, firmware ring behaviour, or
-  the indeterminate "byte applied but acknowledgement lost" case; and
+  low-baud clamp, physical framing, firmware ring behaviour, or the
+  indeterminate "byte applied but acknowledgement lost" case; and
 - per-child capability-before-configuration ordering. Capability events carry no
   child discriminator, because the shared parent fake hands every child the same
   context, so only the aggregate running-prefix invariant is asserted;
@@ -236,6 +240,10 @@ particular, it does not prove:
   follow-up calls it makes; permanence is a source-review property;
 - a real read result greater than 1014 bytes, which real firmware cannot
   produce. Only the defensive top-half handling of an injected value is tested.
+
+The manual M7 run below measured physical word lengths, the low-baud clamp, and
+RX-ring overflow recovery. It did not make the fake stronger, and the other gaps
+above remain limits unless that section says otherwise.
 
 ---
 
@@ -319,6 +327,99 @@ The sample's Twister scenario is **build-only**. Running the image reaches
 recording-fake suite described under *Continuous integration* is the
 hardware-free runtime coverage; it does not execute this sample or its real
 bottom layer.
+
+### Board-attached UART configuration application
+
+`tests/pdg_board/uart` is a plain `main()` application for manual UART driver
+bring-up. It exercises `uart_configure()` and `uart_config_get()`, word-length
+masking, frame-length timing, invalid-configuration errno mapping, and final
+restoration to 115200 8N1. Its Twister scenario is
+`board.pico_de_gallo.uart.loopback`, marked `build_only: true`; CI compiles it as
+the thirteenth `ci-build.sh` target, `board_uart`, but never runs it.
+
+Physically short UART TX (GPIO 0) to UART RX (GPIO 1) before running it. The
+committed `app.overlay` intentionally contains a placeholder serial number.
+Create a scratch overlay **outside the repository** with the real selector:
+
+```dts
+&pdg0 { serial-number = "5256657D8A5D7F03"; };
+```
+
+Then build and run from the repository root:
+
+```bash
+west build -p always -b native_sim/native/64 \
+    zephyr/tests/pdg_board/uart -- \
+    -DSHIELD=pico_de_gallo \
+    -DEXTRA_ZEPHYR_MODULES="$PWD" \
+    -DEXTRA_DTC_OVERLAY_FILE=/path/to/serial.overlay
+west build -t run
+```
+
+Use `EXTRA_DTC_OVERLAY_FILE`, which appends the scratch assignment after the
+application overlay. `DTC_OVERLAY_FILE` replaces `app.overlay` and silently
+loses the UART child configuration. Keep
+`CONFIG_UART_USE_RUNTIME_CONFIGURE=y`; without it Zephyr leaves the driver's
+configuration slots unavailable and `uart_configure()` returns `-ENOSYS`.
+
+### UART hardware verification
+
+M7 ran on board `5256657D8A5D7F03` with TX and RX shorted, using firmware build
+`firmware-v0.11.0-109-g6c4d42fd0796` (firmware 0.12.0, schema 0.8.0,
+`hw-rev2`). This was the first execution of the Zephyr UART driver against real
+hardware.
+
+Verified results:
+
+- `uart_bridge` echoed all 27 greeting bytes exactly:
+  `48 65 6c 6c 6f 20 66 72 6f 6d 20 50 69 63 6f 20 64 65 20 47 61 6c 6c 6f 21 0d 0a`.
+- `uart_configure()` and `uart_config_get()` worked through the driver. The 7N1
+  masking probe returned `7f 00 55 2a`; restoring 8N1 returned
+  `ff 00 55 aa`.
+- Invalid configurations remained distinct: baud rate 0 returned `-EINVAL`
+  (`-22`), while unsupported data bits returned `-ENOTSUP` (`-95`).
+- All four word lengths changed the wire result as expected: 8, 7, 6, and 5
+  bits returned `ff 00 55 aa`, `7f 00 55 2a`, `3f 00 15 2a`, and
+  `1f 00 15 0a`, respectively.
+- A frame-length timing fit measured a 6.18 ms slope per bit per character,
+  93% of the physical 6.67 ms prediction. A stale framing register would have
+  produced a zero slope.
+- The firmware's roughly 143-baud divisor floor was measured at about 147 baud,
+  with convergence beginning between requested rates 143 and 100. Earlier
+  documentation had inferred this clamp from embassy-rp rather than measuring
+  it.
+- RX-error latch recovery was provoked by writing 1280 bytes without an
+  intervening read against the firmware's 1024-byte RX ring. All three overflow
+  trials surfaced `Endpoint(Other)` exactly once and then recovered; both
+  no-overflow controls completed without an error. Exactly 1024 bytes arrived
+  in order, with four discontinuities at write boundaries, matching an overrun.
+- A strict open with the wrong serial refused in 511 ms, named the requested
+  selector, and did not fall back to the one attached board.
+
+The loopback rig cannot verify everything:
+
+- Odd versus even and mark versus space parity need an independent UART peer or
+  a logic analyser. One PL011 drives and receives both ends, and 8E1, 8O1, 8M1,
+  and 8S1 are all 11-bit frames. All four looped back cleanly and had
+  statistically indistinguishable medians (511.5, 511.1, 411.5, and 514.3 ms),
+  which is evidence of the limitation rather than proof of parity selection.
+- The `hw-rev1` capability refusal needs a v1.0 board.
+- Unplug, re-enumeration, firmware reset, transport faults, lost
+  acknowledgements, TX-ring saturation, and active-console fault injection were
+  not exercised.
+- Embassy's private `rx_error` register and RX interrupt-enable bits were not
+  observed directly; that requires RTT or a debugger. Their recovery
+  consequences were measured, but the mechanism remains inferred.
+
+Two measurement traps matter when repeating this work. First, `native_sim` time
+was simulated with `CONFIG_NATIVE_SIM_SLOWDOWN_TO_REAL_TIME=y`: elapsed
+milliseconds in a drain advance through its polling `k_sleep()`, so absolute
+values are not wall-clock measurements even though the fitted slope reflects
+physical frame length. Second, separate `gallo` processes cannot measure wire
+timing: process startup costs roughly 200–300 ms, timing is quantized around
+100 ms, and the line drains between the write and read invocations. A control
+even gave the 9600-versus-115200 median difference the wrong sign. Future UART
+timing measurements must perform write and read in one process.
 
 ### The other two samples do not build yet
 
@@ -620,8 +721,11 @@ Zero preserves the load-bearing recovery path. Both firmware branches call
 `AsyncRead::read()`, whose first poll reaches Embassy `try_read()`, consumes
 the latched `rx_error`, and re-enables RX interrupts. There is deliberately no
 `read_ready()` shortcut: it inspects only the software ring and would leave
-the error latched forever. That recovery dependency remains hardware-untested
-and is explicitly on M7's test list.
+the error latched forever. M7 later provoked RX-ring overrun three times; each
+trial surfaced one error and the next read recovered. That verifies the
+driver-visible consequence. Embassy's private `rx_error` register and interrupt
+enable bits were not observed directly, so the internal mechanism remains
+inferred from source.
 
 The mutex remains held during a refill. **The lost-response mutex bound is the
 host library's ordinary call timeout, 5 seconds by default. This bound is
