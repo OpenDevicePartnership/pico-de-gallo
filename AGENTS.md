@@ -258,15 +258,15 @@ The release-mode firmware binary is named `pico-de-gallo-firmware`.
 
 ### 5.5 Test baseline
 
-About **776 unit tests + 10 integration tests + 8 doctests** across the
-host workspace, measured 2026-09-11 on the `issue-152` UART framing
-working tree:
+About **778 unit tests + 10 integration tests + 8 doctests** across the
+host workspace, measured 2026-09-11 on the `issue-152` branch after the
+Zephyr UART hardware-verification milestone:
 
 | Crate                    | Unit passing | Integration passing | `#[ignore]`d |
 |--------------------------|--------------|---------------------|--------------|
 | `pico-de-gallo-internal` | 197          | 10                  | 0            |
 | `pico-de-gallo-ffi`      | 156          | 0                   | 0            |
-| `pico-de-gallo-lib`      | 140          | 0                   | 17           |
+| `pico-de-gallo-lib`      | 142          | 0                   | 17           |
 | `gallo-mcp`              | 133          | 0                   | 7            |
 | `gallo`                  | 84           | 0                   | 0            |
 | `pico-de-gallo-hal`      | 47           | 0                   | 0            |
