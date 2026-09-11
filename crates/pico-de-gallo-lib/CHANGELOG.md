@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `PicoDeGallo::uart_set_config` now takes `data_bits`, `parity`, and
+  `stop_bits` after `baud_rate`; `uart_get_config` reports all four values.
+  The crate re-exports `UartDataBits`, `UartParity`, and `UartStopBits` for
+  selecting the RP2350-supported framing. Closes #152.
+
 ### Fixed
 
 - `i2c_batch` and `spi_batch` now bound their aggregate *outgoing* bytes

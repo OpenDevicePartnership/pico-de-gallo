@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `uart_set_config` gained optional `data_bits`, `parity`, and `stop_bits`
+  arguments. Omitted fields select 8N1, and the tool now returns the applied
+  configuration instead of a bare `"ok"`; `uart_get_config` reports the same
+  framing fields. Closes #152.
+
 ### Added
 
 - `encoding::validate_request_frame_len`, wired into `i2c_batch` and

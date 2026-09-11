@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- Extended `UartSetConfigurationRequest` and `UartConfigurationInfo` with
+  word length, parity, and stop-bit fields, and added the wire enums
+  `UartDataBits`, `UartParity`, and `UartStopBits`. The `uart/set-config` and
+  `uart/get-config` endpoint keys and payloads therefore changed. Closes #152.
+
+  The enum variant indices are postcard wire ABI and follow source order:
+  data bits are `Five = 0`, `Six = 1`, `Seven = 2`, `Eight = 3`; parity is
+  `None = 0`, `Odd = 1`, `Even = 2`, `Mark = 3`, `Space = 4`; and stop bits
+  are `One = 0`, `Two = 1`. `UartStopBits` deliberately does not use Zephyr's
+  numbering (`0_5 = 0`, `1 = 1`, `1_5 = 2`, `2 = 3`): the RP2350 PL011 has
+  only the `STP2` bit, so half stop bits are unreachable.
+
+  This wire change rides the already-pending, unreleased schema 0.8 bump. The
+  crate was already at 0.8.0, `build.rs` already derives schema v0.8.0 from
+  that version, and the attached test board reported v0.8.0, so no version
+  moved for this change.
+
 ### Added
 
 - `MAX_REQUEST_FRAME` (5119), the largest request frame the firmware will
