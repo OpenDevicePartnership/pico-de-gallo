@@ -54,6 +54,17 @@ static int fake_ctx_token;
  */
 static int open_count_latched;
 
+/*
+ * Latched for the same reason as open_count_latched, and cleared by nothing.
+ * A close, if one ever happens, arrives on the device teardown path, which --
+ * exactly like POST_KERNEL device init -- runs outside any ztest setup hook.
+ * Clearing it in pdg_fake_reset() would therefore discard the only evidence
+ * that the close occurred at all, and would make the assertion depend on
+ * whether a reset happened to run in between. The expected value is zero: see
+ * the ownership note on pdg_fake_close_count() in pdg_fake_bottom.h.
+ */
+static int close_count_latched;
+
 /* Per-call I2C recorders. Unlike open_count_latched, these ARE cleared by
  * pdg_fake_reset().
  */
@@ -67,7 +78,9 @@ static int i2c_last_overflowed;
 
 void pdg_fake_reset(void)
 {
-	/* open_count_latched is deliberately not cleared -- see above. */
+	/* open_count_latched is deliberately not cleared -- see above.
+	 * close_count_latched likewise.
+	 */
 	i2c_write_count = 0;
 	i2c_write_read_count = 0;
 	i2c_have_last_write = 0;
@@ -80,6 +93,11 @@ void pdg_fake_reset(void)
 int pdg_fake_open_count(void)
 {
 	return open_count_latched;
+}
+
+int pdg_fake_close_count(void)
+{
+	return close_count_latched;
 }
 
 int pdg_fake_i2c_write_count(void)
@@ -152,6 +170,7 @@ void *pdg_common_bottom_open(const char *serial)
 void pdg_common_bottom_close(void *ctx)
 {
 	(void)ctx;
+	close_count_latched++;
 }
 
 /*
