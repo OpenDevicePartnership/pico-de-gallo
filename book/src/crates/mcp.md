@@ -360,7 +360,26 @@ firmware, or schema mismatch — is `-32603` (internal error), never
 | `uart_get_config` | Show the active UART configuration | read-only |
 | `uart_write` | Write raw bytes | destructive |
 | `uart_flush` | Drain the transmit buffer | destructive |
-| `uart_set_config` | Set baud rate | destructive |
+| `uart_set_config` | Set baud rate, data bits, parity, and stop bits | destructive |
+
+`uart_set_config` requires `baud_rate` and accepts optional string fields
+`data_bits` (`"5"`–`"8"`), `parity` (`"none"`, `"odd"`, `"even"`, `"mark"`,
+or `"space"`), `stop_bits` (`"1"` or `"2"`), and `serial_number`. Omitting a
+framing field selects its 8N1 power-on value and overwrites the previous value,
+because the tool replaces the complete configuration. Repeat the framing fields
+for a baud-only change.
+
+```json
+// uart_set_config
+{"baud_rate":9600,"data_bits":"7","parity":"even","stop_bits":"2"}
+```
+
+Unlike write and flush, the result is not a bare `"ok"`: it returns the applied
+`baud_rate`, `data_bits`, `parity`, and `stop_bits` inside the usual
+`{ "serial_number", "result" }` envelope. These spellings can be passed directly
+to a later `uart_set_config` call. Reconfiguration is not atomic—the divisor is
+applied before framing and neither direction is drained—so quiesce transmit and
+receive traffic during the call.
 
 ### gpio
 
@@ -412,9 +431,9 @@ Oversized non-zero values are clamped to the same ceiling; expiry returns
 the GPIO endpoint's `Timeout` error.
 
 `uart_read`'s `timeout_ms` is **not** covered by that rule: there `0` is
-legal and means a non-blocking poll that returns whatever is already
-buffered after 1 ms. Its non-zero path is clamped to the 30-minute ceiling.
-The asymmetry is deliberate.
+legal and performs a single non-blocking poll, returning whatever is already
+buffered (possibly nothing). Its non-zero path is clamped to the 30-minute
+ceiling. The asymmetry is deliberate.
 
 `uart_read` is also one of the twelve tools that hard-fail on a
 `hw-rev1` board: that revision supports only I<sup>2</sup>C, SPI, GPIO,

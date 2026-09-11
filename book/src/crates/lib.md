@@ -326,11 +326,11 @@ The library exposes one typed async method per firmware capability.
 | `spi_batch` | `cs_pin`, `ops` | Execute atomic multi-step SPI traffic under chip-select (see below) |
 | `spi_set_config` | `spi_frequency`, `spi_phase`, `spi_polarity` | Set SPI timing and mode |
 | `spi_get_config` | — | Read back the active SPI configuration |
-| `uart_read` | `count`, `timeout_ms` | Read up to `count` bytes; `0` is a 1 ms poll, oversized non-zero timeouts clamp at 30 minutes |
+| `uart_read` | `count`, `timeout_ms` | Read up to `count` bytes; `0` performs a single non-blocking poll and returns whatever is already buffered (possibly nothing), while oversized non-zero timeouts clamp at 30 minutes |
 | `uart_write` | `contents` | Queue bytes for UART transmit |
 | `uart_flush` | — | Wait until UART TX has drained |
-| `uart_set_config` | `baud_rate` | Set UART baud rate |
-| `uart_get_config` | — | Read back the active UART configuration |
+| `uart_set_config` | `baud_rate`, `data_bits`, `parity`, `stop_bits` | Replace the complete UART configuration |
+| `uart_get_config` | — | Return `UartConfigurationInfo` with the last requested baud rate, data bits, parity, and stop bits |
 | `gpio_get` | `pin` | Read a GPIO level |
 | `gpio_put` | `pin`, `state` | Drive a GPIO high or low |
 | `gpio_wait_for_high` | `pin` | Wait until a pin reads high, bounded by the 30-minute firmware ceiling |
@@ -372,6 +372,34 @@ The library exposes one typed async method per firmware capability.
 > `spi_batch_request_frame_len` compute. A refusal is
 > `PicoDeGalloError::Endpoint(...::BufferTooLong)`; see
 > [troubleshooting](../appendix/troubleshooting.md#buffertoolong-22).
+
+`uart_set_config` takes `UartDataBits`, `UartParity`, and `UartStopBits` alongside
+the baud rate. It has no partial-update form: read `uart_get_config()` and pass
+the framing fields back when changing only the baud rate. The firmware applies
+the divisor before the framing and drains neither direction, so serialize UART
+access and quiesce both directions across reconfiguration.
+
+```rust,no_run
+use pico_de_gallo_lib::{PicoDeGallo, UartDataBits, UartParity, UartStopBits};
+
+# async fn configure(gallo: &PicoDeGallo) -> Result<(), Box<dyn std::error::Error>> {
+gallo
+    .uart_set_config(
+        115_200,
+        UartDataBits::Eight,
+        UartParity::None,
+        UartStopBits::One,
+    )
+    .await?;
+
+let active = gallo.uart_get_config().await?;
+println!(
+    "{} {:?} {:?} {:?}",
+    active.baud_rate, active.data_bits, active.parity, active.stop_bits,
+);
+# Ok(())
+# }
+```
 
 For the full API surface, field docs, and current signatures, use the crate
 reference on [docs.rs](https://docs.rs/pico-de-gallo-lib).

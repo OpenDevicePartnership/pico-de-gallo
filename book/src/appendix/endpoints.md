@@ -42,8 +42,8 @@ from.
 | `uart/read`               | Read with timeout.                                           |
 | `uart/write`              | Write bytes.                                                 |
 | `uart/flush`              | Drain the TX FIFO.                                           |
-| `uart/set-config`         | Set baud rate.                                               |
-| `uart/get-config`         | Query current UART configuration.                            |
+| `uart/set-config`         | Set baud rate and framing (data bits, parity, stop bits).    |
+| `uart/get-config`         | Query current UART baud rate and framing.                    |
 | `gpio/get`                | Read a pin.                                                  |
 | `gpio/put`                | Write a pin.                                                 |
 | `gpio/wait-high`          | Block until pin is high.                                     |
