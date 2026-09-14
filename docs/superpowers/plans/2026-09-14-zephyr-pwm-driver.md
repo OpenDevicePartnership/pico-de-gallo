@@ -2769,9 +2769,9 @@ MSG
 - **Fixing the book's PWM drift.** `book/src/interfaces/pwm.md` shows C examples using `GalloPwmDutyCycleInfo` and `GalloPwmConfigurationInfo`, which do not exist, and documents `max_duty` as a constant 65535 when it is `top + 1`. Pre-existing, unrelated to this change; worth its own issue.
 - **Hardware verification.** Not possible for PWM in this setup. The fake suite is the evidence.
 
-## OPEN DESIGN QUESTION found during plan self-review
+## RESOLVED during plan self-review: the sibling re-assertion is deleted
 
-**The sibling re-assertion in Task 5 is unreachable.** Resolve this before implementing Task 5; do not write dead code plus a test that pretends to cover it.
+**Decision: do not implement `pdg_pwm_reassert_sibling`. It is unreachable.** Task 4 and Task 5 below still describe it; ignore those parts and follow this section instead. Task 7's CHANGELOG wording is corrected here too.
 
 The argument:
 
@@ -2784,10 +2784,67 @@ The argument:
 
 The error paths do not create an exception: a mismatched period is refused before `apply` is entered, so a partially applied reconfiguration cannot leave the slice on a period the sibling disagrees with.
 
-**Recommended resolution: delete the re-assertion.** Keep the conflict refusal, which is the stronger guarantee and the one the user approved. Drop `pdg_pwm_reassert_sibling` entirely, drop `test_reconfiguration_reasserts_the_sibling_duty`, and record in the CHANGELOG that the firmware's truncating rescale cannot be observed through this driver **because** no reachable call sequence reconfigures a slice whose sibling is in use. That is a stronger and more honest statement than claiming a mitigation for a case that cannot occur.
+**What this means concretely:**
 
-If you instead conclude the branch *is* reachable, you must produce a concrete call sequence that reaches it and encode exactly that sequence as the test. Do not keep the code on the strength of "it might be needed".
+1. In **Task 4**, do not add the `pdg_pwm_reassert_sibling` placeholder, and delete this line from `pdg_pwm_apply`:
 
-Whichever you choose, the CHANGELOG and README wording in Task 7 must match — both currently describe the re-assertion as an active mitigation.
+   ```c
+   	ret = pdg_pwm_reassert_sibling(dev, channel, max_duty, reconfigured);
+   	if (ret < 0) {
+   		goto out;
+   	}
+   ```
+
+   The `reconfigured` local then has no remaining reader, so delete it too — both the declaration and the `reconfigured = true;` assignment. Leaving an unused variable would fail the build on `-Werror=unused-but-set-variable`.
+
+2. In **Task 5**, skip the "Implement the sibling re-assertion" step and do not write `test_reconfiguration_reasserts_the_sibling_duty`. Keep everything else: the conflict refusal, `test_accepts_a_matching_sibling_period`, `test_different_slices_hold_independent_periods`, `test_slice_is_enabled_once`, `test_never_disables_a_slice`, `test_no_recorder_overflowed`.
+
+3. Add this test in its place, which pins the invariant that makes the re-assertion unnecessary. If someone later relaxes the conflict rule, this fails and points at the consequence:
+
+   ```c
+   /*
+    * The invariant that makes a sibling duty re-assertion unnecessary.
+    *
+    * pwm/set-config rescales BOTH channels' compares with truncating integer
+    * division, which would drift a sibling's duty downward. This driver never
+    * has to compensate, because a slice is never reconfigured while a sibling
+    * is in use: the conflicting-period refusal guarantees any surviving
+    * request already carries the slice's current period.
+    *
+    * If the conflict rule is ever relaxed, this test fails -- and the drift
+    * becomes real, so a re-assertion would then be required.
+    */
+   ZTEST(pdg_fake_pwm, test_a_slice_is_never_reconfigured_while_a_sibling_is_in_use)
+   {
+   	struct pwm_counts before;
+
+   	/* Both channels of slice 0 in use at the same period. */
+   	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 4096U, 1024U, 0));
+   	zassert_ok(pwm_set_cycles(PWM_DEV, 1U, 4096U, 2048U, 0));
+
+   	before = snapshot_counts();
+
+   	/* Any further request on either channel must either keep the period,
+    	 * and so not reconfigure, or differ and be refused outright.
+    	 */
+   	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 4096U, 3072U, 0));
+   	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+   		      "the slice was reconfigured while channel 1 was in use");
+
+   	zassert_equal(pwm_set_cycles(PWM_DEV, 0U, 8192U, 1024U, 0), -EINVAL);
+   	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+   		      "a refused request still reconfigured the slice");
+   }
+   ```
+
+4. In **Task 7**, replace the sentence in the CHANGELOG entry that reads *"After any reconfiguration the sibling's duty is re-asserted from the driver's own tracked ratio, because the firmware rescales compares with truncating integer division and drifts them downward"* with:
+
+   > The firmware rescales both compares with truncating integer division on
+   > every reconfiguration, which would drift a sibling's duty downward. This
+   > driver never has to compensate: the conflicting-period refusal means a
+   > slice is never reconfigured while its sibling is in use, so the drift is
+   > unreachable rather than mitigated.
+
+   Make the same correction in the README's PWM section.
 
 ---

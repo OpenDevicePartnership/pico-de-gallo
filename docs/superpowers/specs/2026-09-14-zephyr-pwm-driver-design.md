@@ -153,6 +153,23 @@ so `pwm/disable` is not needed to express "off". Calling it would stop the
 sibling channel mid-operation with no diagnostic. The binding documents that
 the driver never disables a slice.
 
+**No sibling duty re-assertion is needed** (revised 2026-09-14, during plan
+self-review). An earlier revision of this section called for re-asserting the
+sibling's duty after a reconfiguration, to compensate for the firmware's
+truncating rescale. That code would be unreachable and has been dropped.
+
+`slices[s].period_cycles` is assigned only on a successful `set_config`, and
+`channels[c].period_cycles` only after the `set_duty_cycle` that follows it, so
+whenever a sibling is configured the slice's period equals the sibling's. The
+conflict refusal then forces any surviving request to carry that same period,
+which means the reconfiguration branch never runs while a sibling is in use.
+The error paths create no exception, because a mismatched period is refused
+before any device call is made.
+
+So the drift is **unreachable rather than mitigated** — a stronger statement
+than the one it replaces. A test pins the invariant, so relaxing the conflict
+rule fails loudly and signals that a re-assertion has become necessary.
+
 ## 8. Per-call sequence
 
 `pwm_set_cycles(dev, channel, period_cycles, pulse_cycles, flags)`:
@@ -162,11 +179,9 @@ the driver never disables a slice.
    frequency_hz, false)`.
 3. Call `gallo_pwm_get_duty_cycle(channel)` to obtain `max_duty`.
 4. Call `gallo_pwm_set_duty_cycle(channel, compare)`.
-5. If step 2 ran and the sibling channel is configured, re-assert the
-   sibling's compare from its tracked pulse/period ratio. The firmware's
-   rescale truncates, so trusting it drifts the sibling's duty downward on
-   every reconfiguration.
-6. On the slice's first use, call `gallo_pwm_enable(channel)`.
+5. On the slice's first use, call `gallo_pwm_enable(channel)`.
+
+Step 2 is unreachable while the slice's sibling is configured; see §7.
 
 State: per channel, last `period_cycles` and `pulse_cycles`; per slice,
 `configured` and `enabled`. All guarded by a single `k_mutex` initialised
@@ -243,8 +258,9 @@ Assertions:
    `-EINVAL` and issues no `set_config`.
 6. **Never disables.** No test scenario, including a zero pulse, results in a
    `gallo_pwm_disable` call.
-7. **Sibling re-assertion.** After a reconfiguration, the sibling's compare is
-   re-asserted rather than left to the firmware's truncating rescale.
+7. **No reconfiguration while a sibling is in use.** The invariant from §7
+   that makes a sibling re-assertion unnecessary. Relaxing the conflict rule
+   fails this test.
 
 ## 12. Out of scope
 
