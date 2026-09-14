@@ -99,18 +99,31 @@ PDG_TARGETS=(
 #
 # No overlay field: app.overlay is picked up by west, same as uart_bridge.
 "board_uart|pass|zephyr/tests/pdg_board/uart||pdg_mfd.c,pdg_uart.c|gallo_registry,pdg_uart_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_UART_PICO_DE_GALLO"
+# The PWM recording-fake suite. BUILT HERE, NOT RUN HERE, for the same reason
+# and with the same complementarity as uart_fake above: its tests.yaml omits
+# build_only so twister executes it, while this table proves it still links
+# against the production driver under the module's own -DEXTRA_ZEPHYR_MODULES
+# wiring. It carries no per-target CMake variable, so unlike uart_fake there is
+# only one configuration to cover and no scenario is left unbuilt here.
+"pwm_fake|pass|zephyr/tests/pdg_fake/pwm|zephyr/tests/pdg_fake/pwm/fake.overlay|pdg_mfd.c,pdg_pwm.c|gallo_registry,pdg_pwm_bottom,pdg_pwm_fake_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_PWM_PICO_DE_GALLO"
+# The PWM fade sample. BUILD ONLY HERE AND EVERYWHERE: its tests.yaml sets
+# build_only, because booting it initialises the MFD parent and reaches
+# gallo_init_strict(). It has no fake bottom layer, so the row is shaped like
+# uart_bridge's rather than like pwm_fake's, and app.overlay is picked up by
+# west with no overlay field.
+"pwm_fade|pass|zephyr/samples/pwm_fade||pdg_mfd.c,pdg_pwm.c|gallo_registry,pdg_pwm_bottom|CONFIG_MFD_PICO_DE_GALLO,CONFIG_PWM_PICO_DE_GALLO"
 )
 
-# All five driver translation units. Assertion 3 is two-sided over exactly this
+# All six driver translation units. Assertion 3 is two-sided over exactly this
 # set: a target must compile the ones its overlay enables and none of the rest.
-PDG_ALL_DRIVER_TUS="pdg_mfd.c pdg_gpio.c pdg_i2c.c pdg_spi.c pdg_uart.c"
+PDG_ALL_DRIVER_TUS="pdg_mfd.c pdg_gpio.c pdg_i2c.c pdg_pwm.c pdg_spi.c pdg_uart.c"
 
-# The Kconfig symbol of each of those five drivers, in the same order. Assertion
+# The Kconfig symbol of each of those six drivers, in the same order. Assertion
 # 5 is two-sided over exactly this set. The translation-unit check above matches
 # substrings in compile_commands.json and could in principle be fooled; a
 # Kconfig file is an exact key=value store and cannot be, so the same gap is
 # closed a second time by a mechanism that does not depend on string matching.
-PDG_ALL_DRIVER_KCONFIGS="CONFIG_MFD_PICO_DE_GALLO CONFIG_GPIO_PICO_DE_GALLO CONFIG_I2C_PICO_DE_GALLO CONFIG_SPI_PICO_DE_GALLO CONFIG_UART_PICO_DE_GALLO"
+PDG_ALL_DRIVER_KCONFIGS="CONFIG_MFD_PICO_DE_GALLO CONFIG_GPIO_PICO_DE_GALLO CONFIG_I2C_PICO_DE_GALLO CONFIG_PWM_PICO_DE_GALLO CONFIG_SPI_PICO_DE_GALLO CONFIG_UART_PICO_DE_GALLO"
 
 target_field() {
 	printf '%s' "$1" | cut -d'|' -f"$2"
@@ -237,7 +250,7 @@ st_check() {
 self_test() {
 	printf 'ci-build self-test\n'
 
-	st_check "table has 13 targets" "${#PDG_TARGETS[@]}" "13"
+	st_check "table has 15 targets" "${#PDG_TARGETS[@]}" "15"
 	st_check "field 1 is the name" \
 		"$(target_field "${PDG_TARGETS[0]}" 1)" "i2c_bridge"
 	st_check "field 2 is the kind" \
@@ -279,9 +292,9 @@ self_test() {
 		"$(unknown_targets "i2c_bridge,typo")" "typo"
 	st_check "unknown_targets accepts an all-valid list" \
 		"$(unknown_targets "i2c_bridge,m5_jumper")" ""
-	st_check "select_targets with an empty selection means all thirteen" \
+	st_check "select_targets with an empty selection means all fifteen" \
 		"$(select_targets "")" \
-		"i2c_bridge spi_nor_id uart_bridge spi_bridge combined_i2c_spi_bridge m5_reset uart_driver m5_jumper m5_acceptance m5_teardown i2c_burst uart_fake board_uart"
+		"i2c_bridge spi_nor_id uart_bridge spi_bridge combined_i2c_spi_bridge m5_reset uart_driver m5_jumper m5_acceptance m5_teardown i2c_burst uart_fake board_uart pwm_fake pwm_fade"
 	st_check "select_targets picks exactly the named subset, in table order" \
 		"$(select_targets "m5_jumper,i2c_bridge")" "i2c_bridge m5_jumper"
 

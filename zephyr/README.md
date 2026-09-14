@@ -8,9 +8,9 @@ upstreaming tracked in
 [#98](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/98) lands.
 
 `pico-de-gallo/zephyr` is a Zephyr module that lets Zephyr applications drive
-real I2C, SPI, UART and GPIO peripherals from `native_sim`. It provides the
+real I2C, SPI, UART, GPIO and PWM peripherals from `native_sim`. It provides the
 `pico_de_gallo` [shield](https://docs.zephyrproject.org/latest/hardware/porting/shields.html),
-whose drivers forward Zephyr I2C, SPI, UART and GPIO API calls through the
+whose drivers forward Zephyr I2C, SPI, UART, GPIO and PWM API calls through the
 `pico-de-gallo-ffi` C API to a Pico de Gallo board attached to the host over
 USB.
 
@@ -95,11 +95,12 @@ Zephyr is used if you have stale entries in `~/.cmake/packages/Zephyr`.
 touches `zephyr/`, `crates/pico-de-gallo-ffi/`, `crates/pico-de-gallo-internal/`,
 either root Cargo file, or its own `.github/workflows/zephyr.yml` definition.
 It pins Zephyr to the commit recorded above and drives
-`zephyr/scripts/ci-build.sh`, which builds thirteen targets: three viable samples,
+`zephyr/scripts/ci-build.sh`, which builds fifteen targets: three viable samples,
 the two IS31 samples (asserted to fail exactly as they do at baseline), the
 four M5 test applications, the UART driver build target, the I2C gather-write
-regression image, the UART recording-fake image, and the board-attached UART
-configuration application.
+regression image, the UART recording-fake image, the board-attached UART
+configuration application, the PWM recording-fake image, and the PWM fade
+sample.
 
 To reproduce a CI failure locally, with a Zephyr workspace already set up:
 
@@ -113,13 +114,16 @@ zephyr/scripts/ci-build.sh --targets i2c_bridge
 no Zephyr workspace at all.
 
 The `ci-build.sh` job is build-only. Twister also builds every board-attached
-image, but executes the I2C and UART recording-fake scenarios because their
+image, but executes the I2C, UART and PWM recording-fake scenarios because their
 bottom layers replace USB and the C FFI. A green workflow therefore proves that
 the module compiles and links and that those fake-driven top halves pass. It
 does **not** prove that the module works against hardware. That remains
 `tests/pdg_mfd_m5/run-m5.sh` and `tests/pdg_i2c_burst`, run by hand with a board
 and, for the M5 images, the physical jumpers in place. The UART-specific manual
-applications are `samples/uart_bridge` and `tests/pdg_board/uart`.
+applications are `samples/uart_bridge` and `tests/pdg_board/uart`. **PWM has no
+hardware-attached counterpart at all**: it has never been run against a board in
+this project, so `tests/pdg_fake/pwm` is the primary evidence for that driver
+rather than a supplement to a hardware demo.
 
 For the UART driver specifically, M6 adds executed recording-fake evidence for
 top-half control flow and argument transcription. Its compile-time mapping and
@@ -131,9 +135,9 @@ results and the remaining equipment-dependent gaps.
 
 ### Twister metadata
 
-Eleven applications carry a `tests.yaml`: three samples, six board-attached test
-images, and the I2C and UART recording-fake suites. Together they declare twelve
-scenarios. A second CI job runs twister over `zephyr/samples` and
+Thirteen applications carry a `tests.yaml`: four samples, six board-attached test
+images, and the I2C, UART and PWM recording-fake suites. Together they declare
+fourteen scenarios. A second CI job runs twister over `zephyr/samples` and
 `zephyr/tests`.
 
 Three things about that file are easy to get wrong:
@@ -143,14 +147,15 @@ Three things about that file are easy to get wrong:
   `filename:testcase.yaml path:tests/drivers` each return zero results against
   `zephyrproject-rtos/zephyr`, while `tests/drivers` alone holds 268
   `tests.yaml` files. Samples keep a `sample:` key *inside* `tests.yaml`.
-- **Nine scenarios are `build_only: true`.** Twister classifies `native_sim`
+- **Ten scenarios are `build_only: true`.** Twister classifies `native_sim`
   as `type: native` and would otherwise execute board-attached binaries, which
-  reach `gallo_init_strict()` on a runner with no board. The three exceptions
-  are the I2C fake scenario and the UART fake's capability-present and
-  capability-absent scenarios.
+  reach `gallo_init_strict()` on a runner with no board. The four exceptions
+  are the I2C fake scenario, the UART fake's capability-present and
+  capability-absent scenarios, and the PWM fake scenario.
 - **None declares `depends_on`.** That key is matched against the board's
-  `supported:` list, and `native_sim/native/64` does not name `i2c`, `spi` or
-  `uart` — only the 32-bit `native_sim` does. Claiming one would filter the
+  `supported:` list, and `native_sim/native/64` does not name `i2c`, `spi`,
+  `uart` or `pwm` — only the 32-bit `native_sim` names some of them. Claiming
+  one would filter the
   scenario away to nothing on the only platform this module targets, and would
   report it as skipped rather than as an error.
 
@@ -159,10 +164,10 @@ weaker build assertions — it has no equivalent of the two-sided
 translation-unit and Kconfig checks. It earns its place for two other reasons.
 It forces `CONFIG_COMPILER_WARNINGS_AS_ERRORS=y` **and** `--edtlib-Werror`, so
 devicetree
-*binding* warnings become build failures; this module ships four custom
+*binding* warnings become build failures; this module ships six custom
 bindings and a plain `west build` never checks them that way. It also executes
-the three hardware-free recording-fake scenarios. The measured M6 run passed
-all three configurations and all 19 cases:
+the four hardware-free recording-fake scenarios. The measured M6 run passed
+all three UART and I2C configurations and all 19 cases:
 
 ```text
 drivers.pico_de_gallo.i2c.fake                 passed   2/2
@@ -170,6 +175,18 @@ drivers.pico_de_gallo.uart.fake                passed  14/14
 drivers.pico_de_gallo.uart.fake_no_capability  passed   3/3
 3 of 3 configurations passed, 19 of 19 test cases passed
 ```
+
+Adding the PWM fake suite brought that to four executed configurations. The
+measured sweep over `zephyr/samples` and `zephyr/tests` at Zephyr
+`v4.4.0-6123-g26f811ee9d0d`:
+
+```text
+14 test scenarios (14 configurations) selected, 0 configurations filtered
+4 of 14 executed test configurations passed (28.57%), 10 built (not run), 0 failed, 0 errored
+44 of 44 executed test cases passed (100.00%)
+```
+
+The 25 new cases are `drivers.pico_de_gallo.pwm.fake`.
 
 The UART scenarios use one source tree and select capability present or absent
 with the compile-time `PDG_FAKE_UART_CAPABILITY` CMake cache variable. This must
@@ -548,10 +565,10 @@ about, such as an FPGA bitstream.
 ## Using the drivers in your own application
 
 The shield declares a `pdg0` multi-function-device parent node and, as its
-direct children, the `pdg_gpio0`, `pdg_i2c0`, `pdg_uart0` and `pdg_spi0`
-controller nodes. All five are **disabled by default**. Your application enables
-`pdg0` *and* the controllers it needs, then declares its peripherals as ordinary
-child nodes.
+direct children, the `pdg_gpio0`, `pdg_i2c0`, `pdg_pwm0`, `pdg_uart0` and
+`pdg_spi0` controller nodes. All six are **disabled by default**. Your
+application enables `pdg0` *and* the controllers it needs, then declares its
+peripherals as ordinary child nodes.
 
 `pdg0` owns the USB connection to one physical board; the controllers borrow
 it. An enabled controller whose parent is missing, disabled, or of the wrong
@@ -797,6 +814,155 @@ never invents `UART_ERROR_*` bits. The firmware collapses every Embassy UART
 error to one `Other` value, so a receive overrun is silent at every layer. The
 driver's private health diagnostics above are not line-error bits.
 
+### PWM
+
+`app.overlay`:
+
+```dts
+&pdg0 {
+	status = "okay";
+	serial-number = "REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL";
+};
+
+&pdg_pwm0 {
+	status = "okay";
+};
+```
+
+`prj.conf`:
+
+```conf
+CONFIG_PWM=y
+```
+
+Like every other child, the PWM controller must be a direct child of an enabled
+`odp,pico-de-gallo` parent that carries `serial-number`, and each of those is a
+build-time assertion rather than a runtime surprise. PWM drives physical pads,
+so the selector is as load-bearing here as it is for GPIO, UART and SPI.
+
+Four channels, `0` through `3`, are exposed. They are **not** the firmware user
+GPIO indices that the `gallo` CLI and `cs-gpios` use — that is a separate
+namespace — and they are not header pin numbers:
+
+| PWM channel | RP2350 GPIO | RP2350 slice |
+|---|---|---|
+| 0 | GPIO12 | slice 6, channel A |
+| 1 | GPIO13 | slice 6, channel B |
+| 2 | GPIO14 | slice 7, channel A |
+| 3 | GPIO15 | slice 7, channel B |
+
+Every operation is a blocking USB round trip. A single `pwm_set_cycles()` costs
+up to three of them — `pwm/set-config`, `pwm/get-duty-cycle`,
+`pwm/set-duty-cycle` — plus a fourth `pwm/enable` on a slice's first use.
+
+#### Cycles are source-clock ticks
+
+`pwm_get_cycles_per_sec()` reports **150000000**, the PWM *source* clock, for
+every channel and in every configuration. `period_cycles` and `pulse_cycles`
+are therefore source-clock ticks, and `PWM_HZ()`, `PWM_KHZ()` and `PWM_MSEC()`
+work as usual.
+
+It deliberately does not report the counter rate. The counter advances at
+`150e6/divider`, the divider changes with every frequency change and differs
+between the two slices, and it is not on the wire at all — so it could never be
+the stable per-device constant Zephyr's API requires. Reporting the source
+clock makes `period_cycles` independent of it.
+
+The driver converts a period to a frequency with a **ceiling**,
+`ceil(150e6 / period_cycles)`, and scales the pulse into the firmware's raw
+compare domain with round-half-up against the full-scale duty it reads back
+from the device. The full scale is read rather than computed: it is `top + 1`
+for whatever divider the firmware's own search settled on, which the driver
+cannot predict without duplicating that search and then drifting from it
+silently.
+
+#### Period bounds
+
+| Period (source-clock cycles) | Result |
+|---|---|
+| Below 2 | `-EINVAL`; the firmware requires `top >= 1` |
+| 2 through 16711680 | accepted |
+| Above 16711680 (roughly 9 Hz) | `-ENOTSUP` |
+
+The upper bound is a **panic guard, not a capability statement**. A longer
+period derives a frequency the firmware would try to reach with a clock divider
+above 255, which embassy-rp panics on rather than refusing, taking the whole
+device down. This contains
+[#192](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/192) for
+Zephyr consumers only; the CLI, `pico-de-gallo-lib`, the C FFI, Python and MCP
+can all still reach it.
+
+The ceiling on the frequency conversion is what makes 16711680 safe. Flooring
+would lengthen the period and yield 8 Hz there, needing divider 287 — which is
+exactly the panic. Ceiling yields 9 Hz, needing exactly 255. The bound itself is
+`255 * 65536`, conservative by one counter step against the exact `255 * 65537`,
+so that it is obviously safe by inspection.
+
+#### Slice sharing
+
+Channels 0 and 1 share RP2350 slice 6; channels 2 and 3 share slice 7. **A
+slice has one period and one enable.** Requesting a period on a channel whose
+slice sibling is already configured at a different period is refused with
+`-EINVAL`, before any device call, rather than silently changing a period its
+owner never asked for. Plan for one period per slice, or use channels 0 and 2
+if you need two independent periods. Duty cycles are always independent.
+
+`pwm/set-config` rescales **both** channels' compare values with truncating
+integer division, so a reconfiguration would drift a sibling's duty downward.
+This driver never has to compensate for that: the conflicting-period refusal
+means a slice is never reconfigured while its sibling is in use, so the drift is
+**unreachable rather than mitigated**. `tests/pdg_fake/pwm` pins that invariant
+directly, so relaxing the conflict rule fails a test rather than quietly
+introducing the drift.
+
+#### The driver never disables a slice
+
+There is no disable path, and the omission is structural rather than a
+convention: `drivers/pwm/pdg_pwm_bottom.h` declares no disable function, so the
+top half cannot call one by accident. The firmware's disable acts on a whole
+slice, so disabling one channel would stop its sibling mid-operation.
+
+A slice is enabled on first successful use and left enabled. A pulse width of
+zero already produces a constant-low output, which is what "off" means here.
+
+#### Failure behaviour and initialization
+
+A failure *after* the slice has been reconfigured leaves the device in a state
+the driver cannot describe, so it discards everything it believed about that
+slice and both its channels rather than remembering something possibly false.
+That costs nothing: `pwm_set_cycles()` always supplies both period and pulse, so
+the next call on either channel re-establishes the lot. The `enabled` flag is
+kept, because the slice really is enabled and nothing in this driver can undo
+that.
+
+Initialization gates the driver on `GALLO_CAP_PWM` from `device/info`. Every
+shipped firmware advertises PWM on **both** hardware revisions, so this gate
+does not fire today; it exists because the capability bit is the contract. A
+clear bit returns `-ENODEV`, while a failed query returns its own mapped errno,
+so unsupported hardware and an unreachable board stay distinct. As with the
+UART gate, this is not a warm read: `gallo_get_device_info()` re-validates
+unconditionally and costs a fresh `device/info` round trip.
+
+#### The PWM fade sample
+
+`samples/pwm_fade` fades an LED on a PWM channel. Its Twister scenario is
+**build-only**: running it reaches `gallo_init_strict()` and opens a USB device.
+
+```bash
+cd zephyr/samples/pwm_fade
+west build -p always -b native_sim/native/64 -- -DSHIELD=pico_de_gallo
+west build -t run
+```
+
+The committed `app.overlay` carries a placeholder serial number; replace it
+before running, the same way `tests/pdg_board/uart` describes.
+
+**The PWM driver has never been run against hardware.** `tests/pdg_fake/pwm` is
+the primary evidence for it, not a supplement to a hardware demo, and the fake
+models the firmware's own divider search — stopping at 255 rather than the
+firmware's 4095 — so a test cannot pass on a configuration that would take down
+a real board.
+
 ### SPI
 
 `app.overlay`:
@@ -1030,8 +1196,8 @@ than one Pico de Gallo attached, pin each parent to a board with the optional
 ```
 
 Every controller under that parent inherits the selection and shares the one
-USB connection, so I2C, UART and SPI children on the same board work without
-your code managing that. `serial-number` is **not** accepted on a controller node;
+USB connection, so I2C, UART, SPI, GPIO and PWM children on the same board work
+without your code managing that. `serial-number` is **not** accepted on a controller node;
 a leftover one fails devicetree processing with an undeclared-property error
 naming the node and the binding.
 
@@ -1203,6 +1369,29 @@ firmware limitation and private diagnostics. Unsupported async stubs are
 side-effect-free, but on a failed-init device they report `-ENODEV` first; the
 context errors in the table likewise take precedence.
 
+### PWM
+
+| Flag / feature | Result |
+|---|---|
+| Enabled controller whose parent is missing, disabled or not `odp,pico-de-gallo` | **Build fails** with an explanatory assertion |
+| Enabled controller whose parent has no `serial-number` | **Build fails** with an explanatory assertion |
+| Channel index above 3 | `-EINVAL`, from both `pwm_set_cycles()` and `pwm_get_cycles_per_sec()` |
+| `PWM_POLARITY_INVERTED` | `-ENOTSUP`. Not emulated by inverting the duty cycle, which would change the idle level rather than the polarity |
+| `pwm_capture_*` | `-ENOSYS` with `CONFIG_PWM_CAPTURE=y`; the functions do not exist without it. The firmware exposes no capture endpoint, so the API slots are left NULL |
+| Phase-correct mode | unreachable. Zephyr has no corresponding concept, and in that mode the firmware's reported full-scale duty no longer tracks the period |
+| Disabling a channel | not implemented. Disable acts on a whole slice and would stop the sibling channel; a zero pulse gives a constant-low output instead |
+| Independent periods on channels 0+1, or on 2+3 | `-EINVAL`. Each pair shares one RP2350 slice, which has a single period |
+| Period below 2 cycles | `-EINVAL`; the firmware requires `top >= 1` |
+| Period above 16711680 cycles | `-ENOTSUP`. Would need a clock divider above 255, which panics the firmware — see [#192](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/192) |
+| Pulse longer than the period | `-EINVAL`, from Zephyr's own wrapper and independently from the driver's slot |
+| Board that does not advertise `GALLO_CAP_PWM` | `-ENODEV` at init; a failed capability query instead returns its own mapped errno |
+| Firmware reports a full-scale duty of zero | `-EIO`; every duty cycle would otherwise be a division by zero |
+| Any call on a device whose initialization failed | `-ENODEV` |
+
+There is no `set_cycles` fast path that skips the device: even an unchanged
+period still reads the full-scale duty back and re-sends the compare value,
+because the driver caches no device-side duty.
+
 ### SPI
 
 | Limitation | Result |
@@ -1313,7 +1502,7 @@ open, then reinitialize, or power-cycle.
 
 **The application builds but the device is never ready**
 Check that `&pdg0` and every required controller node are `status = "okay"` in
-your overlay. The parent and all four controllers ship disabled, and a controller
+your overlay. The parent and all five controllers ship disabled, and a controller
 whose parent failed to open reports `Pico de Gallo parent ... is not ready`
 rather than a connection error of its own.
 
