@@ -27,6 +27,38 @@ static void pwm_before(void *fixture)
 	pdg_pwm_fake_reset();
 }
 
+/*
+ * TEST ISOLATION.
+ *
+ * pdg_pwm_fake_reset() clears the FAKE. It cannot clear the DRIVER.
+ * struct pdg_pwm_data is a static per-device object created by
+ * DEVICE_DT_INST_DEFINE and lives for the whole ztest binary, so
+ * slices[].configured, slices[].period_cycles, slices[].enabled and every
+ * channels[] entry persist across tests in whatever order twister runs them.
+ *
+ * The counters do start at zero in each test, because the before hook resets
+ * the fake. But what the driver CHOOSES to do depends on state the reset did
+ * not touch -- it skips a reconfiguration whose period is unchanged, and
+ * enables a slice only once. So assert deltas, and where a test needs a
+ * reconfiguration to happen, use a period no other test uses.
+ */
+struct pwm_counts {
+	int set_config;
+	int set_duty;
+	int enable;
+	int disable;
+};
+
+static struct pwm_counts snapshot_counts(void)
+{
+	return (struct pwm_counts){
+		.set_config = pdg_pwm_fake_set_config_count(),
+		.set_duty = pdg_pwm_fake_set_duty_count(),
+		.enable = pdg_pwm_fake_enable_count(),
+		.disable = pdg_pwm_fake_disable_count(),
+	};
+}
+
 ZTEST_SUITE(pdg_fake_pwm, NULL, NULL, pwm_before, NULL, NULL);
 
 /*
@@ -69,4 +101,105 @@ ZTEST(pdg_fake_pwm, test_cycles_per_sec_rejects_an_out_of_range_channel)
 	uint64_t cycles = 0U;
 
 	zassert_equal(pwm_get_cycles_per_sec(PWM_DEV, 4U, &cycles), -EINVAL);
+}
+
+/* A refusal must be local. If any of these reach the device, the driver has
+ * spent a USB round trip to be told what it already knew -- and for the
+ * over-long period, it would have panicked the firmware (#192).
+ *
+ * These are absolute-zero assertions on purpose, and they are the one place
+ * the delta rule above does not apply: the before hook zeroed the counters,
+ * and a refused request must have issued nothing at all.
+ */
+static void assert_nothing_reached_the_device(void)
+{
+	zassert_equal(pdg_pwm_fake_set_config_count(), 0,
+		      "a refused request still issued set_config");
+	zassert_equal(pdg_pwm_fake_set_duty_count(), 0,
+		      "a refused request still issued set_duty_cycle");
+	zassert_equal(pdg_pwm_fake_enable_count(), 0,
+		      "a refused request still issued enable");
+}
+
+ZTEST(pdg_fake_pwm, test_rejects_an_out_of_range_channel)
+{
+	zassert_equal(pwm_set_cycles(PWM_DEV, 4U, 1500U, 750U, 0), -EINVAL);
+	assert_nothing_reached_the_device();
+}
+
+ZTEST(pdg_fake_pwm, test_rejects_inverted_polarity)
+{
+	zassert_equal(pwm_set_cycles(PWM_DEV, 0U, 1500U, 750U,
+				     PWM_POLARITY_INVERTED), -ENOTSUP);
+	assert_nothing_reached_the_device();
+}
+
+ZTEST(pdg_fake_pwm, test_rejects_a_period_below_the_minimum)
+{
+	zassert_equal(pwm_set_cycles(PWM_DEV, 0U, 0U, 0U, 0), -EINVAL);
+	zassert_equal(pwm_set_cycles(PWM_DEV, 0U, 1U, 0U, 0), -EINVAL);
+	assert_nothing_reached_the_device();
+}
+
+/*
+ * The #192 panic guard. EXP_MAX_PERIOD is the largest period whose derived
+ * frequency the firmware can reach with a divider of 255 or less. One cycle
+ * more would floor to a frequency needing divider 287, which panics.
+ */
+ZTEST(pdg_fake_pwm, test_rejects_a_period_above_the_divider_limit)
+{
+	zassert_equal(pwm_set_cycles(PWM_DEV, 0U, EXP_MAX_PERIOD + 1U, 0U, 0),
+		      -ENOTSUP);
+	assert_nothing_reached_the_device();
+}
+
+/*
+ * The boundary itself must be ACCEPTED. A guard that also refused the last
+ * legal period would be untestably conservative.
+ *
+ * EXP_MAX_PERIOD is reserved to this test: it depends on the slice actually
+ * being reconfigured, so no other test may drive channel 0 at this period or
+ * the driver would correctly skip the set_config this asserts.
+ */
+ZTEST(pdg_fake_pwm, test_accepts_the_maximum_period)
+{
+	struct pwm_counts before = snapshot_counts();
+
+	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, EXP_MAX_PERIOD, 0U, 0));
+	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 1,
+		      "the maximum period must reconfigure the slice exactly once");
+}
+
+/* EXP_MIN_PERIOD is likewise reserved to this test; see above. */
+ZTEST(pdg_fake_pwm, test_accepts_the_minimum_period)
+{
+	struct pwm_counts before = snapshot_counts();
+
+	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, EXP_MIN_PERIOD, 1U, 0));
+	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 1,
+		      "the minimum period must reconfigure the slice exactly once");
+}
+
+/*
+ * Zephyr's pwm_set_cycles() wrapper screens pulse > period itself, before the
+ * driver is called (include/zephyr/drivers/pwm.h). A test that went through
+ * the wrapper would therefore pass without our driver checking anything.
+ *
+ * So this asserts both layers. First that the public path refuses it, which
+ * is what a caller sees; then that the driver's own slot refuses it too, by
+ * invoking the API directly and bypassing the wrapper. The second half is
+ * what keeps our defence-in-depth check honest.
+ */
+ZTEST(pdg_fake_pwm, test_rejects_a_pulse_longer_than_the_period)
+{
+	const struct pwm_driver_api *api = DEVICE_API_GET(pwm, PWM_DEV);
+
+	zassert_equal(pwm_set_cycles(PWM_DEV, 0U, 1500U, 1501U, 0), -EINVAL,
+		      "the public wrapper must refuse a pulse longer than its period");
+
+	zassert_equal(api->set_cycles(PWM_DEV, 0U, 1500U, 1501U, 0), -EINVAL,
+		      "the driver's own slot must refuse it too, independently of "
+		      "the wrapper");
+
+	assert_nothing_reached_the_device();
 }

@@ -127,17 +127,92 @@ static int pdg_pwm_get_cycles_per_sec(const struct device *dev, uint32_t channel
 	return 0;
 }
 
-static int pdg_pwm_set_cycles(const struct device *dev, uint32_t channel,
-			      uint32_t period_cycles, uint32_t pulse_cycles,
-			      pwm_flags_t flags)
+/*
+ * Placeholder. The device sequence -- reconfigure, read back the full-scale
+ * duty, scale the pulse, enable the slice -- lands in a following commit.
+ */
+static int pdg_pwm_apply(const struct device *dev, uint32_t channel,
+			 uint32_t period_cycles, uint32_t pulse_cycles)
 {
 	ARG_UNUSED(dev);
 	ARG_UNUSED(channel);
 	ARG_UNUSED(period_cycles);
 	ARG_UNUSED(pulse_cycles);
-	ARG_UNUSED(flags);
 
 	return -ENOSYS;
+}
+
+static int pdg_pwm_set_cycles(const struct device *dev, uint32_t channel,
+			      uint32_t period_cycles, uint32_t pulse_cycles,
+			      pwm_flags_t flags)
+{
+	struct pdg_pwm_data *data = dev->data;
+
+	if (data->ctx == NULL) {
+		return -ENODEV;
+	}
+
+	if (channel >= PDG_PWM_NUM_CHANNELS) {
+		LOG_ERR("%s: channel %u is out of range (0 to %u).", dev->name,
+			channel, PDG_PWM_NUM_CHANNELS - 1U);
+		return -EINVAL;
+	}
+
+	/*
+	 * Not emulated by inverting the duty cycle. That would change the idle
+	 * level rather than the polarity, which is a different signal and a
+	 * worse failure than a clean refusal.
+	 */
+	if ((flags & PWM_POLARITY_INVERTED) != 0U) {
+		LOG_ERR("%s: channel %u requested inverted polarity, which the "
+			"firmware does not support. Returning -ENOTSUP.",
+			dev->name, channel);
+		return -ENOTSUP;
+	}
+
+	if (period_cycles < PDG_PWM_MIN_PERIOD_CYCLES) {
+		LOG_ERR("%s: channel %u requested a period of %u cycles; the "
+			"minimum is %u. Returning -EINVAL.", dev->name, channel,
+			period_cycles, PDG_PWM_MIN_PERIOD_CYCLES);
+		return -EINVAL;
+	}
+
+	/*
+	 * Panic guard, not a capability statement. A longer period derives a
+	 * frequency the firmware would try to reach with a clock divider above
+	 * 255, which embassy-rp refuses with a panic that takes the whole
+	 * device down. See issue #192; this contains the defect for Zephyr
+	 * consumers without fixing it, and every other host surface remains
+	 * able to reach it.
+	 */
+	if ((uint64_t)period_cycles > PDG_PWM_MAX_PERIOD_CYCLES) {
+		LOG_ERR("%s: channel %u requested a period of %u cycles; the "
+			"maximum is %llu (about %u Hz), because a longer period "
+			"needs a clock divider the firmware cannot program. "
+			"Returning -ENOTSUP.", dev->name, channel, period_cycles,
+			(unsigned long long)PDG_PWM_MAX_PERIOD_CYCLES,
+			(unsigned int)(PDG_PWM_CYCLES_PER_SEC /
+				       PDG_PWM_MAX_PERIOD_CYCLES));
+		return -ENOTSUP;
+	}
+
+	/*
+	 * Defence in depth, and deliberately kept despite looking unreachable.
+	 * Zephyr's z_impl_pwm_set_cycles() screens pulse > period before it
+	 * dispatches here (include/zephyr/drivers/pwm.h), so a caller on the
+	 * public path never gets this far. But the API slot is reachable
+	 * directly through DEVICE_API_GET(pwm, dev)->set_cycles(), which
+	 * bypasses that wrapper entirely, and the fake suite invokes it that
+	 * way precisely to keep this check honest. Do not delete it as dead.
+	 */
+	if (pulse_cycles > period_cycles) {
+		LOG_ERR("%s: channel %u requested a pulse of %u cycles inside a "
+			"period of %u. Returning -EINVAL.", dev->name, channel,
+			pulse_cycles, period_cycles);
+		return -EINVAL;
+	}
+
+	return pdg_pwm_apply(dev, channel, period_cycles, pulse_cycles);
 }
 
 static DEVICE_API(pwm, pdg_pwm_api) = {
