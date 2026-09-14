@@ -270,6 +270,44 @@ the dangerous direction, which is why M1 gates on it.
 binary). The two-image firmware A/B this section originally asked for has not
 been performed and belongs to a hardware milestone.
 
+#### Closed: the two-image A/B, measured 2026-09-11
+
+Performed on board `5256657D8A5D7F03` after all seven milestones. The board was
+flashed with firmware built from `main@b6c209153df0`, whose
+`UartSetConfigurationRequest` carries one field, and driven by a host built
+from this branch, whose request carries four.
+
+**Both images report schema 0.8.0**, because the unreleased bump was already on
+`main` — so `validate()` could not distinguish them. This is the blind spot
+described above, reproduced deliberately rather than argued about.
+
+| Endpoint | Shape change | Observed |
+|---|---|---|
+| `ping`, `i2c scan`, `adc info`, `spi get-config`, `i2c get-config` | none | all succeed |
+| `uart read`, `uart write`, `uart flush` | none | all succeed |
+| `uart set-config` | `REQ_KEY` moved | `Comms(Wire(UnknownKey))` |
+| `uart get-config` | `RESP_KEY` moved | `Timeout { waited: 5s }` |
+
+Eight untouched endpoints establish the board is healthy; **only** the two
+whose wire shapes moved fail, each in the manner this section predicts. The
+dangerous outcome — the old handler decoding `baud_rate`, ignoring the three
+trailing framing bytes, and returning `Ok` — did **not** occur. The firmware
+refused the key outright.
+
+The asymmetry is therefore hardware-proven rather than reasoned: `set-config`
+fails **loudly and specifically**, naming the unknown key, while `get-config`
+fails as an **opaque timeout** indistinguishable from a dead board.
+
+One method note. The first negative control chosen was `uart get-config`, which
+was never a valid control: its request is `()` and unchanged, but its response
+type gained fields, so it was a second experiment wearing a control's hat. It
+was caught because it failed where a control must succeed, and replaced with
+five endpoints this branch never touched.
+
+The board was restored to `firmware-v0.11.0-109-g6c4d42fd0796` afterwards and
+re-verified: 7E2 loopback returns the predicted 7-bit-masked `7f 00 55 2a`,
+8N1 returns unmasked `ff 00 55 aa`.
+
 ---
 
 ## 5. Firmware

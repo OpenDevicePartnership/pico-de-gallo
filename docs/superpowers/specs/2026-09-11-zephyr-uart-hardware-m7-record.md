@@ -435,8 +435,10 @@ state, but bypasses Rust, USB, and the opaque real context.
 
 **Verdict: UNVERIFIABLE-ON-THIS-HARDWARE.** Requires native runtime
 instrumentation such as ASan/Valgrind where applicable, a fault-injecting USB
-proxy, and permitted reset/re-enumeration. A second firmware image is also owed
-for the `REQ_KEY` A/B and requires a BOOTSEL press.
+proxy, and permitted reset/re-enumeration.
+
+The two-image `REQ_KEY` A/B is no longer owed. It was performed on
+2026-09-11 with two BOOTSEL presses and is recorded in section 6.
 
 ## 5. Findings — not fixed in M7
 
@@ -526,7 +528,47 @@ Still owed:
   residue;
 - obligation 18: sanitizer/debugger and ownership instrumentation across real
   reset generations;
-- the two-image `REQ_KEY` A/B: a second image and BOOTSEL access.
+- (the two-image `REQ_KEY` A/B is CLOSED - performed 2026-09-11, section 6)
 
 File a separate issue for F1. It affects four supported host surfaces and was
 not fixed under the M7 evidence-only rule.
+
+## 6. The two-image REQ_KEY A/B - CLOSED 2026-09-11
+
+Owed since M1 and closed after M7 with two BOOTSEL presses.
+
+**Setup.** Board `5256657D8A5D7F03` flashed with firmware built from
+`main@b6c209153df0`, whose `UartSetConfigurationRequest` carries one field.
+Host built from `issue-152`, whose request carries four. **Both images report
+schema 0.8.0**, because the unreleased bump was already on `main`, so
+`validate()` cannot distinguish them - the blind spot reproduced deliberately.
+
+**Result.**
+
+| Endpoint | Shape change | Observed |
+|---|---|---|
+| `ping`, `i2c scan`, `adc info`, `spi get-config`, `i2c get-config` | none | all succeed |
+| `uart read`, `uart write`, `uart flush` | none | all succeed |
+| `uart set-config` | `REQ_KEY` moved | `Comms(Wire(UnknownKey))` |
+| `uart get-config` | `RESP_KEY` moved | `Timeout { waited: 5s }` |
+
+**Verdict: VERIFIED.** Eight untouched endpoints establish board health; only
+the two whose wire shapes moved fail. The dangerous outcome - the old handler
+decoding `baud_rate`, ignoring the three trailing framing bytes, and returning
+`Ok` - did not occur.
+
+The design's asymmetry claim is now hardware-proven rather than reasoned:
+`set-config` fails loudly and names the unknown key; `get-config`, whose
+request is `()` so its `REQ_KEY` never moves, fails as an opaque timeout
+indistinguishable from a dead board.
+
+**Method note.** The first negative control chosen was `uart get-config`, which
+was never a valid control: its request is unchanged but its response type
+gained fields, making it a second experiment wearing a control's hat. It was
+caught because it failed where a control must succeed, and replaced with five
+endpoints this branch never touched.
+
+**Restoration.** The board was reflashed to
+`firmware-v0.11.0-109-g6c4d42fd0796` and re-verified: both endpoints work,
+7E2 loopback returns the predicted 7-bit-masked `7f 00 55 2a`, 8N1 returns
+unmasked `ff 00 55 aa`, config restored to 115200 8N1, line drained, ping OK.
