@@ -108,7 +108,7 @@ that doesn't appear in your header means success.
 | `CallTimeout`              |   −76 | Device did not answer an RPC within its bound            |
 
 `CallTimeout` (−76) means the request was transmitted but no reply arrived.
-It is deliberately distinct from `CommsFailed` (−20): the transport is
+It is deliberately distinct from `CommsFailed` (−25): the transport is
 healthy and the device very likely is too, so it is not a link failure. It
 is also distinct from `DeviceInfoTimeout` (−75), which covers only the
 validated metadata fetch and has a far longer bound. The handle stays

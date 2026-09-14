@@ -9,6 +9,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- `uart/set-config` now writes the requested word-length, parity, and stop-bit
+  encodings through `UARTLCR_H` (`WLEN`, `PEN`, `EPS`, `SPS`, and `STP2`) using
+  `embassy_rp::pac`; embassy-rp exposes only baud rate as a runtime
+  reconfiguration API. Hardware verification established `WLEN`, `PEN`, and
+  `STP2`; `EPS` was unobservable, while `SPS` was exercised but not proven with
+  single-board loopback. The change is not atomic: the baud divisor is applied
+  before framing, and neither UART direction is drained. Closes #152.
+
+### Fixed
+
+- Independently of UART framing, a `uart/read` with `timeout_ms == 0` now
+  polls the read future exactly once with `embassy_futures::poll_once` instead
+  of waiting on a 1 ms timeout. It deliberately does not use `read_ready()`:
+  only `try_read` clears a latched RX error and re-enables RX interrupts.
+  Closes #152.
+
+  Measured in-process on board `5256657D8A5D7F03` with firmware
+  `firmware-v0.11.0-109-g6c4d42fd0796`, an idle one-byte read fell from
+  1422 µs to a 324.5 µs median (437.4 µs p95), 4.38× faster. A one-byte write
+  remained unchanged within noise: 335 µs before, 329.4 µs median and
+  447.9 µs p95 after. Read and write medians are now both approximately one
+  USB round trip.
+
+### Changed
+
 - `BufStorage` is now declared in terms of
   `pico_de_gallo_internal::FIRMWARE_PACKET_BUFFER` rather than restating
   `MAX_TRANSFER_SIZE + 1024`. Part of #186.

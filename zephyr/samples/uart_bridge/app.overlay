@@ -1,0 +1,37 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+&pdg0 {
+	status = "okay";
+
+	/*
+	 * REQUIRED: replace this placeholder with this board's serial from
+	 * `gallo list`. The UART controller drives two physical pads, so its
+	 * binding refuses a selector-less parent at build time: transmitting
+	 * onto the wrong board's TX pin is the same class of mistake as
+	 * driving the wrong board's chip select.
+	 *
+	 * Presence is not uniqueness. Two parents carrying the same explicit
+	 * value still alias to one board.
+	 */
+	serial-number = "REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL";
+};
+
+&pdg_uart0 {
+	status = "okay";
+
+	/*
+	 * 115200 8N1, stated in full. `parity` has a binding-level default,
+	 * but current-speed, data-bits and stop-bits do not: the driver falls
+	 * back through DT_INST_PROP_OR / DT_INST_ENUM_IDX_OR. Spelling all
+	 * four out here keeps the configured framing visible in one place
+	 * rather than split between the overlay and the driver's fallbacks.
+	 */
+	current-speed = <115200>;
+	data-bits = <8>;
+	parity = "none";
+	stop-bits = "1";
+};

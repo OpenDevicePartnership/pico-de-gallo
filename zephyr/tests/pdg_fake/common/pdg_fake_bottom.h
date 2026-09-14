@@ -22,11 +22,13 @@ extern "C" {
 
 /* Discard all recorded calls. Call from each test's setup.
  *
- * INVARIANT: this never clears the open counter. The MFD parent opens during
- * POST_KERNEL device init, long before any ztest setup hook runs, so a reset
- * that cleared it would destroy the only evidence that the weak override took
- * effect -- and would make that assertion depend on test order. Only the
- * per-call recorders are cleared.
+ * INVARIANT: this never clears the open counter, nor the close counter. The
+ * MFD parent opens during POST_KERNEL device init, long before any ztest setup
+ * hook runs, and a close -- should one ever occur -- arrives on the teardown
+ * path, equally outside any hook. A reset that cleared either would destroy
+ * the only evidence that the weak override took effect, or that an ownership
+ * violation happened -- and would make those assertions depend on test order.
+ * Only the per-call recorders are cleared.
  */
 void pdg_fake_reset(void);
 
@@ -34,6 +36,19 @@ void pdg_fake_reset(void);
  * by pdg_fake_reset(). See the invariant above.
  */
 int pdg_fake_open_count(void);
+
+/* How many times pdg_common_bottom_close() was called. Latched: never cleared
+ * by pdg_fake_reset(). See the invariant above.
+ *
+ * The expected value is ZERO. The MFD parent holds the sole registry reference
+ * and hands children a borrowed context; zephyr/drivers/mfd/pdg_mfd.h states
+ * that callers must never close or free it. Nothing in this topology should
+ * therefore reach pdg_common_bottom_close() at all. A non-zero count is an
+ * ownership regression in a child driver, not a defect in the test: the
+ * override exists so that such drift is observable rather than silently
+ * swallowed by a no-op.
+ */
+int pdg_fake_close_count(void);
 
 /* How many times pdg_i2c_bottom_write() was called. Counts plain writes only:
  * a write_read is counted by pdg_fake_i2c_write_read_count() instead, so a

@@ -75,6 +75,13 @@ The current public API is:
 The UART row is feature-gated by `embedded-io` major version — see
 [Feature Flags](#feature-flags) below.
 
+The `Uart` handle uses the baud rate and framing currently configured on the
+device; the HAL cannot change either. If a driver requires a particular UART
+configuration, apply it before using `hal.uart()` through `gallo uart
+set-config`, `pico-de-gallo-lib`, the C FFI, or Python. Do not reconfigure the
+same device concurrently with HAL reads or writes: firmware applies the baud
+divisor before the framing and drains neither direction.
+
 And two project-specific surfaces sit alongside the trait-based ones:
 
 | Type / method | Why it exists |

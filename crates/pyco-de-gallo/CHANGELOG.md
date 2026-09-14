@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Exposed `UartDataBits`, `UartParity`, `UartStopBits`, and
+  `UartConfigurationInfo` to Python. `PycoDeGallo.uart_set_config` now accepts
+  framing arguments with 8N1 defaults, and `uart_get_config` returns all four
+  configured values. Closes #152.
+
 ### Changed
 
 - Documented the two aggregate size limits on `i2c_batch` and `spi_batch`:

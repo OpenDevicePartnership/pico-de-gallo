@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- `gallo uart set-config` now accepts long-only `--data-bits`, `--parity`,
+  and `--stop-bits` options and echoes the accepted baud rate and framing.
+  Omitting them applies 8N1. No short forms are provided, avoiding ambiguity
+  with the top-level `-s, --serial-number`. Closes #152.
+
 ### Fixed
 
 - The read-count arguments of `i2c read`, `i2c write-read`, `spi read`, and

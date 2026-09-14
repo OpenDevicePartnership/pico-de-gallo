@@ -119,6 +119,9 @@ already accept and return as `uint8_t`:
 | `GalloGpioDirection`  | `_Input` 0, `_Output` 1                                                   | `gallo_gpio_set_config`                            |
 | `GalloGpioPull`       | `_None` 0, `_Up` 1, `_Down` 2                                             | `gallo_gpio_set_config`                            |
 | `GalloGpioEdge`       | `_Rising` 0, `_Falling` 1, `_Any` 2                                       | `gallo_gpio_subscribe`                             |
+| `GalloUartDataBits`   | `_Five` 0, `_Six` 1, `_Seven` 2, `_Eight` 3                               | `gallo_uart_set_config`, `gallo_uart_get_config`   |
+| `GalloUartParity`     | `_None` 0, `_Odd` 1, `_Even` 2, `_Mark` 3, `_Space` 4                     | `gallo_uart_set_config`, `gallo_uart_get_config`   |
+| `GalloUartStopBits`   | `_One` 0, `_Two` 1                                                        | `gallo_uart_set_config`, `gallo_uart_get_config`   |
 | `GalloI2cBatchOpTag`  | `_Read` 0, `_Write` 1                                                     | `GalloI2cBatchOp::tag`                             |
 | `GalloSpiBatchOpTag`  | `_Read` 0, `_Write` 1, `_Transfer` 2, `_DelayNs` 3                        | `GalloSpiBatchOp::tag`                             |
 
@@ -371,15 +374,32 @@ Status gallo_uart_read(const PicoDeGallo *gallo,
                        uint8_t *buf, uint16_t count,
                        uint32_t timeout_ms, uint16_t *out_len);
 Status gallo_uart_write(const PicoDeGallo *gallo,
-                        const uint8_t *buf, uint16_t len);
+                         const uint8_t *buf, uint16_t len);
 Status gallo_uart_flush(const PicoDeGallo *gallo);
-Status gallo_uart_set_config(const PicoDeGallo *gallo, uint32_t baud_rate);
-Status gallo_uart_get_config(const PicoDeGallo *gallo, uint32_t *out_baud_rate);
+Status gallo_uart_set_config(const PicoDeGallo *gallo,
+                             uint32_t baud_rate,
+                             uint8_t data_bits,
+                             uint8_t parity,
+                             uint8_t stop_bits);
+Status gallo_uart_get_config(const PicoDeGallo *gallo,
+                             uint32_t *out_baud_rate,
+                             uint8_t *out_data_bits,
+                             uint8_t *out_parity,
+                             uint8_t *out_stop_bits);
 ```
 
-For `gallo_uart_read`, `timeout_ms == 0` is a deliberate exception: it selects
-a 1 ms non-blocking poll. Non-zero values above the firmware's 30-minute
-ceiling are clamped to it; expiry returns success with `*out_len == 0`.
+For `gallo_uart_read`, `timeout_ms == 0` is a deliberate exception: it performs
+a single non-blocking poll and returns whatever is already buffered (possibly
+nothing). Non-zero values above the firmware's 30-minute ceiling are clamped to
+it; expiry returns success with `*out_len == 0`.
+
+The three framing arguments and outputs use `GalloUartDataBits`,
+`GalloUartParity`, and `GalloUartStopBits`; values outside those enums return
+`InvalidArgument`. The C API has no defaults: `gallo_uart_set_config` replaces
+the complete configuration, so a baud-only change must first read and then
+repeat the active framing. The firmware applies the divisor before the framing
+and drains neither direction, making the transition non-atomic; quiesce UART
+traffic across the call.
 
 ### PWM
 

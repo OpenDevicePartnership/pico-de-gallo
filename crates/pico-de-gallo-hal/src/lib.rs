@@ -1879,13 +1879,19 @@ impl embedded_hal_async::delay::DelayNs for Delay {
 /// UART handle implementing enabled `embedded-io` traits (0.6 by default).
 ///
 /// Obtained from [`Hal::uart`]. Supports blocking and async read/write.
-/// **Baud rate is fixed at the firmware default** and cannot be changed
-/// through this HAL — to change baud, depend on `pico-de-gallo-lib`
-/// directly and call `PicoDeGallo::uart_set_config`.
+/// **UART configuration cannot be changed through this HAL.** The handle uses
+/// whatever baud rate and framing the device is currently configured for. To
+/// reconfigure it, depend on `pico-de-gallo-lib` directly and call
+/// `PicoDeGallo::uart_set_config`.
+///
+/// Reconfiguration through another handle must not race reads or writes made
+/// through this one: the device applies the baud divisor before the framing
+/// and drains neither direction, so callers must quiesce both directions
+/// across that call.
 ///
 /// **Read timeout**: UART reads use a configurable timeout (in
 /// milliseconds) to avoid blocking the USB bridge indefinitely. The
-/// default timeout is 1000 ms. Zero selects a 1 ms non-blocking poll;
+/// default timeout is 1000 ms. Zero selects a single non-blocking poll;
 /// non-zero values above the firmware's 30-minute ceiling are clamped to it.
 /// Adjust with [`Uart::set_timeout_ms`].
 // Fields are unused without either feature.
@@ -1903,7 +1909,7 @@ impl Uart {
     /// Set the read timeout in milliseconds.
     ///
     /// This controls how long [`embedded_io::Read::read`] waits for
-    /// data before returning an empty result. A value of 0 selects a 1 ms
+    /// data before returning an empty result. A value of 0 selects a single
     /// non-blocking poll; non-zero values above the firmware's 30-minute
     /// ceiling are clamped to it.
     pub fn set_timeout_ms(&mut self, timeout_ms: u32) {

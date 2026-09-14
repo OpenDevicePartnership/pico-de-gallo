@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `PicoDeGallo::uart_set_config` now takes `data_bits`, `parity`, and
+  `stop_bits` after `baud_rate`; `uart_get_config` reports all four values.
+  The crate re-exports `UartDataBits`, `UartParity`, and `UartStopBits` for
+  selecting the RP2350-supported framing. Closes #152.
+
 ### Fixed
+
+- A zero-timeout `uart_read` now uses the ordinary call timeout (5 seconds by
+  default) instead of the 30-minute maximum handler timeout. Zero means a
+  single non-blocking firmware poll for UART, unlike `gpio/wait-*`, where it
+  means no caller deadline. The private `uart_read_bound()` helper now keeps
+  those meanings separate; `uart_read_bound_zero_timeout_is_the_call_bound`
+  and `uart_read_bound_nonzero_timeout_still_tracks_the_firmware` pin the zero
+  and non-zero cases. Closes #152.
 
 - `i2c_batch` and `spi_batch` now bound their aggregate *outgoing* bytes
   against `MAX_REQUEST_FRAME`, locally and before transmission, reporting

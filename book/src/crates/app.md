@@ -228,8 +228,28 @@ See the [GPIO chapter](../interfaces/gpio.md).
 | `read` | Read bytes with a timeout |
 | `write` | Write raw bytes |
 | `flush` | Wait for the transmit buffer to drain |
-| `set-config` | Set baud rate |
+| `set-config` | Set baud rate, data bits, parity, and stop bits |
 | `get-config` | Show the active UART configuration |
+
+```console
+Usage: gallo uart set-config [OPTIONS] --baud-rate <BAUD_RATE>
+
+Options:
+      --baud-rate <BAUD_RATE>   Baud rate in bits per second (e.g. 9600, 115200)
+      --data-bits <DATA_BITS>   Data bits per character [default: 8]
+                                [possible values: 5, 6, 7, 8]
+      --parity <PARITY>         Parity mode [default: none]
+                                [possible values: none, odd, even, mark, space]
+      --stop-bits <STOP_BITS>   Stop bits [default: 1]
+                                [possible values: 1, 2]
+  -h, --help                    Print help
+```
+
+The framing options are long-only. `set-config` replaces the complete
+configuration, so omitting them selects 8N1 and overwrites the active framing;
+repeat all three when changing only the baud rate. Baud and framing are applied
+together but not atomically: the divisor changes first and neither direction is
+drained, so quiesce transmit and receive traffic while reconfiguring.
 
 See the [UART chapter](../interfaces/uart.md).
 
@@ -273,7 +293,8 @@ See the [1-Wire chapter](../interfaces/onewire.md).
 $ gallo ping
 $ gallo i2c get-config
 $ gallo spi get-config
-$ gallo uart set-config --baud-rate 115200
+$ gallo uart set-config --baud-rate 115200 --data-bits 8 \
+    --parity none --stop-bits 1
 $ gallo gpio monitor --pin 0 --edge rising
 $ gallo adc read --channel 0
 $ gallo onewire search

@@ -4,4 +4,5 @@
 rsource "mfd/Kconfig"
 rsource "gpio/Kconfig"
 rsource "i2c/Kconfig"
+rsource "serial/Kconfig"
 rsource "spi/Kconfig"

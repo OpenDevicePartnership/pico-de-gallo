@@ -1,0 +1,49 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# NOT build_only, unlike every other tests.yaml in this module except the I2C
+# fake. This suite is meant to run: the bottom layer is replaced by recording
+# fakes, so nothing reaches gallo_init_strict() and no board is needed.
+#
+# No depends_on: uart. native_sim/native/64 does not declare uart in its
+# supported: list, so claiming it would filter both scenarios to nothing,
+# silently -- the same trap the I2C fake documents for i2c.
+#
+# timeout: 10 on both scenarios, explicitly, rather than accepting Twister's
+# 60-second default. Every driver callback takes the controller mutex with
+# K_FOREVER, so a defective unlock path does not spin and burn iterations that
+# a test-side loop cap could catch -- it BLOCKS, forever, inside a callback
+# that never returns. No assertion runs after that point and no bounded loop
+# helps. Twister's process termination is the only containment, so it is set to
+# a value that is still ample for a synchronous in-process fake.
+common:
+  tags:
+    - drivers
+    - uart
+    - pico_de_gallo
+tests:
+  # Healthy runtime suite: the fake reports the UART capability, every child
+  # initializes, and the buffering/TX/config/stub/latch tests run.
+  drivers.pico_de_gallo.uart.fake:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    extra_dtc_overlay_files:
+      - fake.overlay
+    timeout: 10
+
+  # Capability-refusal suite. PDG_FAKE_UART_CAPABILITY is a CMake cache
+  # variable rather than a Kconfig symbol or a runtime setter, because
+  # pdg_uart_init() reads the capability at POST_KERNEL, before any ztest hook
+  # could run. Same source tree, same overlay; only the policy bit differs.
+  drivers.pico_de_gallo.uart.fake_no_capability:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    extra_dtc_overlay_files:
+      - fake.overlay
+    extra_args:
+      - PDG_FAKE_UART_CAPABILITY=0
+    timeout: 10

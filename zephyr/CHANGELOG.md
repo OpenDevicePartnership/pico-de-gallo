@@ -52,6 +52,197 @@ The format is based on
 
 ### Added
 
+- Added `samples/uart_bridge`, a bounded, polling-only example for
+  `uart_poll_out()` and `uart_poll_in()`. Its Twister scenario is build-only:
+  running it reaches `gallo_init_strict()` and requires a USB-attached board and
+  UART peer.
+
+- Added the executed `tests/pdg_fake/uart` recording-fake suite with two
+  scenarios: `drivers.pico_de_gallo.uart.fake` (14 cases with UART capability)
+  and `drivers.pico_de_gallo.uart.fake_no_capability` (3 cases without it),
+  selected by the compile-time `PDG_FAKE_UART_CAPABILITY` cache variable. A
+  measured Twister run on `native_sim/native/64`, together with the existing
+  two-case I2C fake, passed 3/3 configurations and 19/19 test cases.
+
+  Five dedicated UART children use distinct 115200, 57600, 38400, 19200 and
+  9600 baud rates so initialization calls can be attributed despite their
+  shared parent context. Dedicated instances isolate permanent transport
+  latches; `CONFIG_ZTEST_SHUFFLE` remains off. The shared parent fake now also
+  records a latched close count, which the suite requires to remain zero because
+  children borrow and must never close the parent connection.
+
+  Executed coverage includes ISR-context refusal results and bottom-call
+  suppression; exact empty-ring `uart_poll_in() == -1`; one refill serving
+  eight polls with one bottom read; one write per byte; accepted and rejected
+  configuration transcription including mark/space parity and both stop-bit
+  counts; cache updates only after acknowledged success; async/wide
+  `-ENOTSUP` stubs; RX/TX transport latches that suppress every subsequent call
+  in the bounded tested sequence, including staged-ring discard;
+  10 ms non-transport backoff with a post-deadline recovery attempt; and the
+  capability gate, whose capability/configuration ordering is asserted in
+  aggregate only.
+
+  This is top-half control-flow and argument-recording evidence only. The fake
+  bypasses USB, firmware, postcard framing and real FFI status mapping. It does
+  not observe the private diagnostics, prove ISR-guard-before-mutex ordering,
+  prove explicit backoff clearing, reach pre-kernel guards, contend the mutex,
+  exercise console reentrancy, or establish physical timing, framing,
+  backpressure, firmware-ring, baud-clamp or lost-ack behaviour. M7 later
+  measured a subset of those properties; the board-attached entry below records
+  exactly which ones and which gaps remain.
+
+- Added `tests/pdg_board/uart`, a plain, board-attached `main()` application for
+  `uart_configure()` / `uart_config_get()`, loopback masking, frame-length
+  timing, invalid configuration mapping, and baseline restoration. Its Twister
+  scenario is `board.pico_de_gallo.uart.loopback` with `build_only: true`, and
+  `zephyr/scripts/ci-build.sh` registers it as the thirteenth target,
+  `board_uart`. It requires TX (GPIO 0) physically shorted to RX (GPIO 1).
+
+  The committed `app.overlay` retains a placeholder serial. Operators append a
+  scratch overlay outside the repository with
+  `-DEXTRA_DTC_OVERLAY_FILE=/path/to/serial.overlay`; using
+  `DTC_OVERLAY_FILE` would replace `app.overlay` and lose its UART child.
+  `CONFIG_UART_USE_RUNTIME_CONFIGURE=y` is load-bearing because otherwise
+  `uart_configure()` returns `-ENOSYS`.
+
+- M7 hardware verification ran on board `5256657D8A5D7F03`, firmware
+  `firmware-v0.11.0-109-g6c4d42fd0796` (firmware 0.12.0, schema 0.8.0,
+  `hw-rev2`), with TX and RX shorted. This was the first execution of the driver
+  against real hardware.
+
+  The `uart_bridge` sample echoed all 27 greeting bytes exactly. Runtime
+  configure/get worked; stable 7N1 returned `7f 00 55 2a` and restored 8N1
+  returned `ff 00 55 aa`. All four widths produced the expected masks: 8, 7,
+  6, and 5 bits returned `ff 00 55 aa`, `7f 00 55 2a`, `3f 00 15 2a`, and
+  `1f 00 15 0a`. Invalid baud 0 and unsupported data bits remained distinct at
+  `-EINVAL` (-22) and `-ENOTSUP` (-95).
+
+  Frame-length timing fitted 6.18 ms per bit per character against a physical
+  prediction of 6.67 ms (93%); a stale framing register would have produced a
+  zero slope. The roughly 143-baud divisor floor, previously inferred from
+  embassy-rp, measured about 147 baud, with convergence beginning between 143
+  and 100.
+
+  RX-ring overflow closed the driver's highest-risk unverified premise. Sending
+  1280 bytes without an intervening read against the 1024-byte firmware ring
+  produced one `Endpoint(Other)` and then recovery in all 3 trials; both
+  no-overflow controls had no error. Exactly 1024 bytes arrived in order with
+  four write-boundary discontinuities. A wrong-serial strict open also refused
+  in 511 ms, named the selector, and did not fall back to the attached board.
+
+  Odd/even and mark/space parity remain unverified: one PL011 drives both ends,
+  and all four 11-bit configurations loop back cleanly. Their medians (511.5,
+  511.1, 411.5, and 514.3 ms) were statistically indistinguishable. An
+  independent UART peer or logic analyser is required. A v1.0 board is required
+  for the `hw-rev1` capability refusal. Unplug/re-enumeration/reset,
+  transport-fault and lost-ack injection, TX saturation, active-console faults,
+  and direct observation of embassy's `rx_error` and RX interrupt-enable bits
+  also remain untested; the last item requires RTT or a debugger.
+
+  Two method limits are now recorded. `native_sim` time is simulated under
+  `CONFIG_NATIVE_SIM_SLOWDOWN_TO_REAL_TIME=y`, so drain milliseconds advance
+  through polling sleeps rather than directly measuring wall time, although the
+  slope remains physical. Separate `gallo` write/read processes are unusable
+  for timing because startup costs 200–300 ms, measurements quantize near
+  100 ms, and the line drains between processes; a control produced the
+  9600-versus-115200 difference with the wrong sign. Future timing work must
+  keep write and read in one process.
+
+- Added the polling-only `odp,pico-de-gallo-uart` controller as a direct child
+  of the `odp,pico-de-gallo` MFD parent, with its devicetree binding, Kconfig,
+  disabled shield node and build wiring. The child borrows the parent-owned
+  connection. Because UART drives two physical pads, every enabled instance
+  requires `serial-number` on its parent, as GPIO and SPI do. Part of #152.
+
+  The implemented API is `uart_poll_in()`, `uart_poll_out()` and
+  `uart_err_check()`, plus `uart_configure()` and `uart_config_get()` under
+  `CONFIG_UART_USE_RUNTIME_CONFIGURE`. The asynchronous and interrupt-driven
+  APIs are unsupported. Async slots that Zephyr dispatches without checking
+  for `NULL` carry side-effect-free `-ENOTSUP` stubs solely to prevent a crash
+  when another driver enables the global async API.
+
+  This controller is thread-context-only: no callback may be used from an ISR
+  or before the kernel is up. It cannot serve as an early console because it
+  initializes at `POST_KERNEL`, while the `CONFIG_EARLY_CONSOLE` hook installs
+  at `PRE_KERNEL_1`; choosing this instance as that console is rejected at
+  build time.
+
+  Receive uses a 1014-byte staging ring. An empty ring causes one refill with
+  `timeout_ms = 0`, selecting the firmware's single-poll branch; a refill can
+  then serve many polling calls. On board `5256657D8A5D7F03`, firmware
+  `firmware-v0.11.0-109-g6c4d42fd0796`, an empty refill measured about 359 us,
+  versus about 1489 us with `timeout_ms = 1` and about 1422 us before the
+  firmware fast path. The superseded 1 ms design therefore cost 4.15x as much
+  per idle poll and retained -6% of the optimization. Transmit is deliberately
+  unbuffered at one round trip per byte because the firmware already owns an
+  interrupt-drained TX ring and the polling API provides no flush hook for a
+  second ring.
+
+  `uart_poll_out()` returns `void`, so an unsent or indeterminately delivered
+  byte is counted in a private dropped-byte counter and never logged. Logging
+  through the same UART would recurse once per character. No failed write is
+  retried automatically because its byte may already have been queued before
+  the acknowledgement was lost.
+
+  A confirmed `-ECOMM` or `-ETIMEDOUT` permanently latches transport failure,
+  discards staged receive bytes and makes later polling calls fail fast without
+  another RPC; there is no reconnect path during the device lifetime. A
+  non-transport refill error is not permanently latched, because the next read
+  drives firmware receive-error recovery, but it receives a 10 ms backoff --
+  larger than the approximately 359 us refill round trip -- to prevent an
+  unbounded tight loop of RPCs. Both firmware branches call
+  `AsyncRead::read()`, whose first poll reaches Embassy `try_read()`, consumes
+  the latched `rx_error` and re-enables RX interrupts. There is deliberately no
+  `read_ready()` shortcut because it inspects only the software ring and would
+  leave the error latched forever.
+
+  Initialization gates the controller on `GALLO_CAP_UART`, so `hw-rev1` fails
+  with `-ENODEV` instead of silently swallowing transmitted bytes. This is not
+  a cached lookup: it costs a second `device/info` round trip after the parent
+  has already validated the connection.
+
+  Supported configuration is 5--8 data bits, none/odd/even/mark/space parity,
+  1 or 2 stop bits and no flow control; other framing and flow-control values
+  return `-ENOTSUP`. `uart_config_get()` reports the last successfully
+  **requested** configuration, not the achieved one: firmware clamps the baud
+  divisor to a floor of roughly 143 baud. Reconfiguration is not atomic, and
+  clearing the local receive staging cannot identify bytes already decoded in
+  the firmware under the old framing, so callers must quiesce and drain both
+  directions first.
+
+  `uart_err_check()` returns 0 for a healthy initialized thread-context call
+  and never invents `UART_ERROR_*` bits. Firmware collapses all UART line
+  errors into one variant, so receive overrun is silent at every layer; exact
+  driver health remains in private counters rather than the UART error mask.
+
+  The configuration ABI has two compile-time gates. `_Static_assert`s tie the
+  neutral 4 data-bit, 5 parity and 2 stop-bit selectors to the FFI enums, while
+  `BUILD_ASSERT`s pin the Zephyr-to-neutral mapping used at runtime. Reordering
+  a mirrored wire enum therefore fails the build instead of silently selecting
+  different framing.
+
+  `zephyr/scripts/ci-build.sh` now has a tenth target, `uart_driver`, which
+  compiles and links the MFD parent and UART top and bottom halves. Its
+  two-sided translation-unit and Kconfig universes now cover all five drivers,
+  so the other nine targets also prove that UART remains absent when disabled.
+
+  The worst-case mutex hold for a lost refill reply is the host library's
+  ordinary call timeout, 5 seconds by default. The previous 30-minute hazard
+  was real: `bounded_for(0)` interpreted zero with the GPIO meaning of "no
+  caller deadline". The host library now special-cases UART in
+  `uart_read_bound()`, pinned by
+  `uart_read_bound_zero_timeout_is_the_call_bound` and
+  `uart_read_bound_nonzero_timeout_still_tracks_the_firmware`. The 5-second
+  mutex bound and the capability probe's 300 s ceiling are **derived from
+  constants in `crates/`, not measured**. No M5, M6 or M7 test can drive the
+  refill bound because the M6 fake bypasses the transport and unplug produces
+  a fast `-ECOMM`.
+
+  **M5 evidence was compile-and-link only: no runtime test and no hardware test
+  was performed.** M6 later added the recording-fake coverage above, and M7 has
+  now completed the scoped hardware campaign recorded above, including RX-error
+  latch recovery. The listed equipment-dependent gaps remain.
+
 - `pdg_common_status_to_errno()` maps the new `CallTimeout` status to
   `-ETIMEDOUT`. Refs #178.
 
@@ -269,8 +460,8 @@ The format is based on
 
 ### Added
 
-- **Twister metadata for the seven buildable applications**, and a `twister` job
-  in `.github/workflows/zephyr.yml` that runs them.
+- **Twister metadata, initially for seven buildable applications**, and a
+  `twister` job in `.github/workflows/zephyr.yml` that processes them.
   ([#109](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/109))
 
   The file is `tests.yaml`, not `sample.yaml` or `testcase.yaml`. Upstream has
@@ -279,13 +470,15 @@ The format is based on
   return zero results, while `tests/drivers` alone holds 268 `tests.yaml`.
   Samples keep their `sample:` key inside `tests.yaml`.
 
-  Every scenario is `build_only: true`. Twister classifies `native_sim` as
-  `type: native` and would otherwise execute the binary, which reaches
-  `gallo_init_strict()` and needs an attached board. None declares
-  `depends_on`, because that key matches the board's `supported:` list and
-  `native_sim/native/64` names neither `i2c` nor `spi` — only the 32-bit
-  `native_sim` does — so claiming it would silently filter the scenario to
-  nothing on the sole platform this module targets.
+  At introduction, every scenario was `build_only: true`. M6 expanded the
+  inventory to ten files and eleven scenarios. The board-attached UART
+  application later brought it to eleven files and twelve scenarios: nine are
+  build-only, while the I2C fake and two UART fake scenarios execute without
+  hardware. None
+  declares `depends_on`, because that key matches the board's `supported:` list
+  and `native_sim/native/64` names neither `i2c`, `spi` nor `uart` — only the
+  32-bit `native_sim` does — so claiming one would silently filter the scenario
+  to nothing on the sole platform this module targets.
 
   This is mostly redundant with `zephyr/scripts/ci-build.sh`, and weaker: there
   is no twister equivalent of that script's two-sided translation-unit and
@@ -358,7 +551,8 @@ The format is based on
   Zephyr revision on `native_sim/native/64`, driven by
   `zephyr/scripts/ci-build.sh`. Covers the two viable samples, baseline-failure
   assertions for the two IS31 samples, and the four M5 test applications.
-  Build-only: no produced binary is executed, so this adds no runtime coverage.
+  At introduction this was build-only and added no runtime coverage; M6 later
+  added the executed recording-fake scenarios described above.
   ([#130](https://github.com/OpenDevicePartnership/pico-de-gallo/issues/130))
 
 - Added the `odp,pico-de-gallo-gpio` devicetree compatible and its Zephyr GPIO
@@ -568,11 +762,11 @@ The format is based on
 
 ### Verification
 
-- **#137 is built-only, not behaviourally verified.** No Zephyr environment on
+- **#137 was built-only, not behaviourally verified.** No Zephyr environment on
   the authoring machine, no host-side unit-test harness in the module, and no
-  board. `.github/workflows/zephyr.yml` gates the PR (path-filtered,
-  `zephyr/**` touched) but is **build-only** — it never executes a produced
-  binary — and it builds only the default configuration, so the
+  board. At that time `.github/workflows/zephyr.yml` gated the PR
+  (path-filtered, `zephyr/**` touched) but executed no produced binary, and it
+  built only the default configuration, so the
   `CONFIG_I2C_PICO_DE_GALLO_PROBE_WITH_READ=y` arm compiles by construction
   (`IS_ENABLED`, not `#ifdef`) and is never exercised.
 

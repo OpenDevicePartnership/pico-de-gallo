@@ -227,6 +227,40 @@ The RP2350 pin map matches the hardware docs in
 - ADC reads are single-shot samples on GPIO 26-29 in firmware, with board
   routing exposing ADC0-2 on current hardware.
 
+### UART reads, framing, and supervision
+
+`uart/read` treats `timeout_ms == 0` as a true single poll. The handler uses
+`embassy_futures::poll_once` on `AsyncRead::read()` and returns an empty result
+when that one poll is pending; it does not wait through a nominal one-millisecond
+timer. This matters to polling clients such as Zephyr's `uart_poll_in()`, which
+otherwise pay a timeout on every idle check. It also deliberately reaches
+Embassy's read path rather than consulting only `ReadReady`: polling the read is
+what consumes a latched receive error and re-enables RX interrupts.
+
+Runtime framing is applied directly to UART0's `UARTLCR_H` register because
+embassy-rp exposes no runtime framing setter. `apply_framing()` maps word length
+to `WLEN`, enables parity with `PEN`, selects even or space parity with `EPS`,
+selects mark/space stick parity with `SPS`, and selects two stop bits with
+`STP2`. The function follows embassy-rp's disable, delay, register-write, and
+restore sequence.
+
+Baud and framing are not applied atomically. `uart/set-config` calls
+`set_baudrate()` first, and that function restores an enabled `UARTCR` before
+`apply_framing()` runs. The pins therefore have a brief window with the new
+divisor and the old framing. The handler drains neither direction; callers must
+quiesce transmit and receive traffic before reconfiguration.
+
+`uart/get-config` returns `Context::uart_config`, a software shadow updated
+after the two configuration steps. It is not a register read-back and therefore
+is never evidence of what the hardware is actually doing. In particular, it
+reports the requested baud rate rather than the line rate achieved after divisor
+rounding.
+
+Both `uart/write` and `uart/flush` declare the fixed 60-second
+`UART_TX_BUDGET`. The ordinary dispatch budget is too short for the 1024-byte TX
+ring to drain at low baud rates; the explicit budget keeps a legitimate slow
+transmit from being mistaken for a wedged handler.
+
 ### I²C batch transaction handling
 
 `i2c/batch` uses two decode passes. The first validates the operation count,

@@ -1,0 +1,66 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+config UART_PICO_DE_GALLO
+	bool "Pico de Gallo UART controller"
+	default y
+	depends on DT_HAS_ODP_PICO_DE_GALLO_UART_ENABLED
+	depends on ARCH_POSIX
+	select SERIAL
+	select SERIAL_HAS_DRIVER
+	help
+	  Enable the Pico de Gallo UART controller driver. This driver forwards
+	  Zephyr UART API calls to a Pico de Gallo USB bridge attached to the
+	  host running native_sim via the Pico de Gallo C FFI.
+
+	  Polling only. The asynchronous and interrupt-driven UART APIs are not
+	  supported: the driver deliberately does not select
+	  SERIAL_SUPPORT_ASYNC, SERIAL_SUPPORT_INTERRUPT or
+	  SERIAL_SUPPORT_WIDE_DATA. Those symbols are global and another driver
+	  in the same build may enable the corresponding API; this driver ships
+	  side-effect-free stubs for the resulting callback slots so that such a
+	  build fails loudly rather than dereferencing a NULL slot.
+
+	  The controller is thread-context-only. Every operation that reaches
+	  hardware is a blocking USB round trip, so no callback may be invoked
+	  from an ISR or before the kernel is up. Those contexts are rejected
+	  before any mutex is taken and before any FFI call is made: polling
+	  input returns -1, polling output drops the character and increments a
+	  dropped counter, and the remaining integer callbacks return
+	  -EWOULDBLOCK in an ISR and -EAGAIN pre-kernel.
+
+	  Reconfiguration is not atomic. The firmware's set_baudrate restores an
+	  enabled UARTCR before returning, so there is a brief window in which
+	  the new divisor is in effect while the old framing still applies.
+	  Bytes already sitting in the firmware ring were decoded under the old
+	  framing and cannot be told apart from new ones, and more may still
+	  arrive after the driver clears its local staging. Callers must quiesce
+	  and drain both directions before calling uart_configure().
+
+	  The device cannot serve as an early console. It initializes at
+	  POST_KERNEL, whereas the CONFIG_EARLY_CONSOLE hook installs at
+	  PRE_KERNEL_1 and checks device readiness first, so the hook would
+	  simply not be installed. Selecting this instance as the chosen
+	  zephyr,console with CONFIG_EARLY_CONSOLE enabled is rejected at build
+	  time.
+
+if UART_PICO_DE_GALLO
+
+config UART_PICO_DE_GALLO_INIT_PRIORITY
+	int "Pico de Gallo UART controller initialization priority"
+	default 50
+	help
+	  POST_KERNEL initialization priority of the Pico de Gallo UART
+	  controller.
+
+	  It must be greater than CONFIG_MFD_PICO_DE_GALLO_INIT_PRIORITY
+	  (default 40): this controller borrows the host connection owned by its
+	  odp,pico-de-gallo MFD parent, so the parent has to be ready first.
+	  It shares the default 50 with the I2C and SPI controllers, which it
+	  does not depend on.
+
+	  Kconfig cannot check the arithmetic. Runtime readiness is
+	  authoritative instead: an inverted priority makes initialization
+	  return -ENODEV rather than using a parent that is not yet open.
+
+endif # UART_PICO_DE_GALLO

@@ -68,7 +68,7 @@ use pico_de_gallo_internal::{
 pub use pico_de_gallo_internal::{
     AdcChannel, AdcConfigurationInfo, Capabilities, DeviceInfo, GpioDirection, GpioEdge, GpioEvent, GpioPull,
     GpioState, I2cBatchOp, I2cFrequency, PwmConfigurationInfo, PwmDutyCycleInfo, SpiBatchOp, SpiConfigurationInfo,
-    SpiPhase, SpiPolarity, UartConfigurationInfo, VersionInfo,
+    SpiPhase, SpiPolarity, UartConfigurationInfo, UartDataBits, UartParity, UartStopBits, VersionInfo,
 };
 pub use pico_de_gallo_internal::{
     AdcError, GpioError, I2cBatchError, I2cError, OneWireError, PwmError, SpiBatchError, SpiError, UartError,
@@ -1269,7 +1269,7 @@ impl PicoDeGallo {
     /// If no data is immediately available, it waits up to `timeout_ms`
     /// milliseconds for at least one byte. Returns whatever bytes are
     /// available (1 to `count`), or an empty `Vec` on timeout.
-    /// `timeout_ms == 0` selects a 1 ms non-blocking poll; non-zero values
+    /// `timeout_ms == 0` selects a single non-blocking poll; non-zero values
     /// above the firmware's 30-minute ceiling are clamped to it.
     ///
     /// The firmware buffer is limited to [`pico_de_gallo_internal::MAX_TRANSFER_SIZE`]
@@ -1281,11 +1281,35 @@ impl PicoDeGallo {
         if response_len_is_undeliverable(usize::from(count)) {
             return Err(PicoDeGalloError::Endpoint(UartError::BufferTooLong));
         }
-        // The caller's own read timeout is the firmware-side duration here.
-        self.bounded_for(timeout_ms)
+        // See `uart_read_bound` for why zero is special-cased here.
+        self.uart_read_bound(timeout_ms)
             .send_resp::<UartRead>(&UartReadRequest { count, timeout_ms })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
+    }
+
+    /// Pick the transport bound for a `uart/read`.
+    ///
+    /// `timeout_ms == 0` means the OPPOSITE here to what it means on
+    /// `gpio/wait-*`, and [`Self::bounded_for`] only knows the GPIO reading.
+    ///
+    /// There, zero means "no caller deadline, let the firmware run to its
+    /// ceiling", so `bounded_for(0)` widens the host bound to
+    /// [`MAX_HANDLER_TIMEOUT_MS`]. Here, zero means "single non-blocking
+    /// poll" - the firmware polls the ring once and answers immediately,
+    /// measured at ~360 us on hardware. Routing that through `bounded_for`
+    /// bounded a sub-millisecond call at 30 minutes, so a caller polling an
+    /// idle line hung for half an hour if the reply were ever lost. A Zephyr
+    /// `uart_poll_in` loop holds a driver mutex across exactly this call.
+    ///
+    /// So zero takes the ordinary call bound, and every non-zero value keeps
+    /// the firmware-derived one.
+    fn uart_read_bound(&self, timeout_ms: u32) -> Bounded<'_> {
+        if timeout_ms == 0 {
+            self.bounded()
+        } else {
+            self.bounded_for(timeout_ms)
+        }
     }
 
     /// Write `contents` to the UART bus.
@@ -1817,24 +1841,82 @@ impl PicoDeGallo {
         Ok(self.bounded().send_resp::<SpiGetConfiguration>(&()).await?)
     }
 
-    /// Set UART bus configuration parameters.
+    /// Set the UART baud rate and framing.
     ///
-    /// Changes the UART baud rate. Takes effect immediately before the next
-    /// UART operation. The default baud rate is 115200.
-    pub async fn uart_set_config(&self, baud_rate: u32) -> Result<(), PicoDeGalloError<UartError>> {
+    /// This replaces the **complete** UART configuration. There is no partial
+    /// update: to change only the baud rate, read [`Self::uart_get_config`]
+    /// first and pass its framing fields back. The power-on configuration is
+    /// 115200 8N1.
+    ///
+    /// # Runtime reconfiguration
+    ///
+    /// Baud rate and framing are applied before this call returns, but the
+    /// hardware transition is not atomic. The firmware first applies the baud
+    /// divisor and then applies word length, parity, and stop bits. During the
+    /// transition the UART is disabled twice, and it is briefly enabled with
+    /// the new baud rate and the previous framing.
+    ///
+    /// Reconfiguration does not drain either UART direction. Bytes already
+    /// queued by [`Self::uart_write`], or bytes sent by the peer during the
+    /// transition, may cross the configuration boundary. A malformed received
+    /// character may be dropped and reported by a later read as a generic UART
+    /// error; some mismatches can instead produce an apparently valid but
+    /// incorrect byte.
+    ///
+    /// Before calling this method, serialize UART access, stop issuing writes,
+    /// arrange for the peer to stop transmitting under the old configuration,
+    /// call [`Self::uart_flush`] to drain this device's TX queue, and consume
+    /// or discard any pending RX data. Resume traffic only after this call
+    /// succeeds and the peer has switched to the same configuration. An empty
+    /// read alone cannot prove that no character is currently in flight.
+    ///
+    /// If this call times out while the same connection has concurrent
+    /// long-running RPCs, its eventual outcome is uncertain: firmware dispatch
+    /// is serial and a request already sent cannot be cancelled. Do not retry
+    /// blindly. Quiesce the link and query [`Self::uart_get_config`] once the
+    /// dispatcher is responsive.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`UartError::InvalidBaudRate`] if `baud_rate` is zero, and
+    /// [`UartError::Unsupported`] if the firmware's hardware revision has no
+    /// UART.
+    pub async fn uart_set_config(
+        &self,
+        baud_rate: u32,
+        data_bits: UartDataBits,
+        parity: UartParity,
+        stop_bits: UartStopBits,
+    ) -> Result<(), PicoDeGalloError<UartError>> {
         self.bounded()
-            .send_resp::<UartSetConfiguration>(&UartSetConfigurationRequest { baud_rate })
+            .send_resp::<UartSetConfiguration>(&UartSetConfigurationRequest {
+                baud_rate,
+                data_bits,
+                parity,
+                stop_bits,
+            })
             .await?
             .map_err(PicoDeGalloError::Endpoint)
     }
 
-    /// Query the current UART bus configuration.
+    /// Query the current UART configuration.
     ///
-    /// Returns a [`UartConfigurationInfo`] struct with the active baud rate.
-    /// The default is 115200.
+    /// Returns the last successfully **requested** baud rate, data bits,
+    /// parity and stop bits. The power-on configuration is 115200 8N1.
+    ///
+    /// This is firmware software-shadow state, not a register read-back: the
+    /// reported `baud_rate` is the value that was asked for, not the rate the
+    /// divisor actually achieves after rounding.
+    ///
+    /// A persistent timeout here against a device that otherwise responds can
+    /// indicate firmware predating UART framing support: this endpoint's
+    /// response type changed, so such firmware replies under a key this host
+    /// no longer waits on. Check the device's `build_id` rather than retrying.
+    ///
+    /// # Errors
     ///
     /// Returns [`UartError::Unsupported`] if the firmware's hardware revision
-    /// does not support UART.
+    /// has no UART.
     pub async fn uart_get_config(&self) -> Result<UartConfigurationInfo, PicoDeGalloError<UartError>> {
         self.bounded()
             .send_resp::<UartGetConfiguration>(&())
@@ -3014,6 +3096,56 @@ mod tests {
         assert_eq!(pg.bounded_for(0).bound, ceiling + Duration::from_secs(5));
     }
 
+    /// A zero-timeout UART read is a NON-BLOCKING poll, so it must take the
+    /// ordinary call bound, not `bounded_for`'s 30-minute ceiling.
+    ///
+    /// `timeout_ms == 0` means opposite things on the two endpoints that use
+    /// it. On `gpio/wait-*` it means "no caller deadline", which is why
+    /// `bounded_for(0)` widens to the handler ceiling. On `uart/read` it means
+    /// "poll once and answer now", measured at ~360 us on hardware. Routing
+    /// the UART case through `bounded_for` bounded that sub-millisecond call
+    /// against a 30-minute deadline, so a lost reply hung the caller for half
+    /// an hour -- while a Zephyr `uart_poll_in` loop held a driver mutex.
+    ///
+    /// Asserted on the bound rather than by timing a call: a timing test for
+    /// this would have to out-wait the very ceiling it is checking for.
+    #[tokio::test]
+    async fn uart_read_bound_zero_timeout_is_the_call_bound() {
+        let (pg, _script) = scripted(vec![], DEVICE_INFO_TIMEOUT);
+        let pg = pg.with_call_timeout(Duration::from_secs(5));
+
+        assert_eq!(
+            pg.uart_read_bound(0).bound,
+            Duration::from_secs(5),
+            "a non-blocking read must be bounded by the call timeout alone"
+        );
+
+        let ceiling = Duration::from_millis(u64::from(MAX_HANDLER_TIMEOUT_MS));
+        assert_ne!(
+            pg.uart_read_bound(0).bound,
+            ceiling + Duration::from_secs(5),
+            "a non-blocking read is bounded at the handler ceiling, so a lost \
+             reply hangs the caller for 30 minutes"
+        );
+    }
+
+    /// Control for the test above. A non-zero read timeout must still widen
+    /// the bound, or the fix would have broken every blocking read.
+    #[tokio::test]
+    async fn uart_read_bound_nonzero_timeout_still_tracks_the_firmware() {
+        let (pg, _script) = scripted(vec![], DEVICE_INFO_TIMEOUT);
+        let pg = pg.with_call_timeout(Duration::from_secs(5));
+
+        assert_eq!(
+            pg.uart_read_bound(30_000).bound,
+            Duration::from_secs(30) + Duration::from_secs(5),
+            "a caller-supplied read timeout must still reach the transport"
+        );
+        assert_eq!(
+            pg.uart_read_bound(1).bound,
+            Duration::from_millis(1) + Duration::from_secs(5)
+        );
+    }
     /// A caller-supplied duration widens the bound, and is clamped exactly
     /// where the firmware clamps it.
     #[tokio::test]
@@ -4078,6 +4210,64 @@ mod tests {
         assert!(spi_batch_request_frame_len(&ops) < 512);
         let _ = pg.spi_batch(0, &ops).await;
         assert_eq!(script.count("spi/batch"), 1);
+    }
+
+    // -------------------------------------------------------------------
+    // UART framing re-exports
+    // -------------------------------------------------------------------
+
+    #[test]
+    fn uart_framing_enums_are_reachable_through_this_crate() {
+        // Load-bearing: the FFI, CLI and Python crates name these through
+        // `pico_de_gallo_lib::`, not through `pico_de_gallo_internal::`.
+        // A dropped re-export would break them without touching this crate.
+        let data_bits: crate::UartDataBits = crate::UartDataBits::Eight;
+        let parity: crate::UartParity = crate::UartParity::None;
+        let stop_bits: crate::UartStopBits = crate::UartStopBits::One;
+
+        assert_eq!(data_bits, UartDataBits::Eight);
+        assert_eq!(parity, UartParity::None);
+        assert_eq!(stop_bits, UartStopBits::One);
+    }
+
+    #[test]
+    fn uart_configuration_info_carries_the_framing_fields() {
+        // Pins the shape `uart_get_config` returns, so a wire-side field
+        // rename shows up here rather than only in a downstream crate.
+        let info = UartConfigurationInfo {
+            baud_rate: 115_200,
+            data_bits: UartDataBits::Eight,
+            parity: UartParity::None,
+            stop_bits: UartStopBits::One,
+        };
+
+        assert_eq!(info.baud_rate, 115_200);
+        assert_eq!(info.data_bits, UartDataBits::Eight);
+        assert_eq!(info.parity, UartParity::None);
+        assert_eq!(info.stop_bits, UartStopBits::One);
+    }
+
+    #[test]
+    fn uart_set_configuration_request_carries_all_four_fields() {
+        // This pins the shape of the request struct only: that it carries all
+        // four fields and that they are distinguishable (e.g. parity and stop
+        // bits are not the same type and cannot be silently transposed here).
+        //
+        // It does NOT exercise `uart_set_config`'s argument forwarding: the
+        // method is never invoked. Catching an omitted, duplicated or
+        // transposed argument inside `uart_set_config` would require the
+        // scripted transport to decode and inspect the transmitted request.
+        let req = UartSetConfigurationRequest {
+            baud_rate: 9600,
+            data_bits: UartDataBits::Seven,
+            parity: UartParity::Even,
+            stop_bits: UartStopBits::Two,
+        };
+
+        assert_eq!(req.baud_rate, 9600);
+        assert_eq!(req.data_bits, UartDataBits::Seven);
+        assert_eq!(req.parity, UartParity::Even);
+        assert_eq!(req.stop_bits, UartStopBits::Two);
     }
 }
 

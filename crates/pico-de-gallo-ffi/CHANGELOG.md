@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking Changes
+
+- `gallo_uart_set_config` and `gallo_uart_get_config` both changed from two
+  parameters to five. Every C consumer must be recompiled. Closes #152.
+
+  ```c
+  /* Old */
+  Status gallo_uart_set_config(const PicoDeGallo *gallo,
+                               uint32_t baud_rate);
+  Status gallo_uart_get_config(const PicoDeGallo *gallo,
+                               uint32_t *out_baud_rate);
+
+  /* New */
+  Status gallo_uart_set_config(const PicoDeGallo *gallo,
+                               uint32_t baud_rate,
+                               uint8_t data_bits,
+                               uint8_t parity,
+                               uint8_t stop_bits);
+  Status gallo_uart_get_config(const PicoDeGallo *gallo,
+                               uint32_t *out_baud_rate,
+                               uint8_t *out_data_bits,
+                               uint8_t *out_parity,
+                               uint8_t *out_stop_bits);
+  ```
+
+  Valid values are named by `GalloUartDataBits` (`GalloUartDataBits_Five`,
+  `GalloUartDataBits_Six`, `GalloUartDataBits_Seven`,
+  `GalloUartDataBits_Eight`), `GalloUartParity` (`GalloUartParity_None`,
+  `GalloUartParity_Odd`, `GalloUartParity_Even`, `GalloUartParity_Mark`,
+  `GalloUartParity_Space`), and `GalloUartStopBits`
+  (`GalloUartStopBits_One`, `GalloUartStopBits_Two`). The signatures retain
+  `uint8_t`, so these enums are conveniences; the ABI break is the changed
+  arity. No `Status` value was added or renumbered.
+
 ### Added
 
 - `GALLO_MAX_REQUEST_FRAME` (5119), mirroring

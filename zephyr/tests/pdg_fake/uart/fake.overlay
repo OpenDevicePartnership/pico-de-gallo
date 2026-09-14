@@ -1,0 +1,124 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Topology for the UART recording-fake suite: one parent and five enabled UART
+ * children, nothing else.
+ *
+ * No FFI call occurs, and the reason is specific rather than general: every
+ * bottom entry point this topology's init path touches has a strong override.
+ * That is pdg_common_bottom_open()/_close() in tests/pdg_fake/common/
+ * pdg_fake_bottom.c, which keeps pdg_mfd_init() out of gallo_init_strict(),
+ * plus pdg_uart_bottom_has_uart() and pdg_uart_bottom_set_config() in
+ * pdg_uart_fake_bottom.c, which pdg_uart_init() calls for every enabled child
+ * and which would otherwise hand the fake's opaque token to the real
+ * gallo_* FFI.
+ *
+ * That guarantee is scoped to this overlay. The GPIO, I2C and SPI children are
+ * disabled EXPLICITLY, not merely left at their shield defaults, because the
+ * fake does NOT override their bottom functions: enabling any of them would add
+ * un-overridden entry points and the fake's non-pointer token would be cast to
+ * PicoDeGallo * and dereferenced inside the real FFI. An enabled SPI controller
+ * would additionally park every cs-gpios pin as an inactive output at init,
+ * which this suite has no reason to provoke.
+ *
+ * serial-number IS declared here, unlike the I2C fake overlay. It is not
+ * optional for UART: pdg_uart.c's PDG_UART_PARENT_ASSERTS carries a
+ * DT_NODE_HAS_PROP(parent, serial_number) BUILD_ASSERT, because a UART drives a
+ * physical TX pad and therefore requires an explicit board identity exactly as
+ * GPIO and SPI do. The value is a placeholder: the fake ignores the selector
+ * entirely and opens nothing.
+ *
+ * ---------------------------------------------------------------------------
+ * THE BAUD RATES ARE LOAD-BEARING. DO NOT MAKE THEM UNIFORM.
+ * ---------------------------------------------------------------------------
+ *
+ * The five children borrow ONE parent context, so the shared parent fake hands
+ * every one of them the same opaque `ctx` token. A bottom call therefore
+ * carries nothing that identifies which child made it. The distinct
+ * current-speed values are the ONLY discriminator the recorded initial
+ * pdg_uart_bottom_set_config() calls have, which is how test 1 attributes each
+ * init event to a specific instance. "Tidying" these five rates to a common
+ * 115200 would not fail to build and would not fail loudly -- it would make the
+ * init sequence ambiguous and silently destroy test 1's evidence.
+ *
+ * Every child is otherwise identical 8N1, and every field is stated
+ * EXPLICITLY rather than left to pdg_uart.c's DT_INST_*_OR fallbacks, so the
+ * transcription test asserts what the devicetree said rather than what the
+ * driver defaulted to.
+ *
+ * Node labels are the contract with src/main.c. Keep them and the rates in
+ * step with the instance table in the M6 specification.
+ */
+
+&pdg0 {
+	status = "okay";
+	serial-number = "PDGFAKEUART0000";
+
+	pdg_uart_general: uart-general {
+		compatible = "odp,pico-de-gallo-uart";
+		current-speed = <115200>;
+		data-bits = <8>;
+		parity = "none";
+		stop-bits = "1";
+		status = "okay";
+	};
+
+	pdg_uart_backoff: uart-backoff {
+		compatible = "odp,pico-de-gallo-uart";
+		current-speed = <57600>;
+		data-bits = <8>;
+		parity = "none";
+		stop-bits = "1";
+		status = "okay";
+	};
+
+	pdg_uart_rx_latch: uart-rx-latch {
+		compatible = "odp,pico-de-gallo-uart";
+		current-speed = <38400>;
+		data-bits = <8>;
+		parity = "none";
+		stop-bits = "1";
+		status = "okay";
+	};
+
+	pdg_uart_tx_latch: uart-tx-latch {
+		compatible = "odp,pico-de-gallo-uart";
+		current-speed = <19200>;
+		data-bits = <8>;
+		parity = "none";
+		stop-bits = "1";
+		status = "okay";
+	};
+
+	pdg_uart_cfg_fail: uart-cfg-fail {
+		compatible = "odp,pico-de-gallo-uart";
+		current-speed = <9600>;
+		data-bits = <8>;
+		parity = "none";
+		stop-bits = "1";
+		status = "okay";
+	};
+};
+
+/*
+ * The shield's own uart node stays disabled. It would otherwise be a sixth
+ * enabled child that no test owns, and its 115200 rate would collide with
+ * pdg_uart_general's, breaking the discriminator described above.
+ */
+&pdg_uart0 {
+	status = "disabled";
+};
+
+&pdg_gpio0 {
+	status = "disabled";
+};
+
+&pdg_i2c0 {
+	status = "disabled";
+};
+
+&pdg_spi0 {
+	status = "disabled";
+};

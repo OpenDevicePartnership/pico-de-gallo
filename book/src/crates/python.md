@@ -132,6 +132,9 @@ plain Python-facing names like:
 - `GpioDirection`
 - `GpioPull`
 - `GpioEdge`
+- `UartDataBits`
+- `UartParity`
+- `UartStopBits`
 - `VersionInfo`
 - `DeviceInfo`
 - `UartConfigurationInfo`
@@ -152,6 +155,29 @@ pg.spi_set_config(
     gallo.SpiPhase.CaptureOnFirstTransition,
     gallo.SpiPolarity.IdleLow,
 )
+```
+
+UART parity has one Python-specific spelling: use `UartParity.NoParity`, not
+`UartParity.None`. The latter is a Python `SyntaxError` because `None` is a
+keyword. Only the binding name changes—the member is never renumbered and still
+maps to wire index 0; the wire enum, FFI enum, and generated C header all retain
+the name `None`.
+
+`uart_set_config(baud_rate, data_bits, parity, stop_bits)` defaults its framing
+arguments to 8N1, but it replaces the complete configuration rather than
+performing a partial update. A baud-only change must repeat the current framing.
+Baud and framing are applied together but not atomically: the divisor changes
+first and neither direction is drained, so pause UART traffic across the call.
+
+```python
+pg.uart_set_config(
+    115_200,
+    gallo.UartDataBits.Eight,
+    gallo.UartParity.NoParity,
+    gallo.UartStopBits.One,
+)
+active = pg.uart_get_config()
+print(active.baud_rate, active.data_bits, active.parity, active.stop_bits)
 ```
 
 ## Example: I<sup>2</sup>C Register Read
@@ -239,7 +265,12 @@ import pyco_de_gallo as gallo
 pg = gallo.open()
 
 try:
-    pg.uart_set_config(0)
+    pg.uart_set_config(
+        0,
+        gallo.UartDataBits.Eight,
+        gallo.UartParity.NoParity,
+        gallo.UartStopBits.One,
+    )
 except RuntimeError as exc:
     print(f"operation failed: {exc}")
 ```

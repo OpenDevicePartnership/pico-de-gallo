@@ -1,0 +1,61 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Board-attached UART configuration test. Mirrors
+ * zephyr/samples/uart_bridge/app.overlay, including its placeholder serial.
+ *
+ * HARDWARE PRECONDITION: this application assumes UART TX (GPIO 0) and UART RX
+ * (GPIO 1) are PHYSICALLY SHORTED TOGETHER, so that everything written is read
+ * back. Without that jumper every drain loop reports zero bytes and every
+ * loopback verdict is FAIL, which is a correct report of a missing jumper
+ * rather than a driver fault.
+ */
+
+&pdg0 {
+	status = "okay";
+
+	/*
+	 * DO NOT COMMIT A REAL SERIAL NUMBER HERE. This placeholder stays as
+	 * it is in the repository; the operator supplies the real value at
+	 * build time through a scratch overlay kept OUTSIDE the tree:
+	 *
+	 *     $ cat /path/to/serial.overlay
+	 *     &pdg0 { serial-number = "REALSERIAL"; };
+	 *
+	 *     $ west build -p always -b native_sim/native/64 \
+	 *           zephyr/tests/pdg_board/uart -- \
+	 *           -DSHIELD=pico_de_gallo \
+	 *           -DEXTRA_ZEPHYR_MODULES=/path/to/pico-de-gallo \
+	 *           -DEXTRA_DTC_OVERLAY_FILE=/path/to/serial.overlay
+	 *
+	 * EXTRA_DTC_OVERLAY_FILE appends to the overlays west already picked
+	 * up, so app.overlay still applies and the later assignment to the
+	 * same property wins. DTC_OVERLAY_FILE would REPLACE app.overlay and
+	 * lose the UART child configuration below.
+	 *
+	 * The property lives on the PARENT (&pdg0), not on the UART child:
+	 * one serial number selects one board for every child of that MFD.
+	 *
+	 * The UART controller drives two physical pads, so its binding refuses
+	 * a selector-less parent at build time. Presence is not uniqueness --
+	 * two parents carrying the same explicit value still alias to one
+	 * board.
+	 */
+	serial-number = "REPLACE_WITH_YOUR_PICO_DE_GALLO_SERIAL";
+};
+
+&pdg_uart0 {
+	status = "okay";
+
+	/*
+	 * 115200 8N1, stated in full, exactly as samples/uart_bridge does.
+	 * This is the BASELINE the application reports at step 2 and restores
+	 * at step 10; steps 4 through 9 move away from it deliberately.
+	 */
+	current-speed = <115200>;
+	data-bits = <8>;
+	parity = "none";
+	stop-bits = "1";
+};

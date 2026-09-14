@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Documented that `Hal::uart()` uses the device's current baud rate and
+  framing and cannot configure either. Callers that require a specific UART
+  configuration must set it through the CLI, `pico-de-gallo-lib`, the C FFI,
+  or Python before using the HAL, without racing HAL reads or writes. Part of
+  #152.
+
 - `UartHalError::kind()` now reports
   `embedded_io::ErrorKind::InvalidInput` for `UartError::BufferTooLong`
   instead of `Other`. Part of #158.

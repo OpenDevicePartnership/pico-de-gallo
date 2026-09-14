@@ -41,8 +41,9 @@ use pico_de_gallo_lib::{
     PwmConfigurationInfo as LibPwmConfigurationInfo, PwmDutyCycleInfo as LibPwmDutyCycleInfo,
     SpiBatchOp as LibSpiBatchOp, SpiConfigurationInfo as LibSpiConfigurationInfo,
     SpiPhase as LibSpiPhase, SpiPolarity as LibSpiPolarity,
-    UartConfigurationInfo as LibUartConfigurationInfo, ValidateError as LibValidateError,
-    VersionInfo as LibVersionInfo,
+    UartConfigurationInfo as LibUartConfigurationInfo, UartDataBits as LibUartDataBits,
+    UartParity as LibUartParity, UartStopBits as LibUartStopBits,
+    ValidateError as LibValidateError, VersionInfo as LibVersionInfo,
 };
 use pyo3::exceptions::PyRuntimeError;
 use pyo3::prelude::*;
@@ -192,6 +193,9 @@ fn pyco_de_gallo(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<SpiPhase>()?;
     m.add_class::<SpiPolarity>()?;
     m.add_class::<UartConfigurationInfo>()?;
+    m.add_class::<UartDataBits>()?;
+    m.add_class::<UartParity>()?;
+    m.add_class::<UartStopBits>()?;
     m.add_class::<VersionInfo>()?;
 
     Ok(())
@@ -281,6 +285,123 @@ impl From<I2cFrequency> for LibI2cFrequency {
             I2cFrequency::Standard => Self::Standard,
             I2cFrequency::Fast => Self::Fast,
             I2cFrequency::FastPlus => Self::FastPlus,
+        }
+    }
+}
+
+/// UART word length.
+///
+/// The RP2350 has no 9-bit mode, so only five through eight are available.
+#[pyclass(eq, eq_int, from_py_object)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UartDataBits {
+    /// Five data bits per word.
+    Five,
+    /// Six data bits per word.
+    Six,
+    /// Seven data bits per word.
+    Seven,
+    /// Eight data bits per word. This is the power-on default.
+    Eight,
+}
+
+impl From<UartDataBits> for LibUartDataBits {
+    fn from(v: UartDataBits) -> Self {
+        match v {
+            UartDataBits::Five => Self::Five,
+            UartDataBits::Six => Self::Six,
+            UartDataBits::Seven => Self::Seven,
+            UartDataBits::Eight => Self::Eight,
+        }
+    }
+}
+
+impl From<LibUartDataBits> for UartDataBits {
+    fn from(v: LibUartDataBits) -> Self {
+        match v {
+            LibUartDataBits::Five => Self::Five,
+            LibUartDataBits::Six => Self::Six,
+            LibUartDataBits::Seven => Self::Seven,
+            LibUartDataBits::Eight => Self::Eight,
+        }
+    }
+}
+
+/// UART parity mode.
+///
+/// ``Mark`` and ``Space`` use the PL011's stick-parity bit and are not
+/// reachable through embassy's own parity type.
+#[pyclass(eq, eq_int, from_py_object)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UartParity {
+    /// No parity bit. This is the power-on default.
+    ///
+    /// Named ``NoParity`` rather than ``None`` because ``None`` is a Python
+    /// keyword, so a member literally named ``None`` would make
+    /// ``UartParity.None`` a syntax error at the call site. This member maps
+    /// to and from the wire's ``None`` parity mode; the variant is renamed,
+    /// never renumbered.
+    NoParity,
+    /// Odd parity.
+    Odd,
+    /// Even parity.
+    Even,
+    /// Stick parity — the parity bit is always 1.
+    Mark,
+    /// Stick parity — the parity bit is always 0.
+    Space,
+}
+
+impl From<UartParity> for LibUartParity {
+    fn from(v: UartParity) -> Self {
+        match v {
+            UartParity::NoParity => Self::None,
+            UartParity::Odd => Self::Odd,
+            UartParity::Even => Self::Even,
+            UartParity::Mark => Self::Mark,
+            UartParity::Space => Self::Space,
+        }
+    }
+}
+
+impl From<LibUartParity> for UartParity {
+    fn from(v: LibUartParity) -> Self {
+        match v {
+            LibUartParity::None => Self::NoParity,
+            LibUartParity::Odd => Self::Odd,
+            LibUartParity::Even => Self::Even,
+            LibUartParity::Mark => Self::Mark,
+            LibUartParity::Space => Self::Space,
+        }
+    }
+}
+
+/// UART stop-bit count.
+///
+/// The hardware has a single STP2 bit, so half stop bits are unavailable.
+#[pyclass(eq, eq_int, from_py_object)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum UartStopBits {
+    /// One stop bit. This is the power-on default.
+    One,
+    /// Two stop bits.
+    Two,
+}
+
+impl From<UartStopBits> for LibUartStopBits {
+    fn from(v: UartStopBits) -> Self {
+        match v {
+            UartStopBits::One => Self::One,
+            UartStopBits::Two => Self::Two,
+        }
+    }
+}
+
+impl From<LibUartStopBits> for UartStopBits {
+    fn from(v: LibUartStopBits) -> Self {
+        match v {
+            LibUartStopBits::One => Self::One,
+            LibUartStopBits::Two => Self::Two,
         }
     }
 }
@@ -571,18 +692,37 @@ fn classify_cs(cs: u8, num_gpios: u8) -> Result<(), String> {
     Ok(())
 }
 
-/// Current UART configuration returned by :meth:`PycoDeGallo.uart_get_config`.
+/// UART configuration last successfully requested from the firmware.
+///
+/// This is software-shadow state, not a register read-back: the reported baud
+/// rate is the value that was asked for, not the rate the divisor achieves
+/// after rounding.
 #[pyclass]
 struct UartConfigurationInfo {
-    /// Active UART baud rate, in bits per second.
+    /// Last requested UART baud rate, in bits per second.
+    ///
+    /// This is the value that was asked for, not the rate the divisor
+    /// achieves after rounding.
     #[pyo3(get)]
     baud_rate: u32,
+    /// Last requested UART word length.
+    #[pyo3(get)]
+    data_bits: UartDataBits,
+    /// Last requested UART parity mode.
+    #[pyo3(get)]
+    parity: UartParity,
+    /// Last requested UART stop-bit count.
+    #[pyo3(get)]
+    stop_bits: UartStopBits,
 }
 
 impl From<LibUartConfigurationInfo> for UartConfigurationInfo {
     fn from(c: LibUartConfigurationInfo) -> Self {
         Self {
             baud_rate: c.baud_rate,
+            data_bits: c.data_bits.into(),
+            parity: c.parity.into(),
+            stop_bits: c.stop_bits.into(),
         }
     }
 }
@@ -1138,7 +1278,7 @@ impl PycoDeGallo {
     ///
     /// Waits up to ``timeout_ms`` milliseconds for at least one byte. Returns
     /// whatever bytes are available (1 to ``count``), or an empty list on timeout.
-    /// Zero selects a 1 ms non-blocking poll. Non-zero values above the
+    /// Zero selects a single non-blocking poll. Non-zero values above the
     /// firmware's 30-minute ceiling are clamped to it.
     ///
     /// Args:
@@ -1539,19 +1679,57 @@ impl PycoDeGallo {
             .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
-    /// Set the UART baud rate.
+    /// Set the UART baud rate and framing.
     ///
-    /// Takes effect immediately before the next UART operation. The default
-    /// baud rate is 115200.
-    fn uart_set_config(&self, py: Python<'_>, baud_rate: u32) -> PyResult<()> {
-        self.block(py, self.inner.uart_set_config(baud_rate))
-            .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
+    /// This replaces the complete UART configuration. Omitting a framing argument
+    /// selects its 8N1 power-on value and overwrites whatever framing was
+    /// previously configured, so a baud-only change must repeat the framing
+    /// arguments.
+    ///
+    /// Reconfiguration is not atomic at the UART pins: the device applies the
+    /// baud divisor before the framing and drains neither direction. Quiesce
+    /// transmit and receive traffic across this call.
+    ///
+    /// Args:
+    ///     baud_rate: Baud rate in bits per second. Must be non-zero.
+    ///     data_bits: Word length. Defaults to ``UartDataBits.Eight``.
+    ///     parity: Parity mode. Defaults to ``UartParity.NoParity``.
+    ///     stop_bits: Stop-bit count. Defaults to ``UartStopBits.One``.
+    ///
+    /// Raises:
+    ///     RuntimeError: If the device rejects the configuration, or the
+    ///         hardware revision has no UART.
+    #[pyo3(signature = (baud_rate, data_bits = UartDataBits::Eight, parity = UartParity::NoParity, stop_bits = UartStopBits::One))]
+    fn uart_set_config(
+        &self,
+        py: Python<'_>,
+        baud_rate: u32,
+        data_bits: UartDataBits,
+        parity: UartParity,
+        stop_bits: UartStopBits,
+    ) -> PyResult<()> {
+        self.block(
+            py,
+            self.inner.uart_set_config(
+                baud_rate,
+                data_bits.into(),
+                parity.into(),
+                stop_bits.into(),
+            ),
+        )
+        .map_err(|e| PyRuntimeError::new_err(format!("{e}")))
     }
 
     /// Query the current UART configuration.
     ///
+    /// All four values are the last configuration successfully requested from
+    /// the firmware. This is software-shadow state, not a register read-back:
+    /// the reported baud rate is the value that was asked for, not the rate
+    /// the divisor achieves after rounding.
+    ///
     /// Returns:
-    ///     UartConfigurationInfo: Active baud rate. Default is 115200.
+    ///     UartConfigurationInfo: The last requested baud rate, word length,
+    ///     parity mode and stop-bit count. The power-on default is 115200 8N1.
     ///
     /// Raises:
     ///     RuntimeError: If the firmware's hardware revision does not support UART.
@@ -1916,5 +2094,227 @@ mod tests {
         assert!(classify_cs(4, 4).is_err());
         classify_cs(6, 7).expect("pin 6 is valid at n = 7");
         assert!(classify_cs(7, 7).is_err());
+    }
+
+    // ===================================================================
+    // M3 — UART framing conversions (issue #152)
+    // ===================================================================
+    //
+    // GIL-free, per the note at the top of this module: these exercise the
+    // `From` impls and the `UartConfigurationInfo` wrapper only. The
+    // `#[pymethods]` dispatch for `uart_set_config`, and the claim that
+    // `UartParity.NoParity` is reachable from Python, are not executable
+    // in Rust and remain unproven here.
+
+    const PY_UART_DATA_BITS: [UartDataBits; 4] = [
+        UartDataBits::Five,
+        UartDataBits::Six,
+        UartDataBits::Seven,
+        UartDataBits::Eight,
+    ];
+
+    const PY_UART_PARITY: [UartParity; 5] = [
+        UartParity::NoParity,
+        UartParity::Odd,
+        UartParity::Even,
+        UartParity::Mark,
+        UartParity::Space,
+    ];
+
+    const PY_UART_STOP_BITS: [UartStopBits; 2] = [UartStopBits::One, UartStopBits::Two];
+
+    #[test]
+    fn uart_data_bits_conversion_maps_each_variant() {
+        assert_eq!(
+            LibUartDataBits::from(UartDataBits::Five),
+            LibUartDataBits::Five
+        );
+        assert_eq!(
+            LibUartDataBits::from(UartDataBits::Six),
+            LibUartDataBits::Six
+        );
+        assert_eq!(
+            LibUartDataBits::from(UartDataBits::Seven),
+            LibUartDataBits::Seven
+        );
+        assert_eq!(
+            LibUartDataBits::from(UartDataBits::Eight),
+            LibUartDataBits::Eight
+        );
+    }
+
+    /// `NoParity`, not `None`.
+    ///
+    /// `None` is a Python keyword, so a `#[pyclass]` member literally
+    /// named `None` would be unusable — `UartParity.None` is a
+    /// `SyntaxError` at the call site, not a runtime error, so no
+    /// docstring or example could work around it. `NoParity` maps to and
+    /// from the wire's `UartParity::None`; the variant is renamed, never
+    /// renumbered.
+    #[test]
+    fn uart_parity_conversion_maps_each_variant() {
+        assert_eq!(
+            LibUartParity::from(UartParity::NoParity),
+            LibUartParity::None
+        );
+        assert_eq!(LibUartParity::from(UartParity::Odd), LibUartParity::Odd);
+        assert_eq!(LibUartParity::from(UartParity::Even), LibUartParity::Even);
+        assert_eq!(LibUartParity::from(UartParity::Mark), LibUartParity::Mark);
+        assert_eq!(LibUartParity::from(UartParity::Space), LibUartParity::Space);
+    }
+
+    #[test]
+    fn uart_stop_bits_conversion_maps_each_variant() {
+        assert_eq!(
+            LibUartStopBits::from(UartStopBits::One),
+            LibUartStopBits::One
+        );
+        assert_eq!(
+            LibUartStopBits::from(UartStopBits::Two),
+            LibUartStopBits::Two
+        );
+    }
+
+    #[test]
+    fn uart_data_bits_conversion_is_a_bijection() {
+        for v in PY_UART_DATA_BITS {
+            assert_eq!(UartDataBits::from(LibUartDataBits::from(v)), v);
+        }
+        for v in [
+            LibUartDataBits::Five,
+            LibUartDataBits::Six,
+            LibUartDataBits::Seven,
+            LibUartDataBits::Eight,
+        ] {
+            assert_eq!(LibUartDataBits::from(UartDataBits::from(v)), v);
+        }
+    }
+
+    #[test]
+    fn uart_parity_conversion_is_a_bijection() {
+        for v in PY_UART_PARITY {
+            assert_eq!(UartParity::from(LibUartParity::from(v)), v);
+        }
+        for v in [
+            LibUartParity::None,
+            LibUartParity::Odd,
+            LibUartParity::Even,
+            LibUartParity::Mark,
+            LibUartParity::Space,
+        ] {
+            assert_eq!(LibUartParity::from(UartParity::from(v)), v);
+        }
+    }
+
+    #[test]
+    fn uart_stop_bits_conversion_is_a_bijection() {
+        for v in PY_UART_STOP_BITS {
+            assert_eq!(UartStopBits::from(LibUartStopBits::from(v)), v);
+        }
+        for v in [LibUartStopBits::One, LibUartStopBits::Two] {
+            assert_eq!(LibUartStopBits::from(UartStopBits::from(v)), v);
+        }
+    }
+
+    /// The rename must survive a full round trip. If `From<LibUartParity>`
+    /// ever mapped `None` to something other than `NoParity`, the wire
+    /// value and the Python value would drift apart silently.
+    #[test]
+    fn uart_parity_no_parity_round_trips_to_itself() {
+        assert_eq!(
+            UartParity::from(LibUartParity::from(UartParity::NoParity)),
+            UartParity::NoParity
+        );
+        assert_eq!(
+            LibUartParity::from(UartParity::from(LibUartParity::None)),
+            LibUartParity::None
+        );
+    }
+
+    /// A transposition — `Mark` mapping to `Space` and back — survives
+    /// every per-variant check above if both arms are transposed together.
+    /// Distinctness is what catches it.
+    #[test]
+    fn uart_parity_conversion_preserves_distinctness() {
+        for (i, a) in PY_UART_PARITY.iter().enumerate() {
+            for (j, b) in PY_UART_PARITY.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    LibUartParity::from(*a),
+                    LibUartParity::from(*b),
+                    "python parity variants {i} and {j} collapse onto one wire variant"
+                );
+            }
+        }
+        for (i, a) in PY_UART_DATA_BITS.iter().enumerate() {
+            for (j, b) in PY_UART_DATA_BITS.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    LibUartDataBits::from(*a),
+                    LibUartDataBits::from(*b),
+                    "python data-bits variants {i} and {j} collapse onto one wire variant"
+                );
+            }
+        }
+        for (i, a) in PY_UART_STOP_BITS.iter().enumerate() {
+            for (j, b) in PY_UART_STOP_BITS.iter().enumerate().skip(i + 1) {
+                assert_ne!(
+                    LibUartStopBits::from(*a),
+                    LibUartStopBits::from(*b),
+                    "python stop-bits variants {i} and {j} collapse onto one wire variant"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn uart_configuration_info_conversion_carries_all_four_fields() {
+        let info: UartConfigurationInfo = LibUartConfigurationInfo {
+            baud_rate: 9600,
+            data_bits: LibUartDataBits::Seven,
+            parity: LibUartParity::Even,
+            stop_bits: LibUartStopBits::Two,
+        }
+        .into();
+
+        assert_eq!(info.baud_rate, 9600);
+        assert_eq!(info.data_bits, UartDataBits::Seven);
+        assert_eq!(info.parity, UartParity::Even);
+        assert_eq!(info.stop_bits, UartStopBits::Two);
+    }
+
+    /// Sweeps every framing combination through the wrapper, so a field
+    /// wired to the wrong source — `parity: v.parity` copy-pasted as
+    /// `stop_bits: v.parity` — cannot survive by happening to agree on the
+    /// one triple a spot check uses.
+    #[test]
+    fn uart_configuration_info_conversion_never_crosses_fields() {
+        for data_bits in [
+            LibUartDataBits::Five,
+            LibUartDataBits::Six,
+            LibUartDataBits::Seven,
+            LibUartDataBits::Eight,
+        ] {
+            for parity in [
+                LibUartParity::None,
+                LibUartParity::Odd,
+                LibUartParity::Even,
+                LibUartParity::Mark,
+                LibUartParity::Space,
+            ] {
+                for stop_bits in [LibUartStopBits::One, LibUartStopBits::Two] {
+                    let info: UartConfigurationInfo = LibUartConfigurationInfo {
+                        baud_rate: 115_200,
+                        data_bits,
+                        parity,
+                        stop_bits,
+                    }
+                    .into();
+
+                    assert_eq!(LibUartDataBits::from(info.data_bits), data_bits);
+                    assert_eq!(LibUartParity::from(info.parity), parity);
+                    assert_eq!(LibUartStopBits::from(info.stop_bits), stop_bits);
+                    assert_eq!(info.baud_rate, 115_200);
+                }
+            }
+        }
     }
 }

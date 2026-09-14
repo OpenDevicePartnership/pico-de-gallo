@@ -197,6 +197,59 @@ Validation errors report the exact zero-based operation index in
 a whole and cannot be attributed to one operation, so it reports
 `failed_op = 0`.
 
+## UART framing contract
+
+The UART framing enums are wire-visible and serialized by variant index. Their
+deployed order in `crates/pico-de-gallo-internal/src/lib.rs` is:
+
+| Type | Index | Variant | Meaning |
+|------|------:|---------|---------|
+| `UartDataBits` | 0 | `Five` | Five data bits |
+| `UartDataBits` | 1 | `Six` | Six data bits |
+| `UartDataBits` | 2 | `Seven` | Seven data bits |
+| `UartDataBits` | 3 | `Eight` | Eight data bits; power-on default |
+| `UartParity` | 0 | `None` | No parity bit; firmware default |
+| `UartParity` | 1 | `Odd` | Odd parity |
+| `UartParity` | 2 | `Even` | Even parity |
+| `UartParity` | 3 | `Mark` | Parity bit always 1 |
+| `UartParity` | 4 | `Space` | Parity bit always 0 |
+| `UartStopBits` | 0 | `One` | One stop bit; firmware default |
+| `UartStopBits` | 1 | `Two` | Two stop bits |
+
+`UartStopBits` deliberately does **not** use Zephyr's numbering. Zephyr assigns
+`UART_CFG_STOP_BITS_0_5 = 0`, `_1 = 1`, `_1_5 = 2`, and `_2 = 3`. The RP2350
+PL011 exposes only the `STP2` bit, so 0.5 and 1.5 stop bits are unreachable.
+The wire enum therefore uses the dense `One = 0`, `Two = 1` encoding instead
+of preserving two permanently unrepresentable holes. Consumers must map these
+values explicitly; changing their order to match Zephyr would be a wire break.
+
+The configuration endpoints carry the complete framing tuple:
+
+| Path | Request type | Response type |
+|------|--------------|---------------|
+| `uart/set-config` | `UartSetConfigurationRequest` | `Result<(), UartError>` |
+| `uart/get-config` | `()` | `Result<UartConfigurationInfo, UartError>` |
+
+Both configuration structs contain the same fields, in the same order:
+
+| Field | Type |
+|-------|------|
+| `baud_rate` | `u32` |
+| `data_bits` | `UartDataBits` |
+| `parity` | `UartParity` |
+| `stop_bits` | `UartStopBits` |
+
+`uart/get-config` reports the last successfully requested values from the
+firmware's software shadow, not a register read-back. In particular,
+`baud_rate` is the requested rate rather than the divisor-rounded rate.
+
+This wire-shape change did not move a package version. It rides the already
+pending, unreleased schema 0.8 change:
+`crates/pico-de-gallo-internal/Cargo.toml` currently declares version `0.8.0`,
+and that crate's `build.rs` derives
+`SCHEMA_VERSION_MAJOR`, `SCHEMA_VERSION_MINOR`, and `SCHEMA_VERSION_PATCH` as
+0, 8, and 0. Firmware built from this tree therefore reports schema v0.8.0.
+
 ## SPI chip-select contract
 
 `SpiError` is serialized by variant index. The deployed indices are:
