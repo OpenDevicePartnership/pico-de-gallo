@@ -216,14 +216,26 @@ static void pdg_pwm_forget_slice(struct pdg_pwm_data *data, uint32_t slice)
  * Configure the slice if its period changed, scale the pulse against the
  * full-scale duty the firmware reports, then enable the slice on first use.
  *
+ * The slice-sharing conflict check lives HERE, as the first thing done after
+ * the lock is taken, rather than in pdg_pwm_set_cycles(). That is what makes
+ * the guarantee below unconditional: check and use happen under a single
+ * uninterrupted hold of data->lock, so there is no window in which a
+ * concurrent call on the sibling can change the slice's period between the
+ * two. Checking in set_cycles and releasing the lock before calling this
+ * function was a time-of-check-to-time-of-use race; holding the lock across
+ * the call instead would have relied on k_mutex being recursive for the same
+ * thread and left the ownership of every field in here ambiguous; re-checking
+ * after re-acquiring would have been redundant work and two checks to keep in
+ * sync.
+ *
  * There is deliberately no sibling duty re-assertion here. pwm/set-config
  * rescales BOTH channels' compares with truncating integer division, which
  * would drift a sibling's duty downward -- but this driver never has to
  * compensate, because a slice is not reconfigured while a sibling is in use.
- * The conflicting-period refusal guarantees a request that reaches this
- * function already carries the slice's current period whenever the sibling is
- * configured, so the reconfiguration branch below is skipped in exactly the
- * cases a re-assertion would have been needed.
+ * The conflicting-period refusal below guarantees a request that gets past it
+ * already carries the slice's current period whenever the sibling is
+ * configured, so the reconfiguration branch is skipped in exactly the cases a
+ * re-assertion would have been needed.
  *
  * That guarantee rests on an invariant the failure paths must maintain:
  * whenever channels[sibling].configured is true, slices[s].configured is true
@@ -240,11 +252,37 @@ static int pdg_pwm_apply(const struct device *dev, uint32_t channel,
 {
 	struct pdg_pwm_data *data = dev->data;
 	uint32_t slice = pdg_pwm_slice_of(channel);
+	uint32_t sibling = pdg_pwm_sibling_of(channel);
 	uint16_t max_duty = 0U;
 	uint16_t current_duty = 0U;
 	int ret;
 
 	k_mutex_lock(&data->lock, K_FOREVER);
+
+	/*
+	 * Slice-sharing conflict.
+	 *
+	 * Channels 0+1 and 2+3 each share an RP2350 slice, and a slice has one
+	 * period. Reconfiguring would silently change the sibling's period
+	 * behind its owner's back, and additionally drift its duty through the
+	 * firmware's truncating rescale. Refusing surfaces the constraint at
+	 * the call that violates it.
+	 *
+	 * Refused before any device call, so a conflicting request touches the
+	 * bus not at all.
+	 */
+	if (data->channels[sibling].configured &&
+	    data->channels[sibling].period_cycles != period_cycles) {
+		LOG_ERR("%s: channel %u requested a period of %u cycles, but "
+			"its slice sibling channel %u is using %u. Channels "
+			"%u and %u share one PWM slice and cannot hold "
+			"independent periods. Use channels 0 and 2 for two "
+			"independent periods. Returning -EINVAL.",
+			dev->name, channel, period_cycles, sibling,
+			data->channels[sibling].period_cycles, channel, sibling);
+		ret = -EINVAL;
+		goto out;
+	}
 
 	if (!data->slices[slice].configured ||
 	    data->slices[slice].period_cycles != period_cycles) {
@@ -395,43 +433,15 @@ static int pdg_pwm_set_cycles(const struct device *dev, uint32_t channel,
 	}
 
 	/*
-	 * Slice-sharing conflict.
+	 * The slice-sharing conflict check is deliberately NOT here. It lives
+	 * inside pdg_pwm_apply(), under the same single acquisition of
+	 * data->lock that the reconfiguration itself runs under, so that check
+	 * and use cannot be interleaved by a concurrent call on the sibling.
+	 * See the comment on pdg_pwm_apply().
 	 *
-	 * Channels 0+1 and 2+3 each share an RP2350 slice, and a slice has one
-	 * period. Reconfiguring would silently change the sibling's period
-	 * behind its owner's back, and additionally drift its duty through the
-	 * firmware's truncating rescale. Refusing surfaces the constraint at
-	 * the call that violates it.
-	 *
-	 * Read under the lock, because a concurrent call on the sibling could
-	 * otherwise be observed half-applied. The lock is released before
-	 * pdg_pwm_apply() takes it again rather than held across the call:
-	 * k_mutex is recursive for the same thread, but relying on that would
-	 * make the ownership of every field inside apply() ambiguous.
+	 * Consequently this function never touches the lock: every check above
+	 * reads only its own arguments and compile-time constants.
 	 */
-	{
-		uint32_t sibling = pdg_pwm_sibling_of(channel);
-		uint32_t sibling_period;
-		bool conflict;
-
-		k_mutex_lock(&data->lock, K_FOREVER);
-		conflict = data->channels[sibling].configured &&
-			   data->channels[sibling].period_cycles != period_cycles;
-		sibling_period = data->channels[sibling].period_cycles;
-		k_mutex_unlock(&data->lock);
-
-		if (conflict) {
-			LOG_ERR("%s: channel %u requested a period of %u cycles, but "
-				"its slice sibling channel %u is using %u. Channels "
-				"%u and %u share one PWM slice and cannot hold "
-				"independent periods. Use channels 0 and 2 for two "
-				"independent periods. Returning -EINVAL.",
-				dev->name, channel, period_cycles, sibling,
-				sibling_period, channel, sibling);
-			return -EINVAL;
-		}
-	}
-
 	return pdg_pwm_apply(dev, channel, period_cycles, pulse_cycles);
 }
 
