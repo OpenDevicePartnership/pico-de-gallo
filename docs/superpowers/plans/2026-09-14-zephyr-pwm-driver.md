@@ -2848,3 +2848,64 @@ The error paths do not create an exception: a mismatched period is refused befor
    Make the same correction in the README's PWM section.
 
 ---
+
+## CORRECTION to Task 3, found while reviewing Task 2
+
+Verified against `~/zephyrproject/zephyr/include/zephyr/drivers/pwm.h` at the pinned revision:
+
+```c
+static inline int z_impl_pwm_set_cycles(const struct device *dev,
+					uint32_t channel, uint32_t period,
+					uint32_t pulse, pwm_flags_t flags)
+{
+	if (pulse > period) {
+		return -EINVAL;
+	}
+
+	return DEVICE_API_GET(pwm, dev)->set_cycles(dev, channel, period, pulse, flags);
+}
+```
+
+**Zephyr's own wrapper rejects `pulse > period` before the driver is ever called.** So `test_rejects_a_pulse_longer_than_the_period` as written in Task 3 would pass whether or not our driver checks anything — it exercises Zephyr, not us. That is a vacuous test, and shipping one is worse than shipping none, because it manufactures false confidence.
+
+Two changes:
+
+1. **Keep the driver's own `pulse_cycles > period_cycles` check.** It is cheap, and the API slot can be invoked directly through `DEVICE_API_GET(pwm, dev)->set_cycles(...)`, which bypasses the wrapper. Defence in depth is right here. But add a comment recording that the public wrapper already screens it, so nobody later "discovers" it is unreachable and deletes it without understanding why it exists.
+
+2. **Rewrite the test to say what it actually proves**, and to reach our check directly so it is not vacuous:
+
+```c
+/*
+ * Zephyr's pwm_set_cycles() wrapper screens pulse > period itself, before the
+ * driver is called (include/zephyr/drivers/pwm.h). A test that went through
+ * the wrapper would therefore pass without our driver checking anything.
+ *
+ * So this asserts both layers. First that the public path refuses it, which
+ * is what a caller sees; then that the driver's own slot refuses it too, by
+ * invoking the API directly and bypassing the wrapper. The second half is
+ * what keeps our defence-in-depth check honest.
+ */
+ZTEST(pdg_fake_pwm, test_rejects_a_pulse_longer_than_the_period)
+{
+	const struct pwm_driver_api *api = DEVICE_API_GET(pwm, PWM_DEV);
+
+	zassert_equal(pwm_set_cycles(PWM_DEV, 0U, 1500U, 1501U, 0), -EINVAL,
+		      "the public wrapper must refuse a pulse longer than its period");
+
+	zassert_equal(api->set_cycles(PWM_DEV, 0U, 1500U, 1501U, 0), -EINVAL,
+		      "the driver's own slot must refuse it too, independently of "
+		      "the wrapper");
+
+	assert_nothing_reached_the_device();
+}
+```
+
+If `DEVICE_API_GET` or the `struct pwm_driver_api` name does not resolve in the test translation unit, fall back to asserting only the public path AND change the test name and comment to say plainly that it pins Zephyr's wrapper rather than our driver. Do not leave a test whose name claims more than it verifies.
+
+### Deferred, not dismissed
+
+The Task 2 implementer noted that the UART fake suite carries a `verify_overrides.cmake` post-link `nm` gate, failing the build if any `pdg_*_bottom_*` symbol resolved to the weak production definition, and that the PWM suite has none. That gate matters because a missed override does not fail to link — it silently hands the fake's opaque non-pointer token to the real FFI.
+
+For PWM the exposure is currently small: `pdg_pwm_bottom.h` declares five functions and the fake overrides all five. The risk is a *future* sixth. Revisit in Task 7 and either add the gate or record in `zephyr/README.md` that the PWM suite relies on manual review for this.
+
+---
