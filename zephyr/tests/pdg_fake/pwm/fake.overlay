@@ -1,0 +1,33 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Topology for the PWM recording-fake suite: parent and PWM okay, nothing
+ * else.
+ *
+ * No FFI call occurs, and the reason is specific rather than general: every
+ * bottom entry point this topology touches has a strong override. That is
+ * pdg_common_bottom_open()/_close() in ../common/pdg_fake_bottom.c, which
+ * keeps pdg_mfd_init() out of gallo_init_strict(), plus the five
+ * pdg_pwm_bottom_* definitions in pdg_pwm_fake_bottom.c -- including
+ * pdg_pwm_bottom_has_pwm(), which pdg_pwm_init() calls unconditionally and
+ * which would otherwise hand the fake's opaque token to the real
+ * gallo_get_device_info().
+ *
+ * That guarantee is scoped to this overlay. Enabling another child would add
+ * bottom entry points that are NOT overridden.
+ *
+ * serial-number IS declared. pdg_pwm.c's PDG_PWM_PARENT_ASSERTS carries a
+ * DT_NODE_HAS_PROP assertion on it, as the GPIO, SPI and UART drivers do, so
+ * omitting it is a build failure rather than a runtime surprise.
+ */
+
+&pdg0 {
+	status = "okay";
+	serial-number = "PDGFAKEPWM00000";
+};
+
+&pdg_pwm0 {
+	status = "okay";
+};

@@ -1,0 +1,24 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# NOT build_only. This suite is meant to run: the bottom layer is replaced by
+# recording fakes, so nothing reaches gallo_init_strict() and no board is
+# needed. It is the primary evidence the PWM driver works, because PWM cannot
+# be verified on hardware in this project's current setup.
+#
+# No depends_on. native_sim/native/64 does not declare pwm in its supported:
+# list, so claiming it would filter this scenario to nothing, silently. See
+# zephyr/samples/i2c_bridge/tests.yaml.
+common:
+  tags:
+    - drivers
+    - pwm
+    - pico_de_gallo
+tests:
+  drivers.pico_de_gallo.pwm.fake:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
+    extra_dtc_overlay_files:
+      - fake.overlay
