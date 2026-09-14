@@ -4,6 +4,7 @@
 add_subdirectory_ifdef(CONFIG_MFD_PICO_DE_GALLO mfd)
 add_subdirectory_ifdef(CONFIG_GPIO_PICO_DE_GALLO gpio)
 add_subdirectory_ifdef(CONFIG_I2C_PICO_DE_GALLO i2c)
+add_subdirectory_ifdef(CONFIG_PWM_PICO_DE_GALLO pwm)
 add_subdirectory_ifdef(CONFIG_UART_PICO_DE_GALLO serial)
 add_subdirectory_ifdef(CONFIG_SPI_PICO_DE_GALLO spi)
 
@@ -27,7 +28,7 @@ add_subdirectory_ifdef(CONFIG_SPI_PICO_DE_GALLO spi)
 # against a common.c that was never compiled.
 if(CONFIG_MFD_PICO_DE_GALLO OR CONFIG_GPIO_PICO_DE_GALLO OR
    CONFIG_I2C_PICO_DE_GALLO OR CONFIG_SPI_PICO_DE_GALLO OR
-   CONFIG_UART_PICO_DE_GALLO)
+   CONFIG_UART_PICO_DE_GALLO OR CONFIG_PWM_PICO_DE_GALLO)
 	target_sources(native_simulator INTERFACE
 		${CMAKE_CURRENT_LIST_DIR}/common/common.c
 		${CMAKE_CURRENT_LIST_DIR}/common/gallo_registry.c)

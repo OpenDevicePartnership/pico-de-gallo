@@ -25,6 +25,12 @@
 			status = "disabled";
 		};
 
+		pdg_pwm0: pwm {
+			compatible = "odp,pico-de-gallo-pwm";
+			#pwm-cells = <3>;
+			status = "disabled";
+		};
+
 		pdg_uart0: uart {
 			compatible = "odp,pico-de-gallo-uart";
 			current-speed = <115200>;

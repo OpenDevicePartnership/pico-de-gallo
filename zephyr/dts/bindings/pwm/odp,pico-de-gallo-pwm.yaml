@@ -1,0 +1,53 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+description: |
+  PWM controller bridged over USB by a Pico de Gallo board.
+
+  Must be a direct child of an odp,pico-de-gallo parent, which owns the host
+  connection and the serial-number selector. This node must not carry a
+  selector of its own.
+
+  Four channels, 0 to 3, mapping to GPIO12 through GPIO15 on the Pico 2
+  header.
+
+  SLICE SHARING. The RP2350 groups channels into slices of two: channels 0
+  and 1 share one slice, channels 2 and 3 share another. A slice has a single
+  period. Two channels on the same slice therefore CANNOT hold independent
+  periods, and this driver refuses the attempt with -EINVAL rather than
+  silently changing a period its owner never asked for. Plan for one period
+  per slice, or use channels 0 and 2 if two independent periods are required.
+
+  NO DISABLE. The firmware's disable operation acts on a whole slice, so
+  disabling one channel would stop its sibling mid-operation. This driver
+  therefore enables a slice on first use and never disables it. A pulse width
+  of zero already produces a constant-low output, which is what "off" means
+  here.
+
+  UNSUPPORTED FLAGS. PWM_POLARITY_INVERTED returns -ENOTSUP. It is not
+  emulated by inverting the duty cycle, because that changes the idle level
+  rather than the polarity.
+
+  PERIOD BOUNDS. pwm_get_cycles_per_sec() reports the 150 MHz PWM source
+  clock, so period_cycles are source-clock ticks. A period below 2 cycles is
+  refused with -EINVAL. A period above 16711680 cycles (roughly 9 Hz) is
+  refused with -ENOTSUP: a longer period would require a clock divider the
+  firmware cannot program, and requesting one panics the firmware. See
+  https://github.com/OpenDevicePartnership/pico-de-gallo/issues/192.
+
+  PHASE-CORRECT mode is never used. Zephyr has no corresponding concept, and
+  in that mode the firmware's reported full-scale duty no longer corresponds
+  to the period.
+
+compatible: "odp,pico-de-gallo-pwm"
+
+include: [pwm-controller.yaml, base.yaml]
+
+properties:
+  "#pwm-cells":
+    const: 3
+
+pwm-cells:
+  - channel
+  - period
+  - flags
