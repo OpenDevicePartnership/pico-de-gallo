@@ -176,37 +176,64 @@ static uint16_t pdg_pwm_compare_for(uint32_t pulse_cycles, uint32_t period_cycle
 }
 
 /*
+ * Drop everything the driver believes about a slice and both its channels.
+ *
+ * Called on any failure that occurs AFTER set_config has already succeeded.
+ * At that point the device state is indeterminate: the reconfiguration was
+ * applied but the duty was not, or could not be read back. Continuing to
+ * claim knowledge of it is what desynchronises slices[] from channels[].
+ *
+ * The alternative -- rolling slices[s].period_cycles back to its previous
+ * value -- is deliberately NOT taken. It would make the shadow lie about
+ * hardware that really was reconfigured, so a later request for the old period
+ * would skip the reconfiguration and silently run at the wrong frequency.
+ * Forgetting is strictly safer than remembering something false.
+ *
+ * Forgetting costs nothing: pwm_set_cycles() always supplies both period and
+ * pulse, so the next call on either channel re-establishes everything. That is
+ * also why this is applied unconditionally on those failure paths rather than
+ * only when the set_config branch actually ran: distinguishing the two would
+ * need another flag to buy back one redundant reconfiguration.
+ *
+ * `enabled` is NOT cleared. The slice really is enabled, that is a fact about
+ * the device rather than a cached period, and nothing in this driver can
+ * disable it. Clearing it would only buy a redundant enable.
+ *
+ * The caller holds data->lock.
+ */
+static void pdg_pwm_forget_slice(struct pdg_pwm_data *data, uint32_t slice)
+{
+	uint32_t base = slice * PDG_PWM_CHANNELS_PER_SLICE;
+
+	data->slices[slice].configured = false;
+
+	for (uint32_t i = 0U; i < PDG_PWM_CHANNELS_PER_SLICE; i++) {
+		data->channels[base + i].configured = false;
+	}
+}
+
+/*
  * Configure the slice if its period changed, scale the pulse against the
  * full-scale duty the firmware reports, then enable the slice on first use.
  *
  * There is deliberately no sibling duty re-assertion here. pwm/set-config
  * rescales BOTH channels' compares with truncating integer division, which
- * would drift a sibling's duty downward -- but on every path where a caller
- * gets a successful return, this driver never has to compensate, because a
- * slice is not reconfigured while a sibling is in use. The conflicting-period
- * refusal guarantees a request that reaches this function already carries the
- * slice's current period whenever the sibling is configured, so the
- * reconfiguration branch below is skipped in exactly the cases a re-assertion
- * would have been needed.
+ * would drift a sibling's duty downward -- but this driver never has to
+ * compensate, because a slice is not reconfigured while a sibling is in use.
+ * The conflicting-period refusal guarantees a request that reaches this
+ * function already carries the slice's current period whenever the sibling is
+ * configured, so the reconfiguration branch below is skipped in exactly the
+ * cases a re-assertion would have been needed.
  *
- * ONE EXCEPTION, and it is not hypothetical -- it was reproduced against the
- * recording fake. The guarantee rests on
- * slices[s].period_cycles == channels[sibling].period_cycles, and those two
- * fields are committed at DIFFERENT points: the slice's right after a
+ * That guarantee rests on an invariant the failure paths must maintain:
+ * whenever channels[sibling].configured is true, slices[s].configured is true
+ * and slices[s].period_cycles == channels[sibling].period_cycles. The two
+ * fields are committed at DIFFERENT points -- the slice's right after a
  * successful set_config, the channel's only after the set_duty_cycle that
- * follows it. A set_config that succeeds and is then followed by a FAILED
- * get_duty_cycle or set_duty_cycle leaves the slice on the new period while
- * the channel still records the old one. The conflict check, which reads the
- * channel, then admits a sibling request carrying the stale period, and the
- * reconfiguration branch below fires with the sibling configured.
- *
- * The consequence is bounded: reaching that state requires a transport or
- * device error mid-sequence, and the caller was already told about it with a
- * negative errno, so the channel's duty is untrustworthy for that reason
- * anyway. It is recorded here rather than fixed because the fix is a
- * behavioural change beyond the slice-sharing rules -- either re-asserting the
- * sibling, or rolling slices[s].period_cycles back when the sequence fails
- * after set_config. See issue #155.
+ * follows it -- so every failure between those two points calls
+ * pdg_pwm_forget_slice() to drop both, rather than leaving them disagreeing.
+ * A failure of set_config ITSELF needs no invalidation, because it returns
+ * before either field is written and nothing was committed. See issue #155.
  */
 static int pdg_pwm_apply(const struct device *dev, uint32_t channel,
 			 uint32_t period_cycles, uint32_t pulse_cycles)
@@ -245,6 +272,7 @@ static int pdg_pwm_apply(const struct device *dev, uint32_t channel,
 	if (ret < 0) {
 		LOG_ERR("%s: channel %u failed to read the full-scale duty: "
 			"errno=%d.", dev->name, channel, ret);
+		pdg_pwm_forget_slice(data, slice);
 		goto out;
 	}
 
@@ -253,6 +281,7 @@ static int pdg_pwm_apply(const struct device *dev, uint32_t channel,
 			"of zero, which would make every duty cycle a division "
 			"by zero. Returning -EIO.", dev->name, channel);
 		ret = -EIO;
+		pdg_pwm_forget_slice(data, slice);
 		goto out;
 	}
 
@@ -263,6 +292,7 @@ static int pdg_pwm_apply(const struct device *dev, uint32_t channel,
 	if (ret < 0) {
 		LOG_ERR("%s: channel %u failed to set the duty cycle: errno=%d.",
 			dev->name, channel, ret);
+		pdg_pwm_forget_slice(data, slice);
 		goto out;
 	}
 

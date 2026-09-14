@@ -517,13 +517,12 @@ ZTEST(pdg_fake_pwm, test_different_slices_hold_independent_periods)
  * If the conflict rule is ever relaxed, this test fails -- and the drift
  * becomes real, so a re-assertion would then be required.
  *
- * SCOPE. This pins the invariant along success paths only, which is what it
- * can reach through the public API without scripting a device failure. There
- * is a known partial-failure path where the invariant does NOT hold -- a
- * set_config that succeeds followed by a failing set_duty_cycle desynchronises
- * slices[].period_cycles from channels[].period_cycles. That was reproduced
- * against this fake and is documented on pdg_pwm_apply(); it is not covered
- * here because the behaviour it exposes is unresolved rather than intended.
+ * The invariant holds unconditionally, not merely along success paths. It
+ * rests on slices[].period_cycles agreeing with channels[].period_cycles, and
+ * the driver keeps those two in agreement by forgetting BOTH whenever a
+ * sequence fails after set_config has already succeeded.
+ * test_a_failed_sequence_does_not_leave_stale_slice_state covers that failure
+ * path; this test covers the success paths reachable through the public API.
  */
 ZTEST(pdg_fake_pwm, test_a_slice_is_never_reconfigured_while_a_sibling_is_in_use)
 {
@@ -546,6 +545,67 @@ ZTEST(pdg_fake_pwm, test_a_slice_is_never_reconfigured_while_a_sibling_is_in_use
 		      -EINVAL);
 	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
 		      "a refused request still reconfigured the slice");
+}
+
+/*
+ * A sequence that fails AFTER set_config succeeded must not leave the driver
+ * claiming knowledge it no longer has.
+ *
+ * slices[].period_cycles is committed right after a successful set_config;
+ * channels[].period_cycles only after the set_duty_cycle that follows it. A
+ * failure in between used to leave the two disagreeing, and because the
+ * conflict check reads the CHANNEL while the reconfiguration test reads the
+ * SLICE, the disagreement was directly observable: a request for the period
+ * the slice is genuinely on was refused as "conflicting" with a sibling
+ * record that no longer described anything.
+ *
+ * The driver now invalidates the whole slice on any such failure, so this
+ * asserts the observable consequence of that: after the failure, driving the
+ * sibling at the slice's real period is accepted rather than refused.
+ *
+ * PERIODS. 7001 and 7002 are used nowhere else in this file.
+ *
+ * CHANNEL 1. This is the ONLY test that touches channel 1, and it must leave
+ * it unconfigured or every channel-0 test above would be pinned to 7002 for
+ * the rest of the binary. The trailing scrub is what guarantees that: it
+ * forces one more post-set_config failure on slice 0, whose invalidation
+ * clears BOTH channels. Do not delete it.
+ */
+ZTEST(pdg_fake_pwm, test_a_failed_sequence_does_not_leave_stale_slice_state)
+{
+	int ret;
+
+	/* 1. A clean drive on channel 0, establishing 7001 on slice 0. */
+	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 7001U, 100U, 0));
+
+	/* 2. A re-drive at 7002 whose set_duty_cycle fails. set_config has
+	 * already succeeded at this point, so the slice really is on 7002.
+	 */
+	pdg_pwm_fake_set_set_duty_result(-EIO);
+	ret = pwm_set_cycles(PWM_DEV, 0U, 7002U, 100U, 0);
+	pdg_pwm_fake_set_set_duty_result(0);
+	zassert_equal(ret, -EIO,
+		      "the scripted set_duty_cycle failure did not reach the "
+		      "caller");
+
+	/* 3. The sibling now asks for 7002 -- the period the slice is actually
+	 * on. Stale channel-0 state would make this look like a conflict.
+	 */
+	zassert_ok(pwm_set_cycles(PWM_DEV, 1U, 7002U, 500U, 0),
+		   "channel 1 was refused the period its slice is genuinely "
+		   "on, because the failed sequence left channel 0 claiming a "
+		   "period the slice no longer has");
+
+	/* Scrub: invalidate slice 0 so channel 1 stops pinning channel 0.
+	 *
+	 * It must carry 7002, the period channel 1 now holds. Any other period
+	 * would be turned away by the conflict check before it ever reached
+	 * the invalidating failure path, which is the whole point of that
+	 * check and was observed happening.
+	 */
+	pdg_pwm_fake_set_set_duty_result(-EIO);
+	(void)pwm_set_cycles(PWM_DEV, 0U, 7002U, 0U, 0);
+	pdg_pwm_fake_set_set_duty_result(0);
 }
 
 /*
