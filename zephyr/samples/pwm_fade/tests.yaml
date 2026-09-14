@@ -1,0 +1,25 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+#
+# BUILD ONLY, and not negotiable. Booting this image initialises the MFD
+# parent, which reaches gallo_init_strict() and opens a USB device. GitHub
+# runners have no board attached, and twister treats native_sim as
+# `type: native`, so it would otherwise RUN the binary.
+#
+# No depends_on: native_sim/native/64 does not name pwm in its supported:
+# list, so claiming it would silently filter this scenario to nothing.
+sample:
+  name: Pico de Gallo PWM fade
+  description: Fade an LED on a USB-attached Pico de Gallo PWM channel
+common:
+  build_only: true
+  tags:
+    - pwm
+    - shield
+    - pico_de_gallo
+tests:
+  sample.pico_de_gallo.pwm_fade:
+    platform_allow:
+      - native_sim/native/64
+    integration_platforms:
+      - native_sim/native/64
