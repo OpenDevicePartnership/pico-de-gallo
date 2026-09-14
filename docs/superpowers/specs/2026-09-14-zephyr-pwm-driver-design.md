@@ -123,9 +123,13 @@ than computed, so the driver never has to model the firmware's divider search.
 | `channel >= 4` | `-EINVAL` | Neither the FFI nor `pico-de-gallo-lib` range-checks the channel, so an out-of-range value would otherwise make a full USB round trip to be refused. |
 | Sibling channel holds a different period | `-EINVAL` | See §7. |
 
-The bound `255 * 65536` is conservative by design. The exact limit is
-`255 * 65537 = 16 711 935`; rounding down to a power-of-two multiple gives a
-bound that is obviously safe by inspection and leaves margin.
+The bound `255 * 65536` is conservative by design, and substantially so. With
+the ceiling conversion, `frequency_hz = ceil(150e6 / period)` stays at 9 Hz —
+needing exactly divider 255 — for every period up to `18 749 999`. Only at
+`18 750 000` does the division land on exactly 8, giving a ceiling of 8 Hz,
+which needs divider 287 and panics. So the true safe maximum is `18 749 999`;
+`255 * 65536` is picked because it is obviously safe by inspection, not
+because it sits at the edge.
 
 `phase_correct` is always sent as `false`. Zephyr's PWM API has no
 corresponding concept, and in phase-correct mode the period becomes `2 × top`

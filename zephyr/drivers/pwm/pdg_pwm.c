@@ -195,9 +195,23 @@ static uint16_t pdg_pwm_compare_for(uint32_t pulse_cycles, uint32_t period_cycle
  * only when the set_config branch actually ran: distinguishing the two would
  * need another flag to buy back one redundant reconfiguration.
  *
- * `enabled` is NOT cleared. The slice really is enabled, that is a fact about
- * the device rather than a cached period, and nothing in this driver can
- * disable it. Clearing it would only buy a redundant enable.
+ * `enabled` is cleared too, and it belongs in the same sweep: whether the
+ * slice is enabled is part of what the driver knows about it, and this
+ * function's whole contract is that it stops knowing. Clearing it does NOT
+ * assert the slice is believed disabled -- it means the driver no longer
+ * claims to know, so it will re-assert enable on the next successful
+ * sequence. That costs one extra RPC, and pwm/enable is idempotent: it sets a
+ * bit and re-pushes the slice configuration. A cheap price for a state model
+ * with no exceptions, and it is what makes "forgets the slice" literally true
+ * rather than true of three fields out of four.
+ *
+ * A FAILING pdg_pwm_bottom_enable() deliberately does NOT call this. By that
+ * point set_config and set_duty_cycle have both succeeded, so the tracked
+ * period and compare are accurate and the device really is at that period.
+ * Forgetting would discard true information, and the invariant this function
+ * exists to protect -- slices[s] agreeing with channels[] -- is intact there,
+ * because both were committed. Leaving `enabled` false is exactly the right
+ * residue: the next call retries the enable.
  *
  * The caller holds data->lock.
  */
@@ -206,6 +220,7 @@ static void pdg_pwm_forget_slice(struct pdg_pwm_data *data, uint32_t slice)
 	uint32_t base = slice * PDG_PWM_CHANNELS_PER_SLICE;
 
 	data->slices[slice].configured = false;
+	data->slices[slice].enabled = false;
 
 	for (uint32_t i = 0U; i < PDG_PWM_CHANNELS_PER_SLICE; i++) {
 		data->channels[base + i].configured = false;

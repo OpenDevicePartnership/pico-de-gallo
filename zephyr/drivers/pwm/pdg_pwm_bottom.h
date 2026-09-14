@@ -73,8 +73,13 @@ extern "C" {
  * Lower: the firmware requires top >= 1, so a period of one cycle is
  * unreachable.
  *
- * Upper: 255 * 65536. Conservative by one counter step -- the exact limit is
- * 255 * 65537 -- so that the bound is obviously safe by inspection.
+ * Upper: 255 * 65536. Chosen because it is obviously safe by inspection, and
+ * it sits comfortably below the true edge rather than at it. With the
+ * ceiling conversion the driver uses, frequency_hz = ceil(150e6 / period)
+ * stays at 9 Hz -- which needs exactly divider 255 -- for every period up to
+ * 18749999. Only at 18750000 does 150e6 / period land on exactly 8, where the
+ * ceiling is 8 Hz, which needs divider 287 and panics. So the true safe
+ * maximum is 18749999 and this bound is substantially conservative.
  */
 #define PDG_PWM_MIN_PERIOD_CYCLES 2U
 #define PDG_PWM_MAX_PERIOD_CYCLES ((uint64_t)PDG_PWM_MAX_DIVIDER * 65536U)

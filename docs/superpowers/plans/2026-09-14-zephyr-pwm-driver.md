@@ -1561,20 +1561,20 @@ Do not solve this by adding a reset hook to the driver. A test-only entry point 
 
    ```c
    struct pwm_counts {
-   	int set_config;
-   	int set_duty;
-   	int enable;
-   	int disable;
+        int set_config;
+        int set_duty;
+        int enable;
+        int disable;
    };
 
    static struct pwm_counts snapshot_counts(void)
    {
-   	return (struct pwm_counts){
-   		.set_config = pdg_pwm_fake_set_config_count(),
-   		.set_duty = pdg_pwm_fake_set_duty_count(),
-   		.enable = pdg_pwm_fake_enable_count(),
-   		.disable = pdg_pwm_fake_disable_count(),
-   	};
+        return (struct pwm_counts){
+                .set_config = pdg_pwm_fake_set_config_count(),
+                .set_duty = pdg_pwm_fake_set_duty_count(),
+                .enable = pdg_pwm_fake_enable_count(),
+                .disable = pdg_pwm_fake_disable_count(),
+        };
    }
    ```
 
@@ -2789,10 +2789,10 @@ The error paths do not create an exception: a mismatched period is refused befor
 1. In **Task 4**, do not add the `pdg_pwm_reassert_sibling` placeholder, and delete this line from `pdg_pwm_apply`:
 
    ```c
-   	ret = pdg_pwm_reassert_sibling(dev, channel, max_duty, reconfigured);
-   	if (ret < 0) {
-   		goto out;
-   	}
+        ret = pdg_pwm_reassert_sibling(dev, channel, max_duty, reconfigured);
+        if (ret < 0) {
+                goto out;
+        }
    ```
 
    The `reconfigured` local then has no remaining reader, so delete it too — both the declaration and the `reconfigured = true;` assignment. Leaving an unused variable would fail the build on `-Werror=unused-but-set-variable`.
@@ -2816,24 +2816,24 @@ The error paths do not create an exception: a mismatched period is refused befor
     */
    ZTEST(pdg_fake_pwm, test_a_slice_is_never_reconfigured_while_a_sibling_is_in_use)
    {
-   	struct pwm_counts before;
+        struct pwm_counts before;
 
-   	/* Both channels of slice 0 in use at the same period. */
-   	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 4096U, 1024U, 0));
-   	zassert_ok(pwm_set_cycles(PWM_DEV, 1U, 4096U, 2048U, 0));
+        /* Both channels of slice 0 in use at the same period. */
+        zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 4096U, 1024U, 0));
+        zassert_ok(pwm_set_cycles(PWM_DEV, 1U, 4096U, 2048U, 0));
 
-   	before = snapshot_counts();
+        before = snapshot_counts();
 
-   	/* Any further request on either channel must either keep the period,
-    	 * and so not reconfigure, or differ and be refused outright.
-    	 */
-   	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 4096U, 3072U, 0));
-   	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
-   		      "the slice was reconfigured while channel 1 was in use");
+        /* Any further request on either channel must either keep the period,
+         * and so not reconfigure, or differ and be refused outright.
+         */
+        zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 4096U, 3072U, 0));
+        zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+                      "the slice was reconfigured while channel 1 was in use");
 
-   	zassert_equal(pwm_set_cycles(PWM_DEV, 0U, 8192U, 1024U, 0), -EINVAL);
-   	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
-   		      "a refused request still reconfigured the slice");
+        zassert_equal(pwm_set_cycles(PWM_DEV, 0U, 8192U, 1024U, 0), -EINVAL);
+        zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+                      "a refused request still reconfigured the slice");
    }
    ```
 

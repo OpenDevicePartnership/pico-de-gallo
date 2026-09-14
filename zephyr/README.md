@@ -895,8 +895,11 @@ can all still reach it.
 The ceiling on the frequency conversion is what makes 16711680 safe. Flooring
 would lengthen the period and yield 8 Hz there, needing divider 287 — which is
 exactly the panic. Ceiling yields 9 Hz, needing exactly 255. The bound itself is
-`255 * 65536`, conservative by one counter step against the exact `255 * 65537`,
-so that it is obviously safe by inspection.
+`255 * 65536`, chosen because it is obviously safe by inspection. It is
+substantially conservative, not marginally so: with the ceiling conversion the
+derived frequency stays at 9 Hz for every period up to 18749999, and only drops
+to 8 Hz at 18750000, where `150e6 / period` is exactly 8. So the true safe
+maximum is 18749999 and this bound sits comfortably below it.
 
 #### Slice sharing
 
@@ -932,8 +935,17 @@ the driver cannot describe, so it discards everything it believed about that
 slice and both its channels rather than remembering something possibly false.
 That costs nothing: `pwm_set_cycles()` always supplies both period and pulse, so
 the next call on either channel re-establishes the lot. The `enabled` flag is
-kept, because the slice really is enabled and nothing in this driver can undo
-that.
+discarded with the rest — not because the slice is believed disabled, but
+because the driver no longer claims to know, so it re-asserts the enable on the
+next successful call. `pwm/enable` is idempotent, so that costs one extra RPC
+and buys a state model with no exceptions.
+
+A failing *enable* is the one post-`set_config` failure that does **not**
+invalidate, and deliberately so. By that point both the reconfiguration and the
+duty write have succeeded, so the tracked period and duty are accurate and the
+device really is at that period; forgetting would throw away true information.
+Leaving `enabled` false is the correct residue — the next call retries the
+enable.
 
 Initialization gates the driver on `GALLO_CAP_PWM` from `device/info`. Every
 shipped firmware advertises PWM on **both** hardware revisions, so this gate

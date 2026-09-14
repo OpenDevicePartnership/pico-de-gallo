@@ -334,9 +334,19 @@ ZTEST(pdg_fake_pwm, test_frequency_round_trip_never_undershoots)
 	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 4569U, 0U, 0));
 }
 
-/* Duty accuracy across the range, including both endpoints. 2500 cycles is
+/*
+ * Duty accuracy across the range, including both endpoints. 2500 cycles is
  * reserved to this test, so the first iteration is guaranteed to configure the
  * slice and give the fake a full-scale duty to report.
+ *
+ * This half CANNOT detect a rounding regression, and says so rather than
+ * pretending otherwise: at period 2500 the derived frequency is exactly
+ * 150e6 / 2500 = 60000 Hz, the fake's divider search lands on top = 2499, and
+ * max_duty is therefore exactly 2500. The scaling collapses to
+ * (pulse * 2500 + 1250) / 2500, which is `pulse` whether the driver rounds
+ * half up or truncates. Its job is coverage of the endpoints and the
+ * monotonic middle; test_duty_rounding_is_half_up below is what pins the
+ * policy.
  */
 ZTEST(pdg_fake_pwm, test_duty_ratio_is_accurate)
 {
@@ -356,6 +366,93 @@ ZTEST(pdg_fake_pwm, test_duty_ratio_is_accurate)
 		zassert_equal(got, want,
 			      "pulse %u of %u produced compare %u, expected %u",
 			      pulse, period, got, want);
+	}
+}
+
+/*
+ * The scaling rounds HALF UP; it must not truncate.
+ *
+ * WHY THE HARD-CODED EXPECTATIONS.
+ * --------------------------------
+ * expected_compare() above recomputes the driver's own formula. If both it and
+ * the driver truncated, they would agree and the test would pass -- which is
+ * precisely how a rounding regression could ship unnoticed. So the primary
+ * assertion here is against values worked out by hand, and expected_compare()
+ * is kept only as a corroborating cross-check.
+ *
+ * WHY THESE PERIODS.
+ * ------------------
+ * A case only distinguishes the two policies when max_duty != period AND the
+ * quotient is fractional. 7000 and 9000 are both used nowhere else in this
+ * file, and both give a fractional half:
+ *
+ *   period 7000: frequency = ceil(150e6 / 7000) = 21429 Hz. The fake's
+ *   divider search takes div = 1, raw = 150e6 / 21429 = 6999 (integer
+ *   division, since 21429 * 7000 = 150003000 overshoots), top = 6998, so
+ *   max_duty = 6999.
+ *     pulse 3500 -> round: (3500*6999 + 3500) / 7000 = 24500000 / 7000 = 3500
+ *                   trunc: 24496500 / 7000 = 3499
+ *     pulse 1750 -> round: (1750*6999 + 3500) / 7000 = 12251750 / 7000 = 1750
+ *                   trunc: 12248250 / 7000 = 1749
+ *
+ *   period 9000: frequency = ceil(150e6 / 9000) = 16667 Hz, raw = 8999,
+ *   top = 8998, max_duty = 8999.
+ *     pulse 4500 -> round: 40500000 / 9000 = 4500; trunc: 40495500 / 9000 = 4499
+ *     pulse 2250 -> round: 20252250 / 9000 = 2250; trunc: 20247750 / 9000 = 2249
+ *
+ * Two independent periods on purpose, so the policy is not pinned by a single
+ * data point.
+ */
+ZTEST(pdg_fake_pwm, test_duty_rounding_is_half_up)
+{
+	static const struct {
+		uint32_t period;
+		uint32_t pulse;
+		uint16_t expected_max_duty;
+		uint16_t expected_compare;
+		uint16_t truncating_compare;
+	} cases[] = {
+		{ 7000U, 3500U, 6999U, 3500U, 3499U },
+		{ 7000U, 1750U, 6999U, 1750U, 1749U },
+		{ 9000U, 4500U, 8999U, 4500U, 4499U },
+		{ 9000U, 2250U, 8999U, 2250U, 2249U },
+	};
+
+	ARRAY_FOR_EACH(cases, i) {
+		uint32_t period = cases[i].period;
+		uint32_t pulse = cases[i].pulse;
+		uint16_t max_duty = 0U;
+		uint16_t got = 0U;
+		uint16_t want = 0U;
+
+		zassert_ok(pwm_set_cycles(PWM_DEV, 0U, period, pulse, 0));
+
+		/* The hand arithmetic above rests on this, so assert it rather
+		 * than assume it: a change to the fake's divider model must
+		 * fail here and not silently move the expected compares.
+		 */
+		zassert_ok(pdg_pwm_fake_max_duty_for(0U, &max_duty));
+		zassert_equal(max_duty, cases[i].expected_max_duty,
+			      "period %u modelled max_duty %u, expected %u; the "
+			      "hand-computed compares below no longer apply",
+			      period, max_duty, cases[i].expected_max_duty);
+
+		last_duty_for(0U, &got);
+
+		zassert_equal(got, cases[i].expected_compare,
+			      "pulse %u of %u produced compare %u, expected %u. "
+			      "A truncating scale would have produced %u.",
+			      pulse, period, got, cases[i].expected_compare,
+			      cases[i].truncating_compare);
+
+		/* Corroboration only. This recomputes the driver's formula, so
+		 * it cannot catch a shared truncation -- that is what the
+		 * hard-coded value above is for.
+		 */
+		expected_compare(0U, pulse, period, &want);
+		zassert_equal(got, want,
+			      "pulse %u of %u: compare %u disagrees with the "
+			      "recomputed %u", pulse, period, got, want);
 	}
 }
 
@@ -609,22 +706,74 @@ ZTEST(pdg_fake_pwm, test_a_failed_sequence_does_not_leave_stale_slice_state)
 }
 
 /*
- * The slice is enabled at most once, however many updates follow.
+ * The slice is enabled on first use, and at most once thereafter.
  *
- * The first drive's delta is asserted as "no more than one" rather than
- * "exactly one", because the driver's enabled flag survives across tests and
- * an earlier test may already have enabled slice 1. The claim that actually
- * matters -- that an update does not re-enable -- is asserted exactly, from a
- * snapshot taken once the slice is known to be enabled.
+ * WHY THIS IS NOT A DELTA ASSERTION ON THE FIRST DRIVE.
+ * -----------------------------------------------------
+ * It used to be, and it was vacuous: slices[].enabled survives across tests,
+ * so an earlier test may already have enabled slice 1, which forced the first
+ * assertion down to "no more than one". Deleting the production call to
+ * pdg_pwm_bottom_enable() entirely made every delta 0, and the test still
+ * passed. It proved nothing about enabling.
+ *
+ * It is now driven from a KNOWN not-yet-enabled state, and proves the enable
+ * happens by its RETURN VALUE rather than by a counter. Getting there needs
+ * two steps:
+ *
+ *   1. Force a post-set_config failure so pdg_pwm_forget_slice() runs. That
+ *      clears slices[].enabled along with everything else, which is exactly
+ *      what makes this testable -- nothing else in the driver ever clears it.
+ *   2. Script enable itself to fail with a distinctive errno. If the driver
+ *      calls enable, the caller sees that errno; if it does not, the call
+ *      returns 0 and this test fails. There is no way to pass without the
+ *      call.
+ *
+ * The "once, not every time" half then follows from the same known state: the
+ * first successful drive must issue exactly one enable, and the updates after
+ * it exactly zero.
+ *
+ * Every scripted result is restored before each assertion that could return
+ * early, so an alphabetically later test cannot inherit a failure.
  */
 ZTEST(pdg_fake_pwm, test_slice_is_enabled_once)
 {
-	struct pwm_counts before = snapshot_counts();
+	struct pwm_counts before;
+	int ret;
+
+	/* 1. Put slice 1 back into a not-yet-enabled state. A set_duty failure
+	 * is a post-set_config failure, so the driver forgets the slice --
+	 * including its enabled flag.
+	 */
+	pdg_pwm_fake_set_set_duty_result(-EIO);
+	ret = pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 250U, 0);
+	pdg_pwm_fake_set_set_duty_result(0);
+	zassert_equal(ret, -EIO,
+		      "the scripted set_duty_cycle failure did not reach the "
+		      "caller, so the slice was never invalidated");
+
+	/* 2. THE non-vacuous assertion: a scripted enable failure must reach
+	 * the caller. Only possible if the driver actually calls enable.
+	 */
+	pdg_pwm_fake_set_enable_result(-EPIPE);
+	ret = pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 250U, 0);
+	pdg_pwm_fake_set_enable_result(0);
+	zassert_equal(ret, -EPIPE,
+		      "a not-yet-enabled slice was driven and the scripted "
+		      "enable failure did not reach the caller, so the driver "
+		      "never enabled the slice at all");
+
+	/* 3. The same drive with enable unscripted must succeed, and must
+	 * issue exactly one enable -- the slice is still not enabled, because
+	 * step 2's attempt failed.
+	 */
+	before = snapshot_counts();
 
 	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 250U, 0));
-	zassert_true(pdg_pwm_fake_enable_count() - before.enable <= 1,
-		     "a single update enabled the slice more than once");
+	zassert_equal(pdg_pwm_fake_enable_count() - before.enable, 1,
+		      "the first successful drive on a not-yet-enabled slice "
+		      "must enable it exactly once");
 
+	/* 4. And every update after that must issue none. */
 	before = snapshot_counts();
 
 	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 500U, 0));
