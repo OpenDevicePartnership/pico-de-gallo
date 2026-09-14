@@ -408,3 +408,194 @@ ZTEST(pdg_fake_pwm, test_unchanged_period_does_not_reconfigure)
 	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
 		      "changing only the pulse width must not reconfigure the slice");
 }
+
+/*
+ * SLICE-SHARING TESTS -- WHY THEY ALL RUN ON SLICE 1 (CHANNELS 2 AND 3)
+ * ---------------------------------------------------------------------
+ * Every test above this point drives channel 0 and ONLY channel 0, so channel
+ * 1 -- channel 0's slice sibling -- is never configured.
+ *
+ * That is load-bearing, not incidental. The driver's channel state is never
+ * cleared (see the TEST ISOLATION note at the top of this file), so a channel
+ * configured once stays configured for the rest of the binary. Configuring
+ * channel 1 at any period P would therefore pin channel 0 to P permanently,
+ * and every test above that drives channel 0 at some other period would start
+ * failing with -EINVAL from the very conflict check these tests exist to
+ * verify -- in whatever order twister happens to run them.
+ *
+ * So the sibling-pair tests use slice 1, which nothing else touches, and
+ * NOTHING in this file ever configures channel 1.
+ *
+ * Slice 1 carries the same hazard internally: once channel 3 is configured at
+ * SIB_PERIOD, channel 2 can only ever use SIB_PERIOD. All of these tests
+ * therefore share one period and assert deltas, so each one holds whether it
+ * runs first or last.
+ *
+ * SIB_PERIOD (4096) and SIB_OTHER_PERIOD (8192, 4097) are used nowhere else in
+ * this file; verified by grep before they were chosen.
+ */
+#define SIB_PERIOD       4096U
+#define SIB_OTHER_PERIOD 8192U
+
+/*
+ * Two channels on one slice cannot hold independent periods. Refusing is
+ * better than reconfiguring: silently changing channel 2's period because
+ * channel 3 asked for a different one is a defect its owner cannot see.
+ *
+ * 4097 is this test's own conflicting period, used nowhere else.
+ */
+ZTEST(pdg_fake_pwm, test_rejects_a_conflicting_sibling_period)
+{
+	struct pwm_counts before;
+
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 500U, 0));
+
+	before = snapshot_counts();
+
+	zassert_equal(pwm_set_cycles(PWM_DEV, 3U, 4097U, 500U, 0), -EINVAL,
+		      "channel 3 must not be allowed a period differing from "
+		      "its slice sibling channel 2's");
+	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+		      "the refused request still reconfigured the slice");
+	zassert_equal(pdg_pwm_fake_set_duty_count() - before.set_duty, 0,
+		      "the refused request still wrote a duty cycle");
+	zassert_equal(pdg_pwm_fake_enable_count() - before.enable, 0,
+		      "the refused request still enabled the slice");
+}
+
+/* The same period on a sibling is fine, and must not reconfigure. */
+ZTEST(pdg_fake_pwm, test_accepts_a_matching_sibling_period)
+{
+	struct pwm_counts before;
+
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 250U, 0));
+
+	before = snapshot_counts();
+
+	zassert_ok(pwm_set_cycles(PWM_DEV, 3U, SIB_PERIOD, 750U, 0));
+	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+		      "a sibling with a matching period must not reconfigure");
+}
+
+/*
+ * Channels on DIFFERENT slices are independent: configuring slice 1 must not
+ * disturb slice 0, and the two must be able to hold different periods at the
+ * same time.
+ *
+ * 3201 is reserved to this test, so the first drive is guaranteed to
+ * reconfigure slice 0 and the third is a genuine no-op rather than an accident
+ * of what an earlier test left behind.
+ */
+ZTEST(pdg_fake_pwm, test_different_slices_hold_independent_periods)
+{
+	struct pwm_counts before = snapshot_counts();
+
+	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 3201U, 500U, 0));
+	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 1,
+		      "a period unique to this test must reconfigure slice 0");
+
+	/* A different period on the other slice, which must be accepted. */
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 500U, 0));
+
+	before = snapshot_counts();
+
+	/* Slice 0 must still be on 3201, untouched by the slice 1 work. */
+	zassert_ok(pwm_set_cycles(PWM_DEV, 0U, 3201U, 250U, 0));
+	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+		      "configuring slice 1 disturbed slice 0's period");
+}
+
+/*
+ * The invariant that makes a sibling duty re-assertion unnecessary.
+ *
+ * pwm/set-config rescales BOTH channels' compares with truncating integer
+ * division, which would drift a sibling's duty downward. This driver never
+ * has to compensate, because a slice is not reconfigured while a sibling
+ * is in use: the conflicting-period refusal guarantees any surviving
+ * request already carries the slice's current period.
+ *
+ * If the conflict rule is ever relaxed, this test fails -- and the drift
+ * becomes real, so a re-assertion would then be required.
+ *
+ * SCOPE. This pins the invariant along success paths only, which is what it
+ * can reach through the public API without scripting a device failure. There
+ * is a known partial-failure path where the invariant does NOT hold -- a
+ * set_config that succeeds followed by a failing set_duty_cycle desynchronises
+ * slices[].period_cycles from channels[].period_cycles. That was reproduced
+ * against this fake and is documented on pdg_pwm_apply(); it is not covered
+ * here because the behaviour it exposes is unresolved rather than intended.
+ */
+ZTEST(pdg_fake_pwm, test_a_slice_is_never_reconfigured_while_a_sibling_is_in_use)
+{
+	struct pwm_counts before;
+
+	/* Both channels of slice 1 in use at the same period. */
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 1024U, 0));
+	zassert_ok(pwm_set_cycles(PWM_DEV, 3U, SIB_PERIOD, 2048U, 0));
+
+	before = snapshot_counts();
+
+	/* Any further request on either channel must either keep the period,
+	 * and so not reconfigure, or differ and be refused outright.
+	 */
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 3072U, 0));
+	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+		      "the slice was reconfigured while channel 3 was in use");
+
+	zassert_equal(pwm_set_cycles(PWM_DEV, 2U, SIB_OTHER_PERIOD, 1024U, 0),
+		      -EINVAL);
+	zassert_equal(pdg_pwm_fake_set_config_count() - before.set_config, 0,
+		      "a refused request still reconfigured the slice");
+}
+
+/*
+ * The slice is enabled at most once, however many updates follow.
+ *
+ * The first drive's delta is asserted as "no more than one" rather than
+ * "exactly one", because the driver's enabled flag survives across tests and
+ * an earlier test may already have enabled slice 1. The claim that actually
+ * matters -- that an update does not re-enable -- is asserted exactly, from a
+ * snapshot taken once the slice is known to be enabled.
+ */
+ZTEST(pdg_fake_pwm, test_slice_is_enabled_once)
+{
+	struct pwm_counts before = snapshot_counts();
+
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 250U, 0));
+	zassert_true(pdg_pwm_fake_enable_count() - before.enable <= 1,
+		     "a single update enabled the slice more than once");
+
+	before = snapshot_counts();
+
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 500U, 0));
+	zassert_ok(pwm_set_cycles(PWM_DEV, 3U, SIB_PERIOD, 500U, 0));
+	zassert_equal(pdg_pwm_fake_enable_count() - before.enable, 0,
+		      "the slice must be enabled once, not on every update");
+}
+
+/*
+ * Nothing in this driver may ever disable a slice. The bottom header declares
+ * no disable function, so this is structurally impossible today; the test
+ * exists so that adding one is caught here rather than in the field, where it
+ * would stop an unrelated channel.
+ *
+ * Absolute zero rather than a delta, and legitimately so: the count is not
+ * merely zero at the start of this test, it is zero for the entire lifetime of
+ * the binary.
+ */
+ZTEST(pdg_fake_pwm, test_never_disables_a_slice)
+{
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 500U, 0));
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 0U, 0));
+	zassert_ok(pwm_set_cycles(PWM_DEV, 3U, SIB_PERIOD, 0U, 0));
+	zassert_equal(pdg_pwm_fake_disable_count(), 0,
+		      "the driver disabled a slice, which stops the sibling "
+		      "channel");
+}
+
+/* No log may have overflowed during any of the above. */
+ZTEST(pdg_fake_pwm, test_no_recorder_overflowed)
+{
+	zassert_ok(pwm_set_cycles(PWM_DEV, 2U, SIB_PERIOD, 500U, 0));
+	zassert_equal(pdg_pwm_fake_overflowed(), 0);
+}

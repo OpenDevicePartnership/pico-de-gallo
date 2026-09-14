@@ -181,13 +181,32 @@ static uint16_t pdg_pwm_compare_for(uint32_t pulse_cycles, uint32_t period_cycle
  *
  * There is deliberately no sibling duty re-assertion here. pwm/set-config
  * rescales BOTH channels' compares with truncating integer division, which
- * would drift a sibling's duty downward -- but this driver never has to
- * compensate, because a slice is never reconfigured while a sibling is in use.
- * The conflicting-period refusal guarantees any request that reaches this
- * function already carries the slice's current period whenever the sibling is
- * configured, so the reconfiguration branch below is skipped in exactly the
- * cases a re-assertion would have been needed. The drift is unreachable rather
- * than mitigated.
+ * would drift a sibling's duty downward -- but on every path where a caller
+ * gets a successful return, this driver never has to compensate, because a
+ * slice is not reconfigured while a sibling is in use. The conflicting-period
+ * refusal guarantees a request that reaches this function already carries the
+ * slice's current period whenever the sibling is configured, so the
+ * reconfiguration branch below is skipped in exactly the cases a re-assertion
+ * would have been needed.
+ *
+ * ONE EXCEPTION, and it is not hypothetical -- it was reproduced against the
+ * recording fake. The guarantee rests on
+ * slices[s].period_cycles == channels[sibling].period_cycles, and those two
+ * fields are committed at DIFFERENT points: the slice's right after a
+ * successful set_config, the channel's only after the set_duty_cycle that
+ * follows it. A set_config that succeeds and is then followed by a FAILED
+ * get_duty_cycle or set_duty_cycle leaves the slice on the new period while
+ * the channel still records the old one. The conflict check, which reads the
+ * channel, then admits a sibling request carrying the stale period, and the
+ * reconfiguration branch below fires with the sibling configured.
+ *
+ * The consequence is bounded: reaching that state requires a transport or
+ * device error mid-sequence, and the caller was already told about it with a
+ * negative errno, so the channel's duty is untrustworthy for that reason
+ * anyway. It is recorded here rather than fixed because the fix is a
+ * behavioural change beyond the slice-sharing rules -- either re-asserting the
+ * sibling, or rolling slices[s].period_cycles back when the sequence fails
+ * after set_config. See issue #155.
  */
 static int pdg_pwm_apply(const struct device *dev, uint32_t channel,
 			 uint32_t period_cycles, uint32_t pulse_cycles)
@@ -343,6 +362,44 @@ static int pdg_pwm_set_cycles(const struct device *dev, uint32_t channel,
 			"period of %u. Returning -EINVAL.", dev->name, channel,
 			pulse_cycles, period_cycles);
 		return -EINVAL;
+	}
+
+	/*
+	 * Slice-sharing conflict.
+	 *
+	 * Channels 0+1 and 2+3 each share an RP2350 slice, and a slice has one
+	 * period. Reconfiguring would silently change the sibling's period
+	 * behind its owner's back, and additionally drift its duty through the
+	 * firmware's truncating rescale. Refusing surfaces the constraint at
+	 * the call that violates it.
+	 *
+	 * Read under the lock, because a concurrent call on the sibling could
+	 * otherwise be observed half-applied. The lock is released before
+	 * pdg_pwm_apply() takes it again rather than held across the call:
+	 * k_mutex is recursive for the same thread, but relying on that would
+	 * make the ownership of every field inside apply() ambiguous.
+	 */
+	{
+		uint32_t sibling = pdg_pwm_sibling_of(channel);
+		uint32_t sibling_period;
+		bool conflict;
+
+		k_mutex_lock(&data->lock, K_FOREVER);
+		conflict = data->channels[sibling].configured &&
+			   data->channels[sibling].period_cycles != period_cycles;
+		sibling_period = data->channels[sibling].period_cycles;
+		k_mutex_unlock(&data->lock);
+
+		if (conflict) {
+			LOG_ERR("%s: channel %u requested a period of %u cycles, but "
+				"its slice sibling channel %u is using %u. Channels "
+				"%u and %u share one PWM slice and cannot hold "
+				"independent periods. Use channels 0 and 2 for two "
+				"independent periods. Returning -EINVAL.",
+				dev->name, channel, period_cycles, sibling,
+				sibling_period, channel, sibling);
+			return -EINVAL;
+		}
 	}
 
 	return pdg_pwm_apply(dev, channel, period_cycles, pulse_cycles);
