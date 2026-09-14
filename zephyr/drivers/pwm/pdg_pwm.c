@@ -59,8 +59,8 @@ struct pdg_pwm_config {
 	const char *serial_number;
 };
 
-/* What a channel was last asked for. Needed to re-assert a sibling's duty
- * after a slice reconfiguration, and to detect a conflicting period.
+/* What a channel was last asked for, used to detect a period conflicting with
+ * the slice sibling's.
  */
 struct pdg_pwm_channel_state {
 	uint32_t period_cycles;
@@ -128,18 +128,145 @@ static int pdg_pwm_get_cycles_per_sec(const struct device *dev, uint32_t channel
 }
 
 /*
- * Placeholder. The device sequence -- reconfigure, read back the full-scale
- * duty, scale the pulse, enable the slice -- lands in a following commit.
+ * CEILING, not floor, and this is load-bearing.
+ *
+ * Flooring lengthens the period, which forces the firmware to choose a larger
+ * clock divider. At the maximum supported period it yields 8 Hz, which needs
+ * a divider of 287 -- above the 255 the hardware can hold, and embassy-rp
+ * panics rather than refusing. Ceiling yields 9 Hz, which needs exactly 255.
+ *
+ * It also matches the firmware's own behaviour: because it floors `top`, its
+ * achieved frequency is always greater than or equal to the requested one.
+ *
+ * period_cycles is bounded to at least PDG_PWM_MIN_PERIOD_CYCLES by the
+ * caller, so there is no division by zero here.
+ */
+static uint32_t pdg_pwm_frequency_for(uint32_t period_cycles)
+{
+	uint64_t numerator = (uint64_t)PDG_PWM_CYCLES_PER_SEC +
+			     (uint64_t)period_cycles - 1U;
+
+	return (uint32_t)(numerator / (uint64_t)period_cycles);
+}
+
+/*
+ * Scale a pulse width into the firmware's raw compare domain.
+ *
+ * Round half up rather than truncating. The firmware already truncates when it
+ * rescales compares across a reconfiguration, and truncating here too would
+ * compound a downward bias on every duty cycle.
+ *
+ * The clamp is belt and braces: pulse_cycles <= period_cycles is enforced by
+ * the caller, so the quotient cannot exceed max_duty. The firmware would
+ * silently clamp an over-range value anyway, which is exactly why the driver
+ * must not rely on it to catch a mistake.
+ */
+static uint16_t pdg_pwm_compare_for(uint32_t pulse_cycles, uint32_t period_cycles,
+				    uint16_t max_duty)
+{
+	uint64_t scaled = ((uint64_t)pulse_cycles * (uint64_t)max_duty) +
+			  ((uint64_t)period_cycles / 2U);
+	uint64_t compare = scaled / (uint64_t)period_cycles;
+
+	if (compare > (uint64_t)max_duty) {
+		compare = (uint64_t)max_duty;
+	}
+
+	return (uint16_t)compare;
+}
+
+/*
+ * Configure the slice if its period changed, scale the pulse against the
+ * full-scale duty the firmware reports, then enable the slice on first use.
+ *
+ * There is deliberately no sibling duty re-assertion here. pwm/set-config
+ * rescales BOTH channels' compares with truncating integer division, which
+ * would drift a sibling's duty downward -- but this driver never has to
+ * compensate, because a slice is never reconfigured while a sibling is in use.
+ * The conflicting-period refusal guarantees any request that reaches this
+ * function already carries the slice's current period whenever the sibling is
+ * configured, so the reconfiguration branch below is skipped in exactly the
+ * cases a re-assertion would have been needed. The drift is unreachable rather
+ * than mitigated.
  */
 static int pdg_pwm_apply(const struct device *dev, uint32_t channel,
 			 uint32_t period_cycles, uint32_t pulse_cycles)
 {
-	ARG_UNUSED(dev);
-	ARG_UNUSED(channel);
-	ARG_UNUSED(period_cycles);
-	ARG_UNUSED(pulse_cycles);
+	struct pdg_pwm_data *data = dev->data;
+	uint32_t slice = pdg_pwm_slice_of(channel);
+	uint16_t max_duty = 0U;
+	uint16_t current_duty = 0U;
+	int ret;
 
-	return -ENOSYS;
+	k_mutex_lock(&data->lock, K_FOREVER);
+
+	if (!data->slices[slice].configured ||
+	    data->slices[slice].period_cycles != period_cycles) {
+		ret = pdg_pwm_bottom_set_config(data->ctx, (uint8_t)channel,
+						pdg_pwm_frequency_for(period_cycles),
+						false);
+		if (ret < 0) {
+			LOG_ERR("%s: channel %u failed to configure the slice: "
+				"errno=%d.", dev->name, channel, ret);
+			goto out;
+		}
+
+		data->slices[slice].configured = true;
+		data->slices[slice].period_cycles = period_cycles;
+	}
+
+	/*
+	 * max_duty is read back rather than computed. It is top + 1, and `top`
+	 * is whatever the firmware's divider search settled on -- which the
+	 * driver cannot predict without duplicating that search, and must not,
+	 * because a duplicate would drift from it silently.
+	 */
+	ret = pdg_pwm_bottom_get_duty_cycle(data->ctx, (uint8_t)channel,
+					    &current_duty, &max_duty);
+	if (ret < 0) {
+		LOG_ERR("%s: channel %u failed to read the full-scale duty: "
+			"errno=%d.", dev->name, channel, ret);
+		goto out;
+	}
+
+	if (max_duty == 0U) {
+		LOG_ERR("%s: channel %u: the firmware reported a full-scale duty "
+			"of zero, which would make every duty cycle a division "
+			"by zero. Returning -EIO.", dev->name, channel);
+		ret = -EIO;
+		goto out;
+	}
+
+	ret = pdg_pwm_bottom_set_duty_cycle(data->ctx, (uint8_t)channel,
+					    pdg_pwm_compare_for(pulse_cycles,
+								period_cycles,
+								max_duty));
+	if (ret < 0) {
+		LOG_ERR("%s: channel %u failed to set the duty cycle: errno=%d.",
+			dev->name, channel, ret);
+		goto out;
+	}
+
+	data->channels[channel].configured = true;
+	data->channels[channel].period_cycles = period_cycles;
+	data->channels[channel].pulse_cycles = pulse_cycles;
+
+	if (!data->slices[slice].enabled) {
+		ret = pdg_pwm_bottom_enable(data->ctx, (uint8_t)channel);
+		if (ret < 0) {
+			LOG_ERR("%s: channel %u failed to enable the slice: "
+				"errno=%d.", dev->name, channel, ret);
+			goto out;
+		}
+
+		data->slices[slice].enabled = true;
+	}
+
+	ret = 0;
+out:
+	k_mutex_unlock(&data->lock);
+
+	return ret;
 }
 
 static int pdg_pwm_set_cycles(const struct device *dev, uint32_t channel,
@@ -184,6 +311,12 @@ static int pdg_pwm_set_cycles(const struct device *dev, uint32_t channel,
 	 * device down. See issue #192; this contains the defect for Zephyr
 	 * consumers without fixing it, and every other host surface remains
 	 * able to reach it.
+	 *
+	 * The "about N Hz" parenthetical is derived through
+	 * pdg_pwm_frequency_for() rather than by dividing directly, because a
+	 * direct integer division floors to 8 Hz -- which is precisely the
+	 * frequency this bound exists to keep the firmware away from. Printing
+	 * it would send anyone debugging #192 after the wrong number.
 	 */
 	if ((uint64_t)period_cycles > PDG_PWM_MAX_PERIOD_CYCLES) {
 		LOG_ERR("%s: channel %u requested a period of %u cycles; the "
@@ -191,8 +324,8 @@ static int pdg_pwm_set_cycles(const struct device *dev, uint32_t channel,
 			"needs a clock divider the firmware cannot program. "
 			"Returning -ENOTSUP.", dev->name, channel, period_cycles,
 			(unsigned long long)PDG_PWM_MAX_PERIOD_CYCLES,
-			(unsigned int)(PDG_PWM_CYCLES_PER_SEC /
-				       PDG_PWM_MAX_PERIOD_CYCLES));
+			(unsigned int)pdg_pwm_frequency_for(
+				(uint32_t)PDG_PWM_MAX_PERIOD_CYCLES));
 		return -ENOTSUP;
 	}
 
