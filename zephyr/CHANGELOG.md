@@ -52,6 +52,68 @@ The format is based on
 
 ### Added
 
+- A `pwm` driver, `drivers/pwm/pdg_pwm.c`, as a child of the
+  `odp,pico-de-gallo` MFD parent, with the binding
+  `dts/bindings/pwm/odp,pico-de-gallo-pwm.yaml`. Refs #155.
+
+  Four channels, 0 to 3, map to RP2350 GPIO12 through GPIO15.
+
+  `pwm_get_cycles_per_sec()` reports the 150 MHz PWM **source** clock, not
+  the counter rate. The counter advances at `150e6/divider`, which changes
+  with every frequency change and differs between the two slices, so it could
+  not serve as the stable per-device constant Zephyr's API requires.
+  Reporting the source clock makes `period_cycles` independent of the
+  divider — which matters, because the divider is not on the wire and the
+  driver cannot observe it.
+
+  The frequency is derived with a **ceiling**, not a floor. Flooring
+  lengthens the period and forces a larger divider; at the maximum supported
+  period it yields 8 Hz, which needs divider 287 and panics inside
+  embassy-rp. Ceiling yields 9 Hz, which needs exactly 255. The driver
+  therefore refuses any period above `255 * 65536 = 16711680` cycles with
+  `-ENOTSUP`, and any period below 2 cycles with `-EINVAL`. The upper bound is
+  **containment of #192, not a fix**: the underlying firmware defect remains
+  reachable from the CLI, `pico-de-gallo-lib`, the C FFI, Python and MCP.
+
+  Channels 0+1 and 2+3 each share an RP2350 slice, which has a single period
+  and a single enable. A channel requesting a period differing from its
+  sibling's is refused with `-EINVAL` rather than silently changing the
+  sibling's period. The firmware rescales both compares with truncating
+  integer division on every reconfiguration, which would drift a sibling's
+  duty downward. This driver never has to compensate: the conflicting-period
+  refusal means a slice is never reconfigured while its sibling is in use, so
+  the drift is unreachable rather than mitigated. The driver enables a slice
+  on first use and **never disables one** — a zero pulse already gives a
+  constant-low output, and disabling would stop the sibling channel.
+  `drivers/pwm/pdg_pwm_bottom.h` declares no disable function at all, so that
+  is structurally enforced rather than merely documented.
+
+  `PWM_POLARITY_INVERTED` returns `-ENOTSUP` and is deliberately not
+  emulated by inverting the duty cycle, which would change the idle level
+  rather than the polarity. Phase-correct mode is never requested.
+
+  Coverage is `tests/pdg_fake/pwm`, executed by twister with no board
+  attached. PWM cannot currently be verified on hardware in this project, so
+  this suite is the primary evidence rather than a supplement to a hardware
+  demo. Its fake models the firmware's `compute_pwm_params()` — including
+  stopping the divider search at 255 rather than the firmware's 4095 — so
+  the full-scale duty it reports is realistic and a test cannot pass on a
+  configuration that would take down a real board.
+
+  The suite also carries the same best-effort post-link `nm` gate as
+  `tests/pdg_fake/uart`, `verify_overrides.cmake`. It has nothing to catch
+  today, because all five declared bottom functions are overridden; it exists
+  for a future sixth, which would otherwise resolve to the weak production
+  definition and hand the fake's opaque non-pointer token to the real FFI
+  without any link error.
+
+- A `pwm_fade` sample under `samples/`, build-only.
+
+- `scripts/ci-build.sh` gained the `pwm_fake` and `pwm_fade` build targets,
+  bringing the table to fifteen. `pdg_pwm.c` and `CONFIG_PWM_PICO_DE_GALLO`
+  joined the two-sided translation-unit and Kconfig assertion sets, so a
+  target that compiles the PWM driver without asking for it now fails.
+
 - Added `samples/uart_bridge`, a bounded, polling-only example for
   `uart_poll_out()` and `uart_poll_in()`. Its Twister scenario is build-only:
   running it reaches `gallo_init_strict()` and requires a USB-attached board and

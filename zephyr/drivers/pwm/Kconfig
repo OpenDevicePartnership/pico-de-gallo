@@ -1,0 +1,27 @@
+# Copyright (c) 2026 Open Device Partnership and Contributors
+# SPDX-License-Identifier: MIT
+
+config PWM_PICO_DE_GALLO
+	bool "Pico de Gallo PWM controller"
+	default y
+	depends on DT_HAS_ODP_PICO_DE_GALLO_PWM_ENABLED
+	depends on ARCH_POSIX
+	select PWM
+	help
+	  Enable the Pico de Gallo PWM controller driver. The controller is a
+	  child of an odp,pico-de-gallo MFD parent and reaches the board over
+	  USB, so every operation is a blocking host round trip.
+
+if PWM_PICO_DE_GALLO
+
+config PWM_PICO_DE_GALLO_INIT_PRIORITY
+	int "Pico de Gallo PWM controller initialization priority"
+	default 45
+	help
+	  POST_KERNEL initialization priority of the Pico de Gallo PWM
+	  controller. It must be greater than
+	  CONFIG_MFD_PICO_DE_GALLO_INIT_PRIORITY (default 40) so the parent has
+	  opened its host connection first. PWM has no cross-child dependency,
+	  so nothing constrains it from above.
+
+endif # PWM_PICO_DE_GALLO

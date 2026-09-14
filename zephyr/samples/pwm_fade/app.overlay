@@ -1,0 +1,14 @@
+/*
+ * Copyright (c) 2026 Open Device Partnership and Contributors
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+&pdg0 {
+	status = "okay";
+	serial-number = "PDGPWMFADE00000";
+};
+
+&pdg_pwm0 {
+	status = "okay";
+};
