@@ -30,7 +30,7 @@ use std::time::Duration;
 
 use pico_de_gallo_lib::{DeviceInfo, PicoDeGallo};
 use rmcp::handler::server::router::tool::ToolRouter;
-use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerInfo};
+use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
 use rmcp::{ErrorData, ServerHandler, tool_handler};
 use serde::Serialize;
 use tokio::sync::{Mutex, OwnedMutexGuard};
@@ -454,8 +454,8 @@ impl GalloMcp {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for GalloMcp {
-    fn get_info(&self) -> ServerInfo {
-        ServerInfo::new(ServerCapabilities::builder().enable_tools().build())
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             // rmcp's default is `Implementation::from_build_env()`, which
             // expands `env!("CARGO_CRATE_NAME")` inside rmcp and so reports the
             // SDK rather than this server. Name ourselves instead, and read the
