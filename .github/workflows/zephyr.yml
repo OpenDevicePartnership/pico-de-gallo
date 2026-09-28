@@ -125,13 +125,15 @@ jobs:
         # resolution-too-deep error. See #201.
         #
         # The key does NOT hash this workflow file, so changing the requirement
-        # filter below will restore a stale venv. Bump the -v1 suffix (both
-        # jobs) when you change what gets installed, the same manual escape
-        # hatch the west workspace cache uses.
+        # set below will otherwise restore a stale venv. Bump the -vN suffix
+        # (both jobs) when you change what gets installed, the same manual
+        # escape hatch the west workspace cache uses. It is at v2 because v1
+        # was populated by a filter that turned out to be a no-op and therefore
+        # holds the full five-group install.
         uses: actions/cache@v6
         with:
           path: ~/zephyr-venv
-          key: zephyr-venv-${{ env.ZEPHYR_REVISION }}-py${{ steps.python.outputs.version }}-v1
+          key: zephyr-venv-${{ env.ZEPHYR_REVISION }}-py${{ steps.python.outputs.version }}-v2
 
       - name: Install west
         if: steps.venv-cache.outputs.cache-hit != 'true'
@@ -196,11 +198,19 @@ jobs:
         # commit, had resolved both first try 14 minutes earlier. See #201.
         #
         # `west packages pip` without --install prints absolute `-r <file>`
-        # lines for Zephyr *and* every west module, so filtering its output
-        # drops the two dev-only groups while still honouring any requirement
-        # file a module declares under package-managers.pip in its module.yml.
-        # A hand-written `pip install -r zephyr/scripts/requirements-base.txt
-        # ...` would lose those silently.
+        # lines for Zephyr *and* every west module -- on this workspace the
+        # module side is espressif, realtek/ameba, mcuboot and nanopb -- so
+        # going through it keeps whatever a module declares under
+        # package-managers.pip in its module.yml. A hand-written
+        # `pip install -r zephyr/scripts/requirements-base.txt ...` would lose
+        # those four silently.
+        #
+        # What it prints for Zephyr itself is the UMBRELLA scripts/requirements.txt,
+        # not the five group files, and that umbrella `-r`s them all. Grepping
+        # the output for a group name therefore matches nothing and filters
+        # nothing -- an earlier revision of this step did exactly that, went
+        # green, and installed plotly and gitlint-core anyway. So drop the
+        # umbrella line by exact match and name the three groups we want.
         #
         # requirements-run-test.txt stays, despite the name reading optional for
         # a build-only workflow: scripts/pylib/twister/twisterlib/twister_main.py
@@ -208,19 +218,29 @@ jobs:
         # `from natsort import natsorted` at module scope. (tabulate, in that
         # same file, IS wrapped in try/except ImportError. natsort is not.)
         #
-        # No pipeline into the redirect, and `set -e`: a bare
-        # `west packages pip | grep -v ... > file` would mask a west failure
-        # behind grep's exit status and then install a truncated set.
+        # `set -euo pipefail`, and the umbrella line is asserted present before
+        # anything is dropped: if west's output shape changes again this must
+        # fail loudly rather than quietly reinstate the union.
         run: |
           set -euo pipefail
-          west packages pip | tee /tmp/pdg-zephyr-requirements-all.txt
-          grep '^-r ' /tmp/pdg-zephyr-requirements-all.txt \
-            | grep -v -e 'requirements-extras\.txt' \
-                      -e 'requirements-compliance\.txt' \
-            > /tmp/pdg-zephyr-requirements.txt
+          all=/tmp/pdg-zephyr-requirements-all.txt
+          req=/tmp/pdg-zephyr-requirements.txt
+          umbrella="$ZEPHYR_BASE/scripts/requirements.txt"
+
+          west packages pip | tee "$all"
+          grep -qxF -- "-r $umbrella" "$all"
+
+          printf -- '-r %s\n' \
+            "$ZEPHYR_BASE/scripts/requirements-base.txt" \
+            "$ZEPHYR_BASE/scripts/requirements-build-test.txt" \
+            "$ZEPHYR_BASE/scripts/requirements-run-test.txt" > "$req"
+          # Everything west found except the umbrella, i.e. the module files.
+          # grep exits 1 when it selects no lines, which is not an error here.
+          grep -vxF -- "-r $umbrella" "$all" >> "$req" || [ "$?" -eq 1 ]
+
           echo '--- installing ---'
-          cat /tmp/pdg-zephyr-requirements.txt
-          pip install -r /tmp/pdg-zephyr-requirements.txt
+          cat "$req"
+          pip install -r "$req"
 
       - name: Report the Zephyr revision actually checked out
         working-directory: zephyrproject/zephyr
@@ -293,7 +313,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/zephyr-venv
-          key: zephyr-venv-${{ env.ZEPHYR_REVISION }}-py${{ steps.python.outputs.version }}-v1
+          key: zephyr-venv-${{ env.ZEPHYR_REVISION }}-py${{ steps.python.outputs.version }}-v2
 
       - name: Install west
         if: steps.venv-cache.outputs.cache-hit != 'true'
@@ -329,20 +349,29 @@ jobs:
       - name: Install Zephyr Python dependencies
         if: steps.venv-cache.outputs.cache-hit != 'true'
         working-directory: zephyrproject
-        # Same shape as the build job; see the comment there for why this is a
-        # filtered `west packages pip` rather than `west packages pip --install`,
-        # and for why requirements-run-test.txt is not optional here (twister
-        # itself hard-imports natsort through twisterlib.hardwaremap).
+        # Same shape as the build job; see the comment there for why this drops
+        # the umbrella scripts/requirements.txt by exact match rather than
+        # grepping for group names, and for why requirements-run-test.txt is
+        # not optional here (twister itself hard-imports natsort through
+        # twisterlib.hardwaremap).
         run: |
           set -euo pipefail
-          west packages pip | tee /tmp/pdg-zephyr-requirements-all.txt
-          grep '^-r ' /tmp/pdg-zephyr-requirements-all.txt \
-            | grep -v -e 'requirements-extras\.txt' \
-                      -e 'requirements-compliance\.txt' \
-            > /tmp/pdg-zephyr-requirements.txt
+          all=/tmp/pdg-zephyr-requirements-all.txt
+          req=/tmp/pdg-zephyr-requirements.txt
+          umbrella="$ZEPHYR_BASE/scripts/requirements.txt"
+
+          west packages pip | tee "$all"
+          grep -qxF -- "-r $umbrella" "$all"
+
+          printf -- '-r %s\n' \
+            "$ZEPHYR_BASE/scripts/requirements-base.txt" \
+            "$ZEPHYR_BASE/scripts/requirements-build-test.txt" \
+            "$ZEPHYR_BASE/scripts/requirements-run-test.txt" > "$req"
+          grep -vxF -- "-r $umbrella" "$all" >> "$req" || [ "$?" -eq 1 ]
+
           echo '--- installing ---'
-          cat /tmp/pdg-zephyr-requirements.txt
-          pip install -r /tmp/pdg-zephyr-requirements.txt
+          cat "$req"
+          pip install -r "$req"
 
       - name: Run twister
         working-directory: zephyrproject
