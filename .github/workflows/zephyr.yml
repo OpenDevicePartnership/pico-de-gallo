@@ -103,14 +103,50 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             ninja-build gperf device-tree-compiler python3-venv libmagic1
 
+      - name: Record the host Python version
+        id: python
+        # The venv cache below stores absolute paths and a
+        # lib/pythonX.Y/site-packages layout, so a runner-image Python bump has
+        # to invalidate the cache rather than restore a venv that no longer
+        # resolves. ubuntu-latest migrates to Ubuntu 26 from 2026-10-19.
+        run: |
+          echo "version=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Python venv
+        id: venv-cache
+        # Keyed on the Zephyr pin because the requirement *files* are a property
+        # of that revision. Freezing the *resolved* versions alongside it is the
+        # point, not a side effect: Zephyr's requirements are unpinned, so an
+        # uncached job re-resolves the whole graph against whatever PyPI holds
+        # that minute. That nondeterminism is what broke run 36418116224 --
+        # the build job resolved plotly/gitlint-core first try and the twister
+        # job, 14 minutes later on the same commit, backtracked into pip's
+        # resolution-too-deep error. See #201.
+        #
+        # The key does NOT hash this workflow file, so changing the requirement
+        # filter below will restore a stale venv. Bump the -v1 suffix (both
+        # jobs) when you change what gets installed, the same manual escape
+        # hatch the west workspace cache uses.
+        uses: actions/cache@v6
+        with:
+          path: ~/zephyr-venv
+          key: zephyr-venv-${{ env.ZEPHYR_REVISION }}-py${{ steps.python.outputs.version }}-v1
+
       - name: Install west
+        if: steps.venv-cache.outputs.cache-hit != 'true'
         # A venv, not a bare pip install: ubuntu-latest ships a PEP 668
         # externally-managed Python, where `pip install west` hard-fails. This
         # also matches the setup zephyr/README.md documents.
         run: |
           python3 -m venv "$HOME/zephyr-venv"
           "$HOME/zephyr-venv/bin/pip" install --upgrade pip west
-          echo "$HOME/zephyr-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Put the venv on PATH
+        # Unconditional, unlike the step above: on a cache hit that step is
+        # skipped, but every later step still has to resolve `west` and `pip`
+        # out of the venv rather than out of the PEP 668 system Python.
+        run: echo "$HOME/zephyr-venv/bin" >> "$GITHUB_PATH"
 
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
@@ -141,8 +177,50 @@ jobs:
           west update --narrow -o=--filter=blob:none
 
       - name: Install Zephyr Python dependencies
+        if: steps.venv-cache.outputs.cache-hit != 'true'
         working-directory: zephyrproject
-        run: west packages pip --install
+        # Deliberately NOT `west packages pip --install`. That installs all five
+        # groups listed in zephyr/scripts/requirements.txt, two of which this
+        # workflow never uses: requirements-extras.txt ("optional or useful for
+        # development/developers workflow") and requirements-compliance.txt
+        # ("required by the compliance scripts"). Between them they pull roughly
+        # 150 packages -- plotly, gitlint-core, spsdk, PyGithub, Pillow,
+        # graphviz, pylint, ruff, clang-format, sphinx-lint, vermin, yamllint --
+        # that neither `west build` nor `west twister` imports.
+        #
+        # They are also unpinned, and pip 25.3+ turns unbounded backtracking
+        # into a hard `resolution-too-deep` error instead of merely being slow.
+        # Run 36418116224 spent 8m49s backtracking plotly 7.1.0 -> 6.6.0 and
+        # gitlint-core 0.19.0 -> 0.17.0, both from requirements-extras.txt, and
+        # then failed -- while the build job of that same run, on that same
+        # commit, had resolved both first try 14 minutes earlier. See #201.
+        #
+        # `west packages pip` without --install prints absolute `-r <file>`
+        # lines for Zephyr *and* every west module, so filtering its output
+        # drops the two dev-only groups while still honouring any requirement
+        # file a module declares under package-managers.pip in its module.yml.
+        # A hand-written `pip install -r zephyr/scripts/requirements-base.txt
+        # ...` would lose those silently.
+        #
+        # requirements-run-test.txt stays, despite the name reading optional for
+        # a build-only workflow: scripts/pylib/twister/twisterlib/twister_main.py
+        # imports twisterlib.hardwaremap, which does a bare
+        # `from natsort import natsorted` at module scope. (tabulate, in that
+        # same file, IS wrapped in try/except ImportError. natsort is not.)
+        #
+        # No pipeline into the redirect, and `set -e`: a bare
+        # `west packages pip | grep -v ... > file` would mask a west failure
+        # behind grep's exit status and then install a truncated set.
+        run: |
+          set -euo pipefail
+          west packages pip | tee /tmp/pdg-zephyr-requirements-all.txt
+          grep '^-r ' /tmp/pdg-zephyr-requirements-all.txt \
+            | grep -v -e 'requirements-extras\.txt' \
+                      -e 'requirements-compliance\.txt' \
+            > /tmp/pdg-zephyr-requirements.txt
+          echo '--- installing ---'
+          cat /tmp/pdg-zephyr-requirements.txt
+          pip install -r /tmp/pdg-zephyr-requirements.txt
 
       - name: Report the Zephyr revision actually checked out
         working-directory: zephyrproject/zephyr
@@ -198,11 +276,33 @@ jobs:
           sudo apt-get install --no-install-recommends -y \
             ninja-build gperf device-tree-compiler python3-venv libmagic1
 
+      - name: Record the host Python version
+        id: python
+        # Same shape as the build job; see the comment there for why the venv
+        # cache key has to track the runner's Python minor version.
+        run: |
+          echo "version=$(python3 -c 'import sys; print("%d.%d" % sys.version_info[:2])')" \
+            >> "$GITHUB_OUTPUT"
+
+      - name: Restore the Python venv
+        id: venv-cache
+        # Same key as the build job, deliberately: whichever job finishes first
+        # saves it and the other reuses it. actions/cache warns rather than
+        # fails when the second save collides, exactly as the west workspace
+        # cache below already does.
+        uses: actions/cache@v6
+        with:
+          path: ~/zephyr-venv
+          key: zephyr-venv-${{ env.ZEPHYR_REVISION }}-py${{ steps.python.outputs.version }}-v1
+
       - name: Install west
+        if: steps.venv-cache.outputs.cache-hit != 'true'
         run: |
           python3 -m venv "$HOME/zephyr-venv"
           "$HOME/zephyr-venv/bin/pip" install --upgrade pip west
-          echo "$HOME/zephyr-venv/bin" >> "$GITHUB_PATH"
+
+      - name: Put the venv on PATH
+        run: echo "$HOME/zephyr-venv/bin" >> "$GITHUB_PATH"
 
       - name: Install stable
         uses: dtolnay/rust-toolchain@stable
@@ -227,8 +327,22 @@ jobs:
           west update --narrow -o=--filter=blob:none
 
       - name: Install Zephyr Python dependencies
+        if: steps.venv-cache.outputs.cache-hit != 'true'
         working-directory: zephyrproject
-        run: west packages pip --install
+        # Same shape as the build job; see the comment there for why this is a
+        # filtered `west packages pip` rather than `west packages pip --install`,
+        # and for why requirements-run-test.txt is not optional here (twister
+        # itself hard-imports natsort through twisterlib.hardwaremap).
+        run: |
+          set -euo pipefail
+          west packages pip | tee /tmp/pdg-zephyr-requirements-all.txt
+          grep '^-r ' /tmp/pdg-zephyr-requirements-all.txt \
+            | grep -v -e 'requirements-extras\.txt' \
+                      -e 'requirements-compliance\.txt' \
+            > /tmp/pdg-zephyr-requirements.txt
+          echo '--- installing ---'
+          cat /tmp/pdg-zephyr-requirements.txt
+          pip install -r /tmp/pdg-zephyr-requirements.txt
 
       - name: Run twister
         working-directory: zephyrproject
