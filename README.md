@@ -108,6 +108,10 @@ KiCAD schematic and PCB design for a Pico 2 daughter board. The v1.1
 board features a single keyed 2x12 shrouded header that routes all 20
 firmware signals with on-board I²C pull-ups and ADC input protection.
 
+Additionally, a breadboard adapter is provided in the respective subfolder.
+This adapter allows connecting all Pico de Gallo pins to a breadboard
+with a single ribbon cable.
+
 ## Case
 
 3D-printable snap-fit enclosure (FreeCAD) in two parts — body and lid.
