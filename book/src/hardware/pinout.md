@@ -125,6 +125,23 @@ a pin.
 > boards designed today against the v1.1 header will see 3.3 V;
 > they'll continue to plug into v2 with the same key orientation.
 
+### Breadboard adapter
+
+<table>
+<tr>
+<td align="center"><img src="../breadboard-adapter-for-rev1.1.png" width="340" alt="Breadboard adapter for Pico de Gallo rev1.1"><br><em>Breadboard adapter for Pico de Gallo rev 1.1</em></td>
+</tr>
+</table>
+
+A KiCad schematic for a breadboard adapter
+compatible with the Pico de Gallo rev 1.1
+is available in the
+[adapters subfolder](https://github.com/OpenDevicePartnership/pico-de-gallo/tree/main/hardware/adapters).
+The adapter allows connecting all Pico de Gallo pins to a breadboard
+using a single ribbon cable.
+To assemble the adapter, a keyed 2x12 box header (as for the Pico de Gallo)
+and 2x12 pin, 0.1"/2.54mm pitched single row header pins are required.
+
 ## Electrical Notes
 
 - All digital I/O is 3.3 V CMOS. Do not drive 5 V signals directly
