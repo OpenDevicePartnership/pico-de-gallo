@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-11-09
+
+### Dependencies
+
+- Updated the locked MCP SDK to `rmcp` 3.9.0, including the
+  `ServerInfo` to `ServerConfig` API migration. Refreshed Tokio, Clap,
+  Schemars, Serde, and serde_json dependencies.
+
 ### Changed
 
 - `uart_set_config` gained optional `data_bits`, `parity`, and `stop_bits`
@@ -66,8 +74,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rewriting a perfectly good call. The `spi_batch` message additionally
   states that the batch may or may not have executed, so an agent does not
   retry blindly and repeat its writes.
-## [0.4.0] — 2026-09-01
-
 ### Added
 
 - `status` now always serializes a `build_id` key (`null` until a board is

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] — 2026-11-09
+
+### Dependencies
+
+- Refreshed the locked versions of cortex-m (0.7.10), cortex-m-rt (0.7.7),
+  defmt (1.2.0), defmt-rtt (1.3.1), and Serde (1.0.229).
+
 ### Changed
 
 - `uart/set-config` now writes the requested word-length, parity, and stop-bit
@@ -90,7 +97,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   actual guarantees. Refs #178.
 
   Same values, no behavioural change, no wire or schema change.
-## [0.12.0] — 2026-09-01
 
 ### Added
 
@@ -111,24 +117,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cover a wedge inside `receive()`, and the TX slot has no hardware acceptance
   trigger. Because that slot measures aggregate rather than per-sender
   progress, one starved sender can remain masked while another completes at
-  least once per 60-second TX budget. Board-attached acceptance is pending.
+  least once per 60-second TX budget. Board-attached A/B verification on
+  2026-09-02 established automatic recovery from a dispatcher wedge; the TX
+  expiry and scratch-register breadcrumb paths remain unverified. See
+  AGENTS.md §13.17 for the hardware evidence and its limits.
 
 ### Changed
 
 - **BREAKING (behaviour):** the five `gpio/wait-*` handlers now cap every
   caller-supplied timeout at 30 minutes. `timeout_ms == 0` selects that ceiling
   instead of waiting forever, oversized values are clamped to it, and expiry
-  returns `GpioError::Timeout`. `uart/read` remains asymmetric: `0` is still a
-  1 ms non-blocking poll, while only its non-zero path is clamped.
+  returns `GpioError::Timeout`. `uart/read` remains asymmetric: `0` polls
+  once without waiting, while only its non-zero path is clamped.
 
-  > The `timeout_ms == 0` clamp changes documented wire semantics without
-  > changing wire shape. `pico-de-gallo-internal` remains at `0.7.0`, and
-  > `internal-v0.7.0` is already published, so `validate()` cannot distinguish a
-  > pre-clamp 0.7 firmware from a post-clamp one. Host and firmware must be
-  > built from the same tree until the bump lands. Before any release,
-  > AGENTS.md §16 step 2 requires bumping `internal` to `0.8.0` in lockstep
-  > across all eight released crates, with dep-spec rewrites, per-crate
-  > CHANGELOGs and both regenerated `Cargo.lock`s.
+  This release carries schema 0.8 and must be paired with the matching
+  host releases. The `DeviceInfo::build_id` addition also changes the
+  `device/info` endpoint key: a schema 0.7/0.8 pair times out during
+  validation instead of reporting `SchemaMismatch`. Upgrade both sides
+  together; `gallo version` retains a legacy diagnostic fallback.
 
 - **BREAKING (build):** `hw-rev2` is now the default Cargo feature;
   `hw-rev1` is no longer default. A build with no feature flags produces

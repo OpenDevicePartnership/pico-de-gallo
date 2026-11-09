@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-11-09
+
+### Dependencies
+
+- Refreshed Clap (locked at 4.6.7), tabled (0.22.0), Tokio, and Serde.
+
 ### Added
 
 - `gallo uart set-config` now accepts long-only `--data-bits`, `--parity`,
@@ -31,8 +37,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Oversized write payloads are now refused by the inherited library guard
   rather than being accepted without any ceiling.
 
-## [0.10.0] — 2026-09-01
-
 ### Changed
 
 - `gallo version` now renders summary and capability tables, including the
@@ -41,13 +45,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - `gallo version` no longer hangs indefinitely against a firmware built
-  from a different tree. `PicoDeGallo::device_info` carries no timeout of
-  its own, so the existing fallback to the legacy `version` endpoint was
-  unreachable: no `Err` was ever produced. The call is now bounded at five
-  seconds — `device/info` has no user-controllable work, unlike the
-  `spi_batch` worst case that sizes the library's 300-second bound — and an
-  elapsed timeout takes the fallback path. `VersionInfo`'s schema is
-  unchanged, so the legacy endpoint still matches across the mismatch.
+  from a different tree. `PicoDeGallo::device_info` carried no timeout of
+  its own in the previous release, so the existing fallback to the legacy
+  `version` endpoint was unreachable: no `Err` was ever produced. The call
+  is now bounded at five seconds — `device/info` has no user-controllable
+  work — and an elapsed timeout takes the fallback path. `VersionInfo`'s
+  schema is unchanged, so the legacy endpoint still matches across the mismatch.
   Refs #159.
 
 - The firmware-validation failure message no longer advises retrying or

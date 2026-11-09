@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-09
+
 ### Breaking Changes
 
 - `gallo_uart_set_config` and `gallo_uart_get_config` both changed from two
@@ -102,8 +104,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `gallo_*` calls can no longer block indefinitely when a response is lost.
   On `gallo_i2c_batch` timeout the output length is set to zero rather than
   left partial. Callers should note a timed-out batch may still have executed.
-## [0.9.0] — 2026-09-01
-
 ### Breaking Changes
 
 - Appended `char build_id[GALLO_BUILD_ID_LEN]` to `GalloDeviceInfo`, with

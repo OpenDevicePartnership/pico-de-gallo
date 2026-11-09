@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-09
+
 ### Changed
 
 - Documented that `Hal::uart()` uses the device's current baud rate and
@@ -41,14 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - HAL operations inherit the host-side call bound, so a device that never
   answers now surfaces an error instead of blocking the caller forever.
-## [0.8.0] — 2026-09-01
-
 ### Breaking Changes
 
 - Version bumped in lockstep with the wire-coupled crates for schema 0.8.
-  This crate has no source change; it moves because it depends on
-  `pico-de-gallo-lib`, which tracks `pico-de-gallo-internal`, and the eight
-  wire-coupled crates must never drift in version space (AGENTS.md §6.5).
+  It depends on `pico-de-gallo-lib`, which tracks
+  `pico-de-gallo-internal`, and the eight wire-coupled crates must be
+  released together (AGENTS.md §6.5).
   `Hal::new_validated` consequently requires firmware reporting schema 0.8.
 
 ## [0.7.0] — 2026-08-27

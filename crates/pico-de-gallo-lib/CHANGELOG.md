@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-11-09
+
 ### Breaking Changes
 
 - `PicoDeGallo::uart_set_config` now takes `data_bits`, `parity`, and
@@ -174,8 +176,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Added a direct `serde` dependency (already present transitively) for the
   trait bounds on the bounded-transport wrapper.
-## [0.9.0] — 2026-09-01
-
 ### Breaking Changes
 
 - Requires firmware reporting schema 0.8. Because the schema 0.8 change was

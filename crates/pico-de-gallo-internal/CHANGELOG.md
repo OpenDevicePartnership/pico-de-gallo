@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-11-09
+
 ### Breaking Changes
 
 - Extended `UartSetConfigurationRequest` and `UartConfigurationInfo` with
@@ -21,10 +23,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   numbering (`0_5 = 0`, `1 = 1`, `1_5 = 2`, `2 = 3`): the RP2350 PL011 has
   only the `STP2` bit, so half stop bits are unreachable.
 
-  This wire change rides the already-pending, unreleased schema 0.8 bump. The
-  crate was already at 0.8.0, `build.rs` already derives schema v0.8.0 from
-  that version, and the attached test board reported v0.8.0, so no version
-  moved for this change.
+  This wire change ships with the build-identity change in schema 0.8.
+  Earlier development builds also reported 0.8.0 but carried only baud rate;
+  rebuild both host and firmware from this release rather than mixing them
+  with those development builds.
 
 ### Added
 
@@ -111,8 +113,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
   **No wire-format change.** Output is byte-identical to the previous
   implementation for every input the previous implementation accepted.
-
-## [0.8.0] — 2026-09-01
 
 ### Breaking Changes
 

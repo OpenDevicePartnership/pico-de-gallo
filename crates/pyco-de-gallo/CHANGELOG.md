@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-11-09
+
+### Dependencies
+
+- Updated PyO3 to 0.30 (locked at 0.30.1) and refreshed Tokio.
+
 ### Added
 
 - Exposed `UartDataBits`, `UartParity`, `UartStopBits`, and
@@ -39,8 +45,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tighter response ceiling. Oversized calls now raise `RuntimeError` from
   the library's local guard instead of surfacing a transport deserialization
   failure.
-
-## [0.6.0] — 2026-09-01
 
 ### Added
 
