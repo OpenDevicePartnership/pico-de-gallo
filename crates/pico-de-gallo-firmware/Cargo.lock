@@ -517,7 +517,7 @@ dependencies = [
  "embedded-io-async 0.7.0",
  "futures-core",
  "futures-sink",
- "heapless 0.9.3",
+ "heapless 0.9.4",
 ]
 
 [[package]]
@@ -553,7 +553,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "168297bf80aaf114b3c9ad589bf38b01b3009b9af7f97cd18086c5bbf96f5693"
 dependencies = [
  "embassy-executor-timer-queue",
- "heapless 0.9.3",
+ "heapless 0.9.4",
 ]
 
 [[package]]
@@ -800,9 +800,9 @@ dependencies = [
 
 [[package]]
 name = "heapless"
-version = "0.9.3"
+version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "25ba4bd83f9415b58b4ed8dc5714c76e626a105be4646c02630ad730ad3b5aa4"
+checksum = "411fdef4df93751117bd9ef8caa0e7f99c65dafec5bd84313eb8e2fdd75e32f2"
 dependencies = [
  "hash32 0.3.1",
  "serde_core",
@@ -1048,7 +1048,7 @@ dependencies = [
  "embedded-hal-async",
  "embedded-io-async 0.7.0",
  "fixed",
- "heapless 0.9.3",
+ "heapless 0.9.4",
  "panic-probe",
  "pico-de-gallo-internal",
  "postcard",
@@ -1061,7 +1061,7 @@ dependencies = [
 name = "pico-de-gallo-internal"
 version = "0.8.0"
 dependencies = [
- "heapless 0.9.3",
+ "heapless 0.9.4",
  "postcard",
  "postcard-rpc",
  "postcard-schema",
@@ -1156,7 +1156,7 @@ dependencies = [
  "embassy-time",
  "embassy-usb",
  "embassy-usb-driver",
- "heapless 0.9.3",
+ "heapless 0.9.4",
  "portable-atomic",
  "postcard",
  "postcard-schema",
@@ -1171,7 +1171,7 @@ version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9475666d89f42231a0a57da32d5f6ca7f9b5cd4c335ea1fe8f3278215b7a21ff"
 dependencies = [
- "heapless 0.9.3",
+ "heapless 0.9.4",
  "postcard-derive",
  "serde",
 ]
